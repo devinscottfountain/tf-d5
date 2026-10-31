@@ -41,7 +41,7 @@ vec3 ortho(vec2 g){ return texture2D(tOrtho,vec2(g.x/${2 * OHALF}.+.5,.5-g.y/${2
 vec3 orthoNight(vec2 g, float w){
   vec2 c=floor(g/18.), j=vec2(h21(c),h21(c+7.3))*.7+.15, dp=(fract(g/18.)-j)*18.;
   vec3 s=ortho((c+j)*18.); float lum=dot(s,vec3(.3,.5,.2)), sat=max(s.r,max(s.g,s.b))-min(s.r,min(s.g,s.b));
-  float road=smoothstep(.2,.1,lum)*smoothstep(.015,.04,lum)*(1.-smoothstep(.03,.07,sat))*step(.45,h21(c+3.1));
+  float road=smoothstep(.2,.1,lum)*smoothstep(.015,.04,lum)*(1.-smoothstep(.03,.07,sat))*step(.2,h21(c+3.1));
   float r=max(.7,w), d=length(dp);
   vec3 lamp=mix(vec3(1.,.62,.28),vec3(.95,.95,1.),step(.7,h21(c+9.)));
   // warm windows: bright-roof pixels near a lamp glow faintly
@@ -288,8 +288,13 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU, ortho
     vec3 col=mix(grass,dirt,cleared);
     { vec2 gq=toGeo(p); col=mix(col,ortho(gq)*(.95+.1*n2),orthoW(gq)); }   // the real lot from the 2019 flight
     float y=vLoc.y; float cut=smoothstep(-.3,-1.2,y);
-    vec3 cal=vec3(.6,.56,.47)*(.85+.2*n2)*(1.-.15*smoothstep(-3.2,-3.9,y)*0.);
-    col=mix(col,cal,cut);
+    // fresh cut: the photo's own dirt, paler and drier (exposed caliche), streaked by bucket teeth, darker down the walls
+    vec3 cal=vec3(.6,.56,.47)*(.85+.2*n2);
+    { vec2 gq=toGeo(p); float ow=orthoW(gq); vec3 ph=ortho(gq+vec2(7.,3.)); float l=dot(ph,vec3(.3,.5,.2));
+      vec3 photoCut=mix(vec3(l),ph,.55)*vec3(1.3,1.24,1.12)*(.8+.35*vn(vec2(p.x*2.5,p.y*.35)))*(.85+.25*n2);
+      cal=mix(cal,photoCut,ow); }
+    float wall=smoothstep(.2,.7,1.-abs(normalize(cross(dFdx(vLoc),dFdy(vLoc))).y));
+    col=mix(col,cal*(1.-.3*wall),cut);
     // gate pad + haul road gravel
     float pad=step(55.,p.x)*step(abs(p.y),24.); col=mix(col,vec3(.33,.32,.3)*(.85+.25*n2),pad*cleared);
     float rough=1.; vec3 E=vec3(0.);
@@ -307,7 +312,7 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU, ortho
     }
     // pools of work light at night
     vec2 LT[4]; LT[0]=vec2(-60.,-42.); LT[1]=vec2(60.,-42.); LT[2]=vec2(-60.,42.); LT[3]=vec2(20.,30.);
-    for(int i=0;i<4;i++){ float d=length(p-LT[i]); E+=col*vec3(1.,.93,.8)*2.6*exp(-d*d/700.)*uWork; }
+    for(int i=0;i<4;i++){ float d=length(p-LT[i]); E+=col*vec3(1.,.93,.8)*1.1*exp(-d*d/700.)*uWork; }
     lA=col; lR=rough; lE=E;
     diffuseColor.rgb=lA;`, 'roughnessFactor=lR;', 'totalEmissiveRadiance+=lE;',
     /* glsl */ `vec3 objectNormal; { float e=.6; vec2 p=position.xz;
@@ -436,7 +441,7 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU, ortho
     sunLight.position.copy(ORIGIN).addScaledVector(sunL.y > 0 ? sunL : tv.set(sunL.x, 0.05, sunL.z).normalize(), 400); sunLight.target.position.copy(ORIGIN);
     hemi.color.copy(skyC.setRGB(0.42, 0.58, 1.0).lerp(gndC.setRGB(0.06, 0.07, 0.12), night)); hemi.groundColor.setRGB(0.42 * day + 0.02, 0.34 * day + 0.02, 0.24 * day + 0.03);
     hemi.intensity = 0.25 + 1.3 * day;
-    workLights.forEach(l => (l.intensity = 150 * U.uWork.value)); towers.forEach(h => (h.visible = U.uWork.value > 0.05));
+    workLights.forEach(l => (l.intensity = 60 * U.uWork.value)); towers.forEach(h => (h.visible = U.uWork.value > 0.05));
     U.uClear.value = sstep(prog, 0.0, 0.07);
     U.uDig.value = sstep(prog, 0.07, 0.36); U.uPile.value = sstep(prog, 0.08, 0.24) * (1 - sstep(prog, 0.3, 0.46)) * 0.9 + 0.1 * sstep(prog, 0.3, 0.46);
     U.uBack.value = sstep(prog, 0.8, 0.93);
