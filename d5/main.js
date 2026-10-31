@@ -601,7 +601,10 @@ renderer.setAnimationLoop(() => {
 
   // satellite + focus: rack to the look target; deep focus everywhere except the colony
   const sp = sm - SATP; sat.visible = mode === 'space' && Math.abs(sp) < 0.06;
-  sat.position.copy(SAT0).addScaledVector(satT, sp * SATV); sat.rotation.set(0.4 + t * 0.05, t * 0.12, 0.25); satBlink.material.opacity = step01(Math.sin(t * 5));
+  // ride along the camera's own path: it starts ~25 units ahead, just right of and below the lens, and slides back past us,
+  // so the pass reads the same however hard the camera is accelerating on this leg
+  if (sat.visible) { tmp3.copy(look).sub(pos).normalize(); tmp2.crossVectors(tmp3, camUp).normalize();
+    sat.position.copy(pos).addScaledVector(tmp3, 3 - sp * 420).addScaledVector(tmp2, 2.3).addScaledVector(camUp, -0.75); } sat.rotation.set(0.4 + t * 0.05, t * 0.12, 0.25); satBlink.material.opacity = step01(Math.sin(t * 5));
   let fd = focus;
   if (sat.visible) { const sd = pos.distanceTo(sat.position), inFront = tmp.copy(sat.position).sub(pos).normalize().dot(tmp2.copy(look).sub(pos).normalize()); if (sd < 14 && inFront > 0.55) fd = THREE.MathUtils.lerp(fd, sd, sstep(sd, 14, 6)); }
   const deep = inSite || mode === 'globe';
