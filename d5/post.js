@@ -1,5 +1,5 @@
 // TerraFirma D5 post stack.
-// Chain: ScenePass(+depth) -> MotionBlur -> Bokeh DOF -> Bloom -> AutoExposure+ToneMap -> SMAA -> Lens (CA, vignette, grain, barrel)
+// Chain: ScenePass(+depth) -> HDR FX [contact AO -> long-exposure trails -> camera motion blur] -> Bokeh DOF -> Bloom -> AutoExposure+ToneMap -> SMAA -> Lens (CA, vignette, grain, barrel)
 // All look parameters (bloom, bokeh, lens) match d5.current.js.
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
@@ -35,6 +35,22 @@ export function createPost({ THREE, renderer, scene, cam }) {
     lumMin: 0.03,     // per-sample floor: black space reads as one steady value instead of dragging the mean to -inf
     lumMax: 24        // per-sample luminance clamp so a blown-out sun core cannot dominate the mean
   };
+  const trails = {    // long-exposure object trails: HDR history, reprojected by camera motion through depth
+    enabled: false,
+    amount: 0.65,     // history weight per 60fps frame (time-constant corrected for other frame rates). 0 = off, 0.9 = very long smears
+    clamp: 0.15,      // neighbourhood clamp strength while the camera is still (rises to 1 during fast camera moves). 1 = TAA-strict, kills trails
+    depthTol: 0.06,   // log2 depth mismatch (~4%) above which history counts as disoccluded, when the camera itself moved
+    cutAngle: 0.5,    // camera rotation (rad) in one frame that resets the history; resetMotion() and motion.cutDist also reset it
+    active: false     // read only
+  };
+  const ao = {        // contact AO, half-res SAO from depth, applied to HDR colour before DOF/bloom
+    enabled: false,
+    radius: 0.02,     // sample radius as a fraction of view distance (0.02 = 6 m at 300 m), i.e. a constant screen size at any scale
+    intensity: 1.0,   // 0 = none, 1 = default, 2 = heavy
+    bias: 0.12,       // cosine bias: ignores near-coplanar samples (keeps flat terrain clean)
+    maxPx: 48,        // cap on the screen-space radius in full-res pixels (cost/cache guard)
+    active: false     // read only
+  };
 
   // ---------------------------------------------------------------- composer
   const composer = new EffectComposer(renderer);
@@ -58,39 +74,178 @@ export function createPost({ THREE, renderer, scene, cam }) {
   const scenePass = new ScenePass();
   composer.addPass(scenePass);
 
-  // 2. camera motion blur: reconstruct world position from depth, reproject with last frame's view-projection,
-  //    blur along the screen-space delta. Static scene assumed (only the camera moves), which is true here.
-  class MotionBlurPass extends Pass {
+  // 2. HDR FX on the scene colour + depth, in this order, each stage optional:
+  //    a. contact AO (half-res SAO from depth, bilateral blur, depth-aware upsample, multiplies HDR colour)
+  //    b. temporal trails (long-exposure accumulation, history reprojected by camera motion through depth)
+  //    c. camera motion blur (depth reprojection with last frame's view-projection, blur along the screen delta)
+  //    The whole pass, and the scene pass's private depth target, switch off when none of them is active.
+  const DEPTH_GLSL = `
+    uniform float near; uniform float far;
+    float viewZ(float d){ return (near*far)/((far-near)*d-far); } // perspective depth -> view z (negative)`;
+  const IGN = `float ign(vec2 p){ return fract(52.9829189*fract(dot(p,vec2(0.06711056,0.00583715)))); }`; // interleaved gradient noise
+  class HDRFXPass extends Pass {
     constructor() {
       super();
+      this.blur = false; this.histOk = false; this.histVP = new THREE.Matrix4(); this.histRel = new THREE.Matrix4(); this.invVP = new THREE.Matrix4();
+      this.w = W; this.h = H; this.hist = null; this.tmp = null; this.aoA = null; this.aoB = null;
+      const mat = (uniforms, fs) => new THREE.ShaderMaterial({ uniforms, vertexShader: FS_VERT, depthTest: false, depthWrite: false, fragmentShader: fs });
+      // c. camera motion blur (unchanged maths; colour input is whatever the earlier stages produced)
       this.u = { tColor: { value: null }, tDepth: { value: null }, invVP: { value: new THREE.Matrix4() }, prevVP: { value: new THREE.Matrix4() },
         scale: { value: 0.5 }, maxLen: { value: 0.035 }, res: { value: new THREE.Vector2(W, H) } };
-      this.mat = new THREE.ShaderMaterial({ uniforms: this.u, vertexShader: FS_VERT, depthTest: false, depthWrite: false, fragmentShader: `
+      this.mBlur = mat(this.u, `
         uniform sampler2D tColor; uniform sampler2D tDepth; uniform mat4 invVP; uniform mat4 prevVP; uniform float scale; uniform float maxLen; uniform vec2 res; varying vec2 vUv;
-        float ign(vec2 p){ return fract(52.9829189*fract(dot(p,vec2(0.06711056,0.00583715)))); } // interleaved gradient noise: breaks tap banding
+        ${IGN}
         void main(){
           vec4 c0=texture2D(tColor,vUv);
           float d=texture2D(tDepth,vUv).x;
           vec4 w=invVP*vec4(vUv*2.-1.,d*2.-1.,1.); w/=w.w;      // world position of this pixel
           vec4 pc=prevVP*w;                                       // where it was last frame
-          if(pc.w<=1e-4){ gl_FragColor=c0; return; }
+          if(pc.w<=1e-4){ gl_FragColor=vec4(c0.rgb,1.); return; }
           vec2 v=(vUv-pc.xy/pc.w*.5-.5)*scale;                    // uv delta over the shutter interval
           vec2 vp=v*res; float lp=length(vp), cap=maxLen*res.y;
           if(lp>cap){ v*=cap/lp; lp=cap; }
-          if(lp<0.6){ gl_FragColor=c0; return; }                  // sub-pixel: pass through
+          if(lp<0.6){ gl_FragColor=vec4(c0.rgb,1.); return; }     // sub-pixel: pass through
           float j=ign(gl_FragCoord.xy);
           vec3 acc=vec3(0.);
           for(int i=0;i<12;i++){ float tt=(float(i)+j)/12.-.5; acc+=texture2D(tColor,vUv+v*tt).rgb; }
-          gl_FragColor=vec4(acc/12.,c0.a); }` });
-      this.fsQuad = new FullScreenQuad(this.mat);
+          gl_FragColor=vec4(acc/12.,1.); }`);
+      this.mCopy = mat({ tColor: { value: null } }, `uniform sampler2D tColor; varying vec2 vUv; void main(){ gl_FragColor=vec4(texture2D(tColor,vUv).rgb,1.); }`);
+
+      // b. trails: out = mix(current, reprojected history, w). History alpha holds log2(view distance) of the frame that wrote it,
+      //    so a disocclusion test is possible without a second depth target.
+      this.uT = { tColor: { value: null }, tDepth: { value: null }, tHist: { value: null }, invVP: { value: null }, histVP: { value: null },
+        res: { value: new THREE.Vector2(W, H) }, near: { value: 1 }, far: { value: 1000 }, w: { value: 0.65 }, clampK: { value: 0.15 }, tol: { value: 0.06 }, valid: { value: 0 } };
+      this.mTrail = mat(this.uT, `
+        uniform sampler2D tColor; uniform sampler2D tDepth; uniform sampler2D tHist; uniform mat4 invVP; uniform mat4 histVP; uniform vec2 res;
+        uniform float w, clampK, tol, valid; varying vec2 vUv;
+        ${DEPTH_GLSL}
+        vec3 histCR(vec2 uv){ // 5-tap Catmull-Rom: resampling the history every frame with bilinear would soften static detail while the camera creeps
+          vec2 sp=uv*res, tp=floor(sp-.5)+.5, f=sp-tp;
+          vec2 w0=f*(-.5+f*(1.-.5*f)), w1=1.+f*f*(-2.5+1.5*f), w2=f*(.5+f*(2.-1.5*f)), w3=f*f*(-.5+.5*f);
+          vec2 w12=w1+w2, t12=(tp+w2/w12)/res, t0=(tp-1.)/res, t3=(tp+2.)/res;
+          vec3 s=texture2D(tHist,vec2(t12.x,t0.y)).rgb*(w12.x*w0.y)+texture2D(tHist,vec2(t0.x,t12.y)).rgb*(w0.x*w12.y)+texture2D(tHist,t12).rgb*(w12.x*w12.y)
+                +texture2D(tHist,vec2(t3.x,t12.y)).rgb*(w3.x*w12.y)+texture2D(tHist,vec2(t12.x,t3.y)).rgb*(w12.x*w3.y);
+          return max(s/(w12.x*w0.y+w0.x*w12.y+w12.x*w12.y+w3.x*w12.y+w12.x*w3.y),vec3(0.)); }
+        void main(){
+          vec3 c=texture2D(tColor,vUv).rgb;
+          float d=texture2D(tDepth,vUv).x;
+          float zl=log2(max(-viewZ(d),1e-4));
+          vec4 wp=invVP*vec4(vUv*2.-1.,d*2.-1.,1.); wp/=wp.w;     // world position of this pixel
+          vec4 pc=histVP*wp;                                      // where the history camera saw it
+          vec2 puv=pc.xy/max(pc.w,1e-6)*.5+.5;
+          if(valid<.5 || pc.w<=1e-4 || any(lessThan(puv,vec2(0.))) || any(greaterThan(puv,vec2(1.)))){ gl_FragColor=vec4(c,zl); return; } // off-screen / reset
+          vec3 h=histCR(puv);
+          float hz=texelFetch(tHist,ivec2(clamp(puv*res,vec2(0.),res-1.)),0).a;  // log2 distance stored with the history
+          float dz=abs(hz-log2(pc.w));                                           // vs where this surface should have been
+          float mpx=length((vUv-puv)*res);                                       // camera-induced motion, px
+          float camMove=smoothstep(.75,4.,mpx);
+          // a depth mismatch with a still camera is a moving object (keep it: that is the trail); with a moving camera it is a disocclusion (drop it)
+          float disocc=smoothstep(tol,tol*4.,dz)*camMove;
+          // lenient neighbourhood clamp: a widened min/max box, applied only partly while the camera creeps, fully during fast camera moves
+          vec2 t=1./res;
+          vec3 a1=texture2D(tColor,vUv+vec2(t.x,0.)).rgb, a2=texture2D(tColor,vUv-vec2(t.x,0.)).rgb, a3=texture2D(tColor,vUv+vec2(0.,t.y)).rgb, a4=texture2D(tColor,vUv-vec2(0.,t.y)).rgb;
+          vec3 mn=min(c,min(min(a1,a2),min(a3,a4))), mx=max(c,max(max(a1,a2),max(a3,a4)));
+          vec3 ext=(mx-mn)*.5+.03*max(dot(mx,vec3(.2126,.7152,.0722)),.02);
+          h=mix(h,clamp(h,mn-ext,mx+ext),mix(clampK,1.,camMove));
+          gl_FragColor=vec4(mix(c,h,w*(1.-disocc)),zl); }`);
+
+      // a. contact AO. Raw pass runs at half res and reads full-res depth with texelFetch; .x = AO, .y = view distance for the bilateral steps.
+      this.uAO = { tDepth: { value: null }, res: { value: new THREE.Vector2(W, H) }, near: { value: 1 }, far: { value: 1000 }, pInv: { value: new THREE.Vector2(1, 1) },
+        projScale: { value: 500 }, radius: { value: 0.02 }, intensity: { value: 1 }, bias: { value: 0.12 }, maxPx: { value: 48 } };
+      this.mAO = mat(this.uAO, `
+        uniform sampler2D tDepth; uniform vec2 res; uniform vec2 pInv; uniform float projScale, radius, intensity, bias, maxPx; varying vec2 vUv;
+        ${DEPTH_GLSL}
+        ${IGN}
+        vec3 vpos(ivec2 p){ p=clamp(p,ivec2(0),ivec2(res)-1); float z=viewZ(texelFetch(tDepth,p,0).x); return vec3(((vec2(p)+.5)/res*2.-1.)*pInv*(-z),z); }
+        void main(){
+          ivec2 ip=ivec2(gl_FragCoord.xy)*2;
+          float d=texelFetch(tDepth,ip,0).x;
+          if(d>=.999999){ gl_FragColor=vec4(1.,6e4,0.,1.); return; }          // sky / cleared
+          vec3 P=vpos(ip);
+          vec3 x1=vpos(ip+ivec2(1,0))-P, x0=P-vpos(ip-ivec2(1,0)), y1=vpos(ip+ivec2(0,1))-P, y0=P-vpos(ip-ivec2(0,1));
+          vec3 N=normalize(cross(abs(x1.z)<abs(x0.z)?x1:x0, abs(y1.z)<abs(y0.z)?y1:y0)); // normal from the smoother side: no halos at silhouettes
+          float rPx=min(radius*projScale,maxPx);                // radius is a fraction of view distance, so its screen size is constant
+          float R=rPx/projScale*(-P.z), R2=R*R;
+          if(rPx<1.){ gl_FragColor=vec4(1.,-P.z,0.,1.); return; }
+          float j=ign(gl_FragCoord.xy)*6.2831853, occ=0.;
+          for(int i=0;i<12;i++){
+            float a=(float(i)+.5)/12., ang=a*7.*6.2831853+j;   // 7-turn spiral, per-pixel rotation
+            vec3 v=vpos(ip+ivec2(vec2(cos(ang),sin(ang))*a*rPx))-P;
+            float vv=dot(v,v);
+            occ+=max(0.,1.-vv/R2)*max(0.,dot(v,N)*inversesqrt(vv+1e-4*R2)-bias); }
+          gl_FragColor=vec4(clamp(1.-intensity*occ/6.,0.,1.),-P.z,0.,1.); }`);
+      this.uAOB = { tAO: { value: null }, dir: { value: new THREE.Vector2(1, 0) }, hres: { value: new THREE.Vector2(W >> 1, H >> 1) } };
+      this.mAOBlur = mat(this.uAOB, `
+        uniform sampler2D tAO; uniform vec2 dir; uniform vec2 hres; varying vec2 vUv;
+        void main(){
+          ivec2 p=ivec2(gl_FragCoord.xy), mx=ivec2(hres)-1; vec2 c=texelFetch(tAO,p,0).xy; float s=c.x, ws=1., k=1./(.03*c.y);
+          for(int i=-4;i<=4;i++){ if(i==0) continue;
+            vec2 t=texelFetch(tAO,clamp(p+ivec2(dir)*i,ivec2(0),mx),0).xy;
+            float wt=exp(-float(i*i)*.125)*max(0.,1.-abs(t.y-c.y)*k); s+=t.x*wt; ws+=wt; }
+          gl_FragColor=vec4(s/ws,c.y,0.,1.); }`);
+      this.uAOC = { tColor: { value: null }, tDepth: { value: null }, tAO: { value: null }, hres: { value: new THREE.Vector2(W >> 1, H >> 1) }, near: { value: 1 }, far: { value: 1000 } };
+      this.mAOComp = mat(this.uAOC, `
+        uniform sampler2D tColor; uniform sampler2D tDepth; uniform sampler2D tAO; uniform vec2 hres; varying vec2 vUv;
+        ${DEPTH_GLSL}
+        void main(){
+          vec4 c=texture2D(tColor,vUv); float d=texture2D(tDepth,vUv).x;
+          if(d>=.999999){ gl_FragColor=vec4(c.rgb,1.); return; }
+          float z=-viewZ(d), k=1./(.03*z);
+          vec2 hp=vUv*hres-.5, f=fract(hp); ivec2 b=ivec2(floor(hp)), mx=ivec2(hres)-1;
+          float s=0., ws=1e-4;                                    // joint bilateral upsample: bilinear weights x depth similarity
+          for(int y=0;y<2;y++) for(int x=0;x<2;x++){
+            vec2 t=texelFetch(tAO,clamp(b+ivec2(x,y),ivec2(0),mx),0).xy;
+            float wt=(x==0?1.-f.x:f.x)*(y==0?1.-f.y:f.y)*max(1e-3,1.-abs(t.y-z)*k); s+=t.x*wt; ws+=wt; }
+          gl_FragColor=vec4(c.rgb*(s/ws),1.); }`);
+      this.fsQuad = new FullScreenQuad(this.mCopy);
+    }
+    draw(r, m, target) { this.fsQuad.material = m; r.setRenderTarget(target); this.fsQuad.render(r); }
+    alloc() {
+      const mk = (w, h, filt) => new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, depthBuffer: false, minFilter: filt, magFilter: filt });
+      const hw = Math.max(1, this.w >> 1), hh = Math.max(1, this.h >> 1);
+      if (trails.enabled && !this.hist) { this.hist = [mk(this.w, this.h, THREE.LinearFilter), mk(this.w, this.h, THREE.LinearFilter)]; this.histOk = false; }
+      if (ao.enabled && !this.aoA) { this.aoA = mk(hw, hh, THREE.NearestFilter); this.aoB = mk(hw, hh, THREE.NearestFilter); }
+      if (ao.enabled && (trails.enabled || this.blur) && !this.tmp) this.tmp = mk(this.w, this.h, THREE.LinearFilter);
     }
     render(r, write) {
-      this.u.tColor.value = scenePass.rt.texture; this.u.tDepth.value = scenePass.rt.depthTexture;
-      r.setRenderTarget(write); this.fsQuad.render(r);
+      this.alloc();
+      const depth = scenePass.rt.depthTexture; let src = scenePass.rt.texture, done = false;
+      const near = cam.near, far = cam.far, last = !trails.enabled && !this.blur;
+      if (ao.enabled) {
+        const P = cam.projectionMatrix.elements;
+        this.uAO.tDepth.value = depth; this.uAO.near.value = near; this.uAO.far.value = far;
+        this.uAO.pInv.value.set(1 / P[0], 1 / P[5]); this.uAO.projScale.value = 0.5 * this.h * P[5];
+        this.uAO.radius.value = ao.radius; this.uAO.intensity.value = ao.intensity; this.uAO.bias.value = ao.bias; this.uAO.maxPx.value = ao.maxPx;
+        this.draw(r, this.mAO, this.aoA);
+        this.uAOB.tAO.value = this.aoA.texture; this.uAOB.dir.value.set(1, 0); this.draw(r, this.mAOBlur, this.aoB);
+        this.uAOB.tAO.value = this.aoB.texture; this.uAOB.dir.value.set(0, 1); this.draw(r, this.mAOBlur, this.aoA);
+        const c = this.uAOC; c.tColor.value = src; c.tDepth.value = depth; c.tAO.value = this.aoA.texture; c.near.value = near; c.far.value = far;
+        this.draw(r, this.mAOComp, last ? write : this.tmp);
+        if (last) done = true; else src = this.tmp.texture;
+      }
+      if (trails.enabled) {
+        const u = this.uT, h0 = this.hist[0], h1 = this.hist[1];
+        u.tColor.value = src; u.tDepth.value = depth; u.tHist.value = h0.texture; u.invVP.value = this.invVP; u.histVP.value = this.histRel;
+        u.near.value = near; u.far.value = far; u.valid.value = this.histOk ? 1 : 0;
+        u.w.value = Math.pow(THREE.MathUtils.clamp(trails.amount, 0, 0.98), THREE.MathUtils.clamp(lastDt * 60, 0.25, 4)); // same time constant at any frame rate
+        u.clampK.value = trails.clamp; u.tol.value = trails.depthTol;
+        this.draw(r, this.mTrail, h1);
+        this.hist[0] = h1; this.hist[1] = h0; this.histVP.copy(curVP); this.histOk = true;
+        src = h1.texture;
+      }
+      if (this.blur) { this.u.tColor.value = src; this.u.tDepth.value = depth; this.draw(r, this.mBlur, write); }
+      else if (!done) { this.mCopy.uniforms.tColor.value = src; this.draw(r, this.mCopy, write); }
     }
-    setSize(w, h) { this.u.res.value.set(w, h); }
+    setSize(w, h) {
+      this.w = w; this.h = h; this.u.res.value.set(w, h); this.uT.res.value.set(w, h); this.uAO.res.value.set(w, h);
+      const hw = Math.max(1, w >> 1), hh = Math.max(1, h >> 1); this.uAOB.hres.value.set(hw, hh); this.uAOC.hres.value.set(hw, hh);
+      for (const t of [this.tmp, ...(this.hist || [])]) t && t.setSize(w, h);
+      for (const t of [this.aoA, this.aoB]) t && t.setSize(hw, hh);
+      this.histOk = false;
+    }
+    dispose() { for (const t of [this.tmp, this.aoA, this.aoB, ...(this.hist || [])]) t && t.dispose(); this.hist = this.tmp = this.aoA = this.aoB = null; }
   }
-  const mbPass = new MotionBlurPass(); mbPass.enabled = false;
+  const mbPass = new HDRFXPass(); mbPass.enabled = false;
   composer.addPass(mbPass);
 
   // 3. DOF + bloom, parameters unchanged from d5.current.js
@@ -206,7 +361,7 @@ export function createPost({ THREE, renderer, scene, cam }) {
   composer.addPass(lens);
 
   // ---------------------------------------------------------------- per-frame state (no allocations)
-  const curVP = new THREE.Matrix4(), prevVP = new THREE.Matrix4(), lastPos = new THREE.Vector3(), lastQuat = new THREE.Quaternion();
+  const curVP = new THREE.Matrix4(), prevVP = new THREE.Matrix4(), invRel = new THREE.Matrix4(), toCam = new THREE.Matrix4(), _t = new THREE.Matrix4(), _o = new THREE.Vector3(), lastPos = new THREE.Vector3(), lastQuat = new THREE.Quaternion();
   let have = false, lastDt = 1 / 60, resetNext = false;
 
   function setSize(w, h) {
@@ -224,17 +379,29 @@ export function createPost({ THREE, renderer, scene, cam }) {
 
     // camera motion estimate -> decide whether blur runs this frame
     cam.updateMatrixWorld(); curVP.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
+    // camera-relative reprojection: the site sits ~40 km from the origin, so absolute world matrices in float32 smear static detail.
+    // invRel: NDC -> (world - camPos); X * toCam: (world - camPos) -> X's clip space. Built in JS doubles.
+    _o.setFromMatrixPosition(cam.matrixWorld); toCam.makeTranslation(_o.x, _o.y, _o.z);
+    invRel.copy(curVP).invert().premultiply(_t.makeTranslation(-_o.x, -_o.y, -_o.z));
     let on = false;
+    const dp = have ? cam.position.distanceTo(lastPos) : 0, ang = have ? lastQuat.angleTo(cam.quaternion) : 0;
     if (have && !resetNext && motion.enabled) {
-      const dp = cam.position.distanceTo(lastPos), ang = lastQuat.angleTo(cam.quaternion);
       const f = Math.min(Math.max(focus === undefined ? dof.uniforms.focus.value : focus, 3), 60); // near-field parallax proxy
       const fovR = cam.fov * Math.PI / 180, px = (ang + dp / f) / fovR * H;
       const scale = THREE.MathUtils.clamp(motion.shutter * (1 / 60) / lastDt, 0.15, 2);
       if (dp < motion.cutDist && ang < motion.cutAngle && px * scale > motion.minPx) {
-        on = true; const u = mbPass.u; u.prevVP.value.copy(prevVP); u.invVP.value.copy(curVP).invert(); u.scale.value = scale; u.maxLen.value = motion.maxLen;
+        on = true; const u = mbPass.u; u.prevVP.value.multiplyMatrices(prevVP, toCam); u.invVP.value.copy(invRel); u.scale.value = scale; u.maxLen.value = motion.maxLen;
       }
     }
-    motion.active = on; mbPass.enabled = on; scenePass.useRT = on;
+    // trails: history is invalid after a reset, a detected cut, a resize, or while the feature is off
+    if (!trails.enabled || !have || resetNext || dp >= motion.cutDist || ang >= Math.min(motion.cutAngle, trails.cutAngle)) mbPass.histOk = false;
+    if (trails.enabled) { mbPass.invVP.copy(invRel); mbPass.histRel.multiplyMatrices(mbPass.histVP, toCam); }
+    else if (mbPass.hist) { mbPass.hist.forEach(t => t.dispose()); mbPass.hist = null; } // free ~2 full-res HDR buffers while off
+    if (!ao.enabled && mbPass.aoA) { mbPass.aoA.dispose(); mbPass.aoB.dispose(); mbPass.aoA = mbPass.aoB = null; }
+    mbPass.blur = on;
+    const fx = on || trails.enabled || ao.enabled;   // depth target + FX pass only when something needs them
+    motion.active = on; trails.active = trails.enabled; ao.active = ao.enabled;
+    mbPass.enabled = fx; scenePass.useRT = fx;
     prevVP.copy(curVP); lastPos.copy(cam.position); lastQuat.copy(cam.quaternion); have = true; resetNext = false;
   }
 
@@ -246,7 +413,7 @@ export function createPost({ THREE, renderer, scene, cam }) {
 
   return {
     composer, dof, lens, bloom, smaa, setSize, update, render,
-    motion, auto,
+    motion, auto, trails, ao,
     resetMotion() { resetNext = true; },          // call on hard cuts if you know about them (big jumps are also auto-detected)
     snapExposure() { tonePass.snap = true; },     // jump exposure to target next frame (no adaptation)
     getExposure
