@@ -145,7 +145,7 @@ export async function createSky({
   // ---- Milky Way ----
   let mw = null;
   if (milkyWay) {
-    const tex = await new Promise((res, rej) => new THREE.TextureLoader().load(`${assetBase}/milkyway.jpg`, res, undefined, rej)).catch(() => null);
+    const tex = await new Promise((res, rej) => new THREE.TextureLoader().load(`${assetBase}/milkyway.webp`, res, undefined, rej)).catch(() => null);
     if (tex) {
       tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4; tex.wrapS = THREE.RepeatWrapping;
       const Ngp = eq(192.85948, 27.12825, V), Gc = eq(266.40499, -28.93617, V), Gy = new V().crossVectors(Ngp, Gc);

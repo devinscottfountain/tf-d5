@@ -1,6 +1,8 @@
 // planets.js: physically motivated Earth / Moon / Mars for the TerraFirma D5 intro.
-// createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS, assetBase })
-//   -> { earth, moon, mars, clouds, earthAtmo, marsAtmo, ready, update({ t, intro, camPos }) }
+// createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS, assetBase, deferAfter })
+//   -> { earth, moon, mars, clouds, earthAtmo, marsAtmo, ready, loadDeferred, update({ t, intro, camPos }) }
+// ready: Earth maps decoded + uploaded. loadDeferred(): idempotent, fetches the Moon/Mars maps, resolves when swapped in
+// (also fires on its own after deferAfter ms, 0 disables).
 // All shaders output LINEAR HDR (the composer's OutputPass does ACES + sRGB). Colour maps are sRGB textures,
 // so the GPU decodes them to linear on sampling. No per-frame allocations.
 
@@ -238,27 +240,49 @@ void main(){
 }`;
 
 // ---------------------------------------------------------------------------------------------
-export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS, assetBase }) {
+export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS, assetBase, deferAfter = 20000 }) {
   const R_EARTH = 10, R_MOON = 2.7, R_MARS = 6;
   const anis = Math.min(8, renderer.capabilities.getMaxAnisotropy());
   const loader = new THREE.TextureLoader(); loader.setCrossOrigin('anonymous');
-  const pending = [];
-  // 1x1 fallbacks so shaders run before maps land
+  const pending = [], deferredJobs = [];
+  // 1x1 fallbacks so shaders run before maps land. Swapping a sampler's texture never changes a ShaderMaterial's
+  // program key, so the real maps drop in without a recompile.
   const dot1 = (r, g, b, srgb) => { const t = new THREE.DataTexture(new Uint8Array([r, g, b, 255]), 1, 1); t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace; t.needsUpdate = true; return t; };
-  const U = (name, srgb, fb) => { // returns a uniform whose value is swapped when the file loads
+  // load -> decode off the main thread -> configure; callers upload before swapping so the first frame that samples it doesn't stall
+  const fetchTex = (name, srgb) => new Promise(res => loader.load(`${assetBase}/${name}`, t => {
+    const img = t.image, dec = img && img.decode ? img.decode().catch(() => {}) : Promise.resolve();
+    dec.then(() => {
+      t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace; t.anisotropy = anis; t.wrapS = THREE.RepeatWrapping; t.needsUpdate = true;
+      res(t);
+    });
+  }, undefined, () => res(null)));
+  const upload = t => { if (t && renderer && renderer.initTexture) try { renderer.initTexture(t); } catch (e) { /* first draw uploads it instead */ } };
+  const U = (name, srgb, fb, deferred) => { // returns a uniform whose value is swapped when the file loads
     const u = { value: fb };
-    pending.push(new Promise(res => loader.load(`${assetBase}/${name}`, t => {
-      t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace; t.anisotropy = anis; t.wrapS = THREE.RepeatWrapping; t.needsUpdate = true; u.value = t; res();
-    }, undefined, () => res())));
+    const swap = t => { if (t) { upload(t); u.value = t; } };   // upload first, then swap: the next draw doesn't stall on it
+    if (deferred) deferredJobs.push(() => fetchTex(name, srgb).then(t => ({ t, swap })));
+    else pending.push(fetchTex(name, srgb).then(swap));
     return u;
   };
+  // Moon + Mars maps wait until main.js calls loadDeferred() (intro over or skipped) so they don't compete with the intro.
+  let deferredP = null;
+  const nextFrame = () => new Promise(r => (typeof requestAnimationFrame === 'function' ? requestAnimationFrame(() => r()) : setTimeout(r, 0)));
+  function loadDeferred() {
+    if (deferredP) return deferredP;
+    deferredP = Promise.all(deferredJobs.map(j => j())).then(async texs => {
+      for (const { t, swap } of texs) if (t) { swap(t); await nextFrame(); }   // one GPU upload per frame
+    });
+    return deferredP;
+  }
+  // backstop in case the caller never triggers it
+  if (deferAfter > 0 && typeof setTimeout === 'function') setTimeout(loadDeferred, deferAfter);
   const sunVec = () => ({ value: new THREE.Vector3().copy(toSun) });
 
   // ---------- Earth ----------
   const earthU = {
-    tMap: U('d5-earth.jpg', true, dot1(10, 30, 70, true)), tSpec: U('earth_spec.jpg', false, dot1(255, 255, 255)),
-    tNorm: U('earth_normal.jpg', false, dot1(128, 128, 255)), tLights: U('earth_lights.jpg', false, dot1(0, 0, 0)),
-    tClouds: U('earth_clouds.jpg', false, dot1(0, 0, 0)),
+    tMap: U('d5-earth.webp', true, dot1(10, 30, 70, true)), tSpec: U('earth_spec.webp', false, dot1(255, 255, 255)),
+    tNorm: U('earth_normal.webp', false, dot1(128, 128, 255)), tLights: U('earth_lights.webp', false, dot1(0, 0, 0)),
+    tClouds: U('earth_clouds.webp', false, dot1(0, 0, 0)),
     uSun: sunVec(), uGrow: { value: 0.03 }, uCloudOff: { value: 0 }, uCloudH: { value: 0.0085 }, uSunI: { value: 3.3 }
   };
   const earth = new THREE.Mesh(new THREE.SphereGeometry(R_EARTH, 192, 96),
@@ -272,7 +296,7 @@ export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS
 
   // ---------- Moon ----------
   const moonU = {
-    tMap: U('d5-moon.jpg', true, dot1(150, 150, 150, true)), tNorm: U('moon_normal.jpg', false, dot1(128, 128, 255)),
+    tMap: U('d5-moon.webp', true, dot1(150, 150, 150, true), true), tNorm: U('moon_normal.webp', false, dot1(128, 128, 255), true),
     uSun: sunVec(), uSunI: { value: 3.3 }, uAlbedo: { value: 0.30 }, uRelief: { value: 1.35 }
   };
   const moon = new THREE.Mesh(new THREE.SphereGeometry(R_MOON, 128, 64),
@@ -281,7 +305,7 @@ export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS
 
   // ---------- Mars ----------
   const marsU = {
-    tMap: U('d5-mars.jpg', true, dot1(150, 70, 40, true)), tNorm: U('mars_normal.jpg', false, dot1(128, 128, 255)),
+    tMap: U('d5-mars.webp', true, dot1(150, 70, 40, true), true), tNorm: U('mars_normal.webp', false, dot1(128, 128, 255), true),
     uSun: sunVec(), uSunI: { value: 2.2 }, uRelief: { value: 1.25 }, uDomes: { value: 1 }
   };
   const mars = new THREE.Mesh(new THREE.SphereGeometry(R_MARS, 192, 96),
@@ -329,5 +353,5 @@ export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS
       const side = inside ? THREE.BackSide : THREE.FrontSide; if (a.material.side !== side) { a.material.side = side; a.material.needsUpdate = true; }
     }
   }
-  return { earth, moon, mars, clouds, earthAtmo, marsAtmo, ready: Promise.all(pending), update };
+  return { earth, moon, mars, clouds, earthAtmo, marsAtmo, ready: Promise.all(pending), loadDeferred, update };
 }
