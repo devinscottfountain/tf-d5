@@ -13,3 +13,5 @@ Load on the page (importmap for `three` and `three/addons/` must already be in t
 - Star catalog: HYG Database v4.1, David Nash / astronexus (CC BY-SA 4.0).
 - Milky Way: Kevinmloch / bsrender, rendered from ESA Gaia EDR3 (ESA/Gaia/DPAC), CC BY-SA 4.0.
 - Austin site, neighbourhood and construction timelapse: procedural, built for this project.
+- Austin aerials: TxGIO StratMap 2019 6in orthoimagery and USDA NAIP 2022 (public domain).
+- Jezero Crater terrain: USGS Astrogeology Mars 2020 TRN products (HiRISE 1 m and CTX 20 m DTMs, HiRISE/CTX orthos used as greyscale bump only), NASA/JPL/UArizona/MSSS (public domain).
