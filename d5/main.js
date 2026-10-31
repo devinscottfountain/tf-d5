@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { createPost } from './post.js';
 import { createSky } from './sky.js';
 import { createPlanets } from './planets.js';
-import { createSite, AUSTIN } from './site.js';
+import { createSite, AUSTIN, SITE_ROT } from './site.js';
 const ASSETS = new URL('./assets', import.meta.url).href; // textures + star catalog live next to this file
 
 const q = (s, r = document) => r.querySelector(s), qa = (s, r = document) => [...r.querySelectorAll(s)];
@@ -396,7 +396,7 @@ window.__d5.path = p => { const a = new THREE.Vector3(), b = new THREE.Vector3()
 
 // ---------- the opening: Austin lot timelapse, then a powers-of-ten pull out to the shot above ----------
 const SITE0 = new THREE.Vector3(0, 40000, 0);
-const site = createSite({ THREE, scene, sunLight, hemi, ORIGIN: SITE0, earthU: earth.material.uniforms });
+const site = createSite({ THREE, scene, sunLight, hemi, ORIGIN: SITE0, earthU: earth.material.uniforms, orthoUrl: window.D5_ORTHO || 'https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae5f95dd2740562ba491292_austin-site-ortho.jpg' }); // TxGIO StratMap 2019 6in orthophoto, 800 m square, hosted in Webflow assets
 const EARTH_SPIN = 0.012, U_PER_M = 10 / 6371000; // Earth radius is 10 units
 const latR = THREE.MathUtils.degToRad(AUSTIN.lat), lonU = (AUSTIN.lon + 180) / 360;
 const austinLocal = new THREE.Vector3(-Math.cos(2 * Math.PI * lonU) * Math.cos(latR), Math.sin(latR), Math.sin(2 * Math.PI * lonU) * Math.cos(latR));
@@ -512,7 +512,8 @@ renderer.setAnimationLoop(() => {
   if (inSite) {
     // satellite-ish oblique over the lot; drifts a few degrees during the timelapse, then rises and tips straight down for the pull out
     const g = Math.min(1, s / TL), up = sstep(lam, LAM0, LAM0 + (LAMH - LAM0) * 0.55);
-    const a = (window.__d5.siteYaw ?? (-0.06 + 0.12 * g)) * (1 - up), pitch = THREE.MathUtils.degToRad((window.__d5.sitePitch ?? 58) * (1 - up) + 90 * up) - 0.0001;
+    const a = THREE.MathUtils.lerp(window.__d5.siteYaw ?? (-0.06 + 0.12 * g), SITE_ROT, up), // ends on true north so the globe hand-off keeps its heading
+      pitch = THREE.MathUtils.degToRad((window.__d5.sitePitch ?? 58) * (1 - up) + 90 * up) - 0.0001;
     const dist = s < TL ? lapseDist(g) : Math.exp(lam);
     siteT.set(0, -1, 3 * (1 - up));
     siteDir.set(Math.sin(a) * Math.cos(pitch), Math.sin(pitch), Math.cos(a) * Math.cos(pitch));

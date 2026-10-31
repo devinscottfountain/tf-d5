@@ -4,7 +4,10 @@
 // The ground is one camera-following quad whose shader paints the neighbourhood procedurally and fades into the
 // real Earth colour + NASA night-lights maps at altitude, so the hand-off to the globe in main.js matches.
 
-export const AUSTIN = { lat: 30.2622, lon: -97.713 };
+export const AUSTIN = { lat: 30.250453, lon: -97.719913 }; // a real 2019 dirt site by Lady Bird Lake, East Austin
+// the lot's long axis runs 17 deg south of east, so the local frame is turned to it; the photo stays north-up
+export const SITE_ROT = 17 * Math.PI / 180;
+const OHALF = 400; // the orthophoto covers 800 x 800 m around the lot
 
 // integer hash that gives the same answer in JS doubles and GLSL floats (all intermediates stay under 2^24)
 const H = n => { const a = ((n % 1009) + 1009) % 1009; return ((a * a * 7 + a * 31 + 13) % 1009) / 1009; };
@@ -28,11 +31,32 @@ float bicubicR(sampler2D t, vec2 uv, vec2 res){   // B-spline from 4 bilinear ta
   return mix(mix(e,d,sw.x/(sw.x+sw.y)), mix(b,a,sw.x/(sw.x+sw.y)), sw.z/(sw.z+sw.w)); }
 `;
 
-export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU }) {
+
+// photo frame: local metres (x east-ish, z south-ish, turned SITE_ROT) -> geographic metres (x east, z south) -> uv
+const ORTHO = /* glsl */ `
+vec2 toGeo(vec2 p){ return vec2(p.x*uRot.x-p.y*uRot.y, p.x*uRot.y+p.y*uRot.x); }
+float orthoW(vec2 g){ vec2 a=abs(g); return uOrthoOn*(1.-smoothstep(${OHALF - 90}.,${OHALF - 4}.,max(a.x,a.y))); }
+vec3 ortho(vec2 g){ return texture2D(tOrtho,vec2(g.x/${2 * OHALF}.+.5,.5-g.y/${2 * OHALF}.)).rgb; }
+// night over the photo: sodium/LED lamps dropped on the photo's own asphalt (dark, unsaturated pixels), one candidate per 18 m cell
+vec3 orthoNight(vec2 g, float w){
+  vec2 c=floor(g/18.), j=vec2(h21(c),h21(c+7.3))*.7+.15, dp=(fract(g/18.)-j)*18.;
+  vec3 s=ortho((c+j)*18.); float lum=dot(s,vec3(.3,.5,.2)), sat=max(s.r,max(s.g,s.b))-min(s.r,min(s.g,s.b));
+  float road=smoothstep(.2,.1,lum)*smoothstep(.015,.04,lum)*(1.-smoothstep(.03,.07,sat))*step(.45,h21(c+3.1));
+  float r=max(.7,w), d=length(dp);
+  vec3 lamp=mix(vec3(1.,.62,.28),vec3(.95,.95,1.),step(.7,h21(c+9.)));
+  // warm windows: bright-roof pixels near a lamp glow faintly
+  return lamp*road*(smoothstep(r,0.,d)*1.6*.49/(r*r)+.05*smoothstep(10.,0.,d));
+}`;
+
+export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU, orthoUrl }) {
   const group = new THREE.Group(); group.position.copy(ORIGIN); group.visible = false; scene.add(group);
   const U = { uG: { value: 0 }, uNight: { value: 0 }, uT: { value: 0 }, uWork: { value: 0 }, uSunL: { value: new THREE.Vector3(0, 1, 0) },
     uOrigin: { value: ORIGIN.clone() }, tMap: earthU.tMap, tLights: earthU.tLights, uLL: { value: new THREE.Vector2(AUSTIN.lat, AUSTIN.lon) },
-    uDig: { value: 0 }, uPile: { value: 0 }, uBack: { value: 0 }, uClear: { value: 0 }, uProg: { value: 0 } };
+    uDig: { value: 0 }, uPile: { value: 0 }, uBack: { value: 0 }, uClear: { value: 0 }, uProg: { value: 0 },
+    tOrtho: { value: null }, uOrthoOn: { value: 0 }, uRot: { value: new THREE.Vector2(Math.cos(SITE_ROT), Math.sin(SITE_ROT)) } };
+  // real orthophoto: TxGIO StratMap 2019, 6 inch, Jan 2019 (public domain). Until it loads the procedural ground stands in.
+  { const d = new THREE.DataTexture(new Uint8Array([90, 80, 66, 255]), 1, 1); d.needsUpdate = true; U.tOrtho.value = d; }
+  if (orthoUrl) { const l = new THREE.TextureLoader(); l.setCrossOrigin('anonymous'); l.load(orthoUrl, t => { t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; t.needsUpdate = true; U.tOrtho.value = t; U.uOrthoOn.value = 1; }); }
   let patchN = 0;
   const patch = (mat, vHead, vBody, fHead, fColor, fRough, fEmit, normalFn) => {
     const key = 'tfsite' + patchN++; mat.customProgramCacheKey = () => key; // each patched material needs its own program
@@ -41,7 +65,7 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU }) {
       sh.vertexShader = 'uniform vec3 uOrigin; uniform float uDig,uPile,uBack; varying vec3 vLoc;\n' + GL + vHead + '\n' + sh.vertexShader;
       if (normalFn) sh.vertexShader = sh.vertexShader.replace('#include <beginnormal_vertex>', normalFn);
       sh.vertexShader = sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n' + vBody + '\nvLoc=(modelMatrix*vec4(transformed,1.)).xyz-uOrigin;');
-      sh.fragmentShader = 'uniform float uG,uNight,uT,uWork,uClear,uProg; uniform vec3 uSunL; uniform sampler2D tMap,tLights; uniform vec2 uLL; varying vec3 vLoc;\n' + GL + fHead + '\n' + sh.fragmentShader
+      sh.fragmentShader = 'uniform float uG,uNight,uT,uWork,uClear,uProg,uOrthoOn; uniform vec3 uSunL; uniform sampler2D tMap,tLights,tOrtho; uniform vec2 uLL,uRot; varying vec3 vLoc;\n' + GL + ORTHO + fHead + '\n' + sh.fragmentShader
         .replace('#include <color_fragment>', '#include <color_fragment>\n' + fColor)
         .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n' + fRough)
         .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n' + fEmit);
@@ -69,7 +93,8 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU }) {
     return cov(sdBox(lc,c,vec2(hw,hd)),w);
   }
   void groundShade(vec2 p, float w, out vec3 alb, out float rough, out vec3 emit){
-    vec2 uv=llUv(p);
+    vec2 G=toGeo(p);   // geographic metres from the site (x east, z south): real landmarks are placed in this frame
+    vec2 uv=llUv(G);
     vec3 M=texture2D(tMap,uv).rgb;
     float li=clamp((bicubicR(tLights,uv,vec2(2048.,1024.))-.10)/.8,0.,1.), lg=max(textureLod(tLights,uv,3.).r-.07,0.);
     vec3 macroL=SOD*(pow(li,1.35)*2.6+lg*lg*.9);
@@ -121,15 +146,15 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU }) {
     float fA=smoothstep(.1*1250.,.24*1250.,sgA), aA=.15*(1.-.85*fA); S+=aA*mix(LA/mA,1.,fA); W+=aA;
     // freeways: I-35 (matches the detail layer), MoPac, US-183, SH-71, US-290; packed headlights, brightest per metre
     float hH=24., sgH=max(hH,sg0);
-    float h1=abs(p.x+1620.+40.*sin(p.y/900.)), h2=abs(p.x+7900.+500.*sin(p.y/3100.+1.)),
+    float h1=abs(G.x+1700.+40.*sin(G.y/900.)), h2=abs(p.x+7900.+500.*sin(p.y/3100.+1.)),
           h3=abs(dot(p-vec2(2600.,0.),vec2(.876,.482))+150.*sin(dot(p,vec2(-.482,.876))/2000.)),
           h4=abs(p.y-7200.-300.*sin(p.x/2600.)), h5=abs(p.y+5600.+200.*sin(p.x/1900.));
     float LH=(exp(-h1*h1/(sgH*sgH))*1.3+exp(-h2*h2/(sgH*sgH))+exp(-h3*h3/(sgH*sgH))+exp(-h4*h4/(sgH*sgH))+exp(-h5*h5/(sgH*sgH))*.8)*hH/sgH;
     S+=.06*LH/(1.7725*hH/5000.); W+=.06; S/=W;
     // organic occupancy: lit clusters and dark pockets (mean ~1), Lady Bird Lake + greenbelt dark
     float oc=(.15+.85*smoothstep(.33,.6,fb(p*.0006+3.7))*(.4+1.2*vn(p*.0023+9.1)))/.57;
-    float drN=abs(p.y-1250.-160.*sin(p.x/1100.)-60.*sin(p.x/370.+1.));
-    oc*=mix(.08,1.,smoothstep(70.,240.,drN));
+    float drN=abs(dot(G-vec2(0.,330.),vec2(.438,.899))+40.*sin(G.x/900.));   // Lady Bird Lake: ~300 m wide, running ENE just south of the site
+    oc*=mix(.08,1.,smoothstep(150.,330.,drN));
     oc*=mix(1.,.2+1.6*smoothstep(.32,.62,fb(p*.00011+11.3)),1.-dens);   // ragged suburban edge instead of the map's round blob (mean ~1)
     // exposure-friendly gain: mid altitudes sit a bit under the map's mean (no brighter than macroL), reaching it by w~300
     float gL=smoothstep(1.1,5.77,log(w));
@@ -147,14 +172,13 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU }) {
     float nz=fb(p*.05), nz2=vn(p*.6);
     vec3 lawn=mix(vec3(.085,.11,.04),vec3(.17,.15,.075),smoothstep(.45,.75,nz))*(.85+.3*nz2);
     vec3 col=lawn; float rgh=1.; vec3 L=vec3(0.);
-    float city=1.-smoothstep(14000.,22000.,length(p-vec2(-2500.,1050.)));
+    float city=1.-smoothstep(14000.,22000.,length(G-vec2(-2300.,-600.)));
     // river (Lady Bird Lake) + greenbelt, I-35, downtown
-    float rz=1250.+160.*sin(p.x/1100.)+60.*sin(p.x/370.+1.);
-    float dr=abs(p.y-rz);
-    float park=1.-smoothstep(150.,230.,dr), water=cov(dr-65.,w);
-    float dHwy=abs(p.x+1620.+40.*sin(p.y/900.));
-    float down=1.-smoothstep(1100.,1500.,length(p-vec2(-2500.,1050.)));
-    bool in3D=abs(ci)<=2.&&abs(cj)<=2.;
+    float dr=abs(dot(G-vec2(0.,330.),vec2(.438,.899))+40.*sin(G.x/900.));
+    float park=1.-smoothstep(230.,320.,dr), water=cov(dr-150.,w);
+    float dHwy=abs(G.x+1700.+40.*sin(G.y/900.));
+    float down=1.-smoothstep(1100.,1500.,length(G-vec2(-2300.,-600.)));
+    bool in3D=false; // the orthophoto now owns the near neighbourhood
     // blocks
     if(city>.01&&park<.99&&dHwy>40.){
       float hh=Hh(ci*157.+cj*311.);
@@ -217,7 +241,7 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU }) {
     }
     // highway: 10 lanes, packed trails
     if(dHwy<40.){ float lanes=cov(dHwy-36.,w); col=mix(col,vec3(.05),lanes); col=mix(col,vec3(.3),cov(abs(dHwy-18.)-.6,w));
-      float tr=cov(abs(fract(dHwy/3.6)-.5)*3.6-.4,w)*lanes; L+=mix(vec3(1.,.15,.06),vec3(1.,.95,.8),step(0.,p.x+1620.))*tr*smoothstep(.2,.7,vn(vec2(p.y*.01-uT*4.,dHwy)))*1.6*min(1.,.6/w); }
+      float tr=cov(abs(fract(dHwy/3.6)-.5)*3.6-.4,w)*lanes; L+=mix(vec3(1.,.15,.06),vec3(1.,.95,.8),step(0.,G.x+1700.))*tr*smoothstep(.2,.7,vn(vec2(p.y*.01-uT*4.,dHwy)))*1.6*min(1.,.6/w); }
     col=mix(col,mix(vec3(.04,.08,.03),vec3(.02,.04,.015),nz2),park*(1.-water)); col=mix(col,vec3(.012,.035,.035),water);
     // rural beyond the city: field patchwork
     if(city<.99){ vec2 fc=floor(p/vec2(420.,300.)); vec3 fld=mix(vec3(.16,.14,.08),vec3(.08,.1,.04),h21(fc))*(.85+.3*nz); col=mix(fld,col,city); L*=city; }
@@ -229,7 +253,7 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU }) {
   }`;
   const groundMat = patch(new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 }),
     '', '', GROUND + '\nvec3 gA; float gR; vec3 gE;',
-    'if(abs(vLoc.x)<74.8&&abs(vLoc.z)<54.8) discard; // the lot mesh owns this patch (the pit goes below the ground plane)\n  float gw=max(length(fwidth(vLoc.xz)),1e-3); groundShade(vLoc.xz,gw,gA,gR,gE); diffuseColor.rgb=gA;',
+    'if(abs(vLoc.x)<74.8&&abs(vLoc.z)<54.8) discard; // the lot mesh owns this patch (the pit goes below the ground plane)\n  float gw=max(length(fwidth(vLoc.xz)),1e-3); groundShade(vLoc.xz,gw,gA,gR,gE);\n  { vec2 gq=toGeo(vLoc.xz); float ow=orthoW(gq); if(ow>0.){ gA=mix(gA,ortho(gq),ow); gR=mix(gR,.95,ow); gE=mix(gE,orthoNight(gq,gw)*uNight,ow*(1.-smoothstep(1.,3.,gw))); } }\n  diffuseColor.rgb=gA;',
     'roughnessFactor=gR;',
     'totalEmissiveRadiance+=gE;');
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), groundMat);
@@ -262,6 +286,7 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU }) {
     vec3 dirt=mix(vec3(.36,.3,.22),vec3(.46,.41,.33),smoothstep(.35,.65,nz))*(.9+.18*n2)*(1.-.14*smoothstep(.5,.75,n3));   // tracked clay over caliche, with tyre streaks   // tracked clay over caliche
     float cleared=smoothstep(.05,0.,nz-uClear*1.25+.1);
     vec3 col=mix(grass,dirt,cleared);
+    { vec2 gq=toGeo(p); col=mix(col,ortho(gq)*(.95+.1*n2),orthoW(gq)); }   // the real lot from the 2019 flight
     float y=vLoc.y; float cut=smoothstep(-.3,-1.2,y);
     vec3 cal=vec3(.6,.56,.47)*(.85+.2*n2)*(1.-.15*smoothstep(-3.2,-3.9,y)*0.);
     col=mix(col,cal,cut);
@@ -303,39 +328,10 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU }) {
   const tmpM = new THREE.Matrix4(), tq = new THREE.Quaternion(), tv = new THREE.Vector3(), ts = new THREE.Vector3(), YA = new THREE.Vector3(0, 1, 0), HIDE = new THREE.Vector3(1e-4, 1e-4, 1e-4);
   const sstep = (x, a, b) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
-  // ---------------------------------------------------------------- neighbourhood in 3D (5x5 blocks around the lot, same layout as the shader)
-  {
-    const houses = [], trees = [];
-    for (let ci = -2; ci <= 2; ci++) for (let cj = -2; cj <= 2; cj++) {
-      if (ci === 0 && cj === 0) continue;
-      const hh = H(ci * 157 + cj * 311), bx = ci * CX, bz = cj * CZ;
-      if (hh < 0.16) { const bw = 40 + hh * 120, bd = 30 + H(Math.floor(hh * 999)) * 30; houses.push({ x: bx - 15, z: bz - 10, w: bw * 0.5, d: bd, h: 7 + hh * 30, roof: 0, flat: 1, wall: 0x9a958c, rc: 0x8c8a86 }); continue; }
-      for (let row = 0; row < 2; row++) for (let s = 0; s <= 10; s++) {
-        const n = ci * 157 + cj * 311 + row * 71 + s * 13 + 500; if (H(n) > 0.92) continue;
-        const cx = -82 + (s + 0.5) * SLOT, front = row === 0 ? -70 + hwZ(cj - 1) : 70 - hwZ(cj), dir = row === 0 ? 1 : -1;
-        const hw = 4.5 + H(n + 1) * 1.75, hd = 5 + H(n + 2) * 2, set = 7 + H(n + 3) * 3, r = H(n + 7);
-        houses.push({ x: bx + cx, z: bz + front + dir * (set + hd), w: hw, d: hd, h: H(n + 8) < 0.35 ? 6.2 : 3.4, flat: 0,
-          rc: r < 0.55 ? [0x3a3a3c, 0x4a4844, 0x2e2f33][Math.floor(H(n + 9) * 3)] : r < 0.8 ? 0x9a9da0 : 0x5a4636,
-          wall: [0xe8e2d6, 0xd7cfc0, 0xb8b4ac, 0x8e8a84, 0xc9bfae][Math.floor(H(n + 11) * 5)] });
-        for (let k = 0; k < 3; k++) if (H(n + 10 + k) < 0.6) trees.push({ x: bx + cx + (H(n + 20 + k) - 0.5) * 12, z: bz + (row === 0 ? -1 : 1) * (H(n + 30 + k) * 45 + 12), r: 3 + H(n + 40 + k) * 4 });
-      }
-    }
-    const body = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0), M(0xffffff, 0.85), houses.length);
-    // gable: a prism with its ridge along x
-    const gg = new THREE.ConeGeometry(Math.SQRT1_2, 1, 4, 1).rotateY(Math.PI / 4).translate(0, 0.5, 0).toNonIndexed(); gg.computeVertexNormals(); // hip roof, square 1x1 base
-    const roof = new THREE.InstancedMesh(gg, M(0xffffff, 0.75, 0.15), houses.length);
-    const c = new THREE.Color();
-    houses.forEach((h, i) => {
-      tmpM.compose(tv.set(h.x, 0, h.z), tq.identity(), ts.set(h.w * 2, h.h, h.d * 2)); body.setMatrixAt(i, tmpM); body.setColorAt(i, c.set(h.wall));
-      tmpM.compose(tv.set(h.x, h.h, h.z), tq.identity(), h.flat ? ts.set(h.w * 2, 0.4, h.d * 2) : ts.set(h.w * 2 + 0.8, 2.4, h.d * 2 + 0.8)); roof.setMatrixAt(i, tmpM); roof.setColorAt(i, c.set(h.rc));
-    });
-    const canopy = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 1), M(0xffffff, 0.95), trees.length);
-    trees.forEach((t, i) => { tmpM.compose(tv.set(t.x, t.r * 0.55 + 1.6, t.z), tq.setFromAxisAngle(YA, i), ts.set(t.r, t.r * 0.55, t.r)); canopy.setMatrixAt(i, tmpM); canopy.setColorAt(i, c.setRGB(0.035 + H(i) * 0.02, 0.06 + H(i + 3) * 0.03, 0.02)); });
-    for (const m of [body, roof, canopy]) { m.castShadow = m.receiveShadow = true; group.add(m); }
-  }
+  // (the near neighbourhood is the real orthophoto now; 3D houses/trees removed)
 
   // ---------------------------------------------------------------- the lot before work: live oaks that get cleared
-  const oaks = [[-55, 30, 6], [-40, 42, 5], [-20, 38, 7], [10, 44, 5], [35, 36, 6], [52, -8, 6], [-62, -20, 7], [-30, -40, 5], [5, -30, 6], [28, -42, 5], [-8, 10, 7], [40, 12, 5]];
+  const oaks = []; // the real lot is already cleared
   const oak = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 1), M(0x1f3314, 0.95), oaks.length); oak.castShadow = oak.receiveShadow = true; group.add(oak);
 
   // perimeter fence with two gates on the east side
