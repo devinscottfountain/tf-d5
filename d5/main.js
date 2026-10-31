@@ -563,7 +563,8 @@ renderer.setAnimationLoop(() => {
   } else if (inCol) {
     const cg = clamp01((sm - CA) / (1 - CA)), u = cg * (1.5 - 0.5 * cg); // launches out of the flash, settles on the last frame
     cPos.getPoint(u, pos); cLook.getPoint(u, look); pos.x += ms.x * 8; pos.y -= ms.y * 5; fov = 44; focus = pos.distanceTo(look);
-    setClip(0.1, 9000);
+    // near plane rides the camera height: at 0.1 the depth buffer had ~10 cm steps at 400 m, so hab floors, gardens and pads z-fought (flicker on mouse parallax)
+    setClip(THREE.MathUtils.clamp((pos.y - COL.y) * 0.08, 0.1, 30), 9000);
   } else {
     fov = spaceCam(sm, pos, look); focus = pos.distanceTo(look);
     pos.x += ms.x * 2.2 * live; pos.y -= ms.y * 1.4 * live;
