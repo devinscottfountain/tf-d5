@@ -359,7 +359,7 @@ export function createPost({ THREE, renderer, scene, cam }) {
 
   // 6. lens: identical to d5.current.js
   const lens = new ShaderPass({
-    uniforms: { tDiffuse: { value: null }, ca: { value: 0.012 }, time: { value: 0 }, grain: { value: 0.045 }, res: { value: new THREE.Vector2(W, H) } }, // grain cells = drawing-buffer pixels
+    uniforms: { tDiffuse: { value: null }, ca: { value: 0.012 }, time: { value: 0 }, grain: { value: 0.045 }, res: { value: new THREE.Vector2(W, H) } }, // grain cells = CSS pixels (the original film look)
     vertexShader: `varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
     fragmentShader: `uniform sampler2D tDiffuse; uniform float ca; uniform float time; uniform float grain; uniform vec2 res; varying vec2 vUv;
     void main(){
@@ -381,7 +381,7 @@ export function createPost({ THREE, renderer, scene, cam }) {
   function setSize(w, h) {
     renderer.setSize(w, h); cam.aspect = w / h; cam.updateProjectionMatrix();
     const p = renderer.getPixelRatio(); bufW = Math.max(1, Math.floor(w * p));
-    composer.setSize(w, h); lens.uniforms.res.value.set(bufW, Math.max(1, Math.floor(h * p))); resetNext = true;
+    composer.setSize(w, h); lens.uniforms.res.value.set(w, h); resetNext = true;
   }
 
   function update({ dt = 1 / 60, t = 0, ca, focus, aperture, maxblur } = {}) {

@@ -17,7 +17,7 @@ const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'h
 const QUALITY = (() => {
   const o = new URLSearchParams(location.search).get('q'); if (o === 'low' || o === 'high') return o;
   const coarse = matchMedia('(pointer: coarse)').matches, small = Math.min(screen.width, screen.height) < 820;
-  if ((coarse && small) || (navigator.hardwareConcurrency || 8) <= 4) return 'low';
+  if ((coarse && small) || (navigator.hardwareConcurrency || 8) <= (coarse ? 4 : 2)) return 'low'; // WebKit reports 4 on any <8-core Mac, so desktops only drop on <=2
   let gpu = '';
   try { const gl = renderer.getContext(), ext = gl.getExtension('WEBGL_debug_renderer_info'); gpu = String(gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER) || ''); } catch (e) { /* unknown GPU: keep high */ }
   const adreno = /adreno\D*(\d{3})/i.exec(gpu);
@@ -397,11 +397,12 @@ function buildColony(g, t) {
 colonyAPI = { build: buildColony, cranes };
 } // populateColony
 let colonyGen = null, colonyIdle = false;
-const ric = window.requestIdleCallback ? f => requestIdleCallback(f, { timeout: 400 }) : f => setTimeout(f, 40);
+const ric = window.requestIdleCallback ? f => requestIdleCallback(f) : f => setTimeout(f, 120); // Safari: no rIC, space the chunks out
+const calm = dl => Math.abs(smV) < 0.02 && (!dl || !dl.timeRemaining || dl.timeRemaining() > 8); // idle time left and the scroll settled
 // one chunk of the build; after the last one, queue the colony's shader programs + shadow/upload warm-up
-function colonyStep() { if (colonyAPI) return true; colonyGen = colonyGen || populateColony(); if (colonyGen.next().done) { warmColony(); return true; } return false; }
+function colonyStep() { if (colonyAPI) return true; colonyGen = colonyGen || populateColony(); if (colonyGen.next().done) { ric(warmColony); return true; } return false; }
 function ensureColony() { while (!colonyStep()); }   // synchronous: colony mode is about to render
-function scheduleColony() { if (colonyIdle || colonyAPI) return; colonyIdle = true; const tick = () => { if (!colonyStep()) ric(tick); }; ric(tick); }
+function scheduleColony() { if (colonyIdle || colonyAPI) return; colonyIdle = true; const tick = dl => { if (!calm(dl) || !colonyStep()) ric(tick); }; ric(tick); }
 const cPos = new THREE.CatmullRomCurve3([[150, 430, 170], [175, 240, 130], [195, 115, 45], [175, 36, -55]].map(p => new THREE.Vector3(...p).add(COL)), false, 'centripetal');
 const cLook = new THREE.CatmullRomCurve3([[0, 0, 0], [0, 0, 0], [-20, 8, -8], [-210, 28, -40]].map(p => new THREE.Vector3(...p).add(COL)), false, 'centripetal');
 
@@ -688,7 +689,7 @@ renderer.setAnimationLoop(() => {
   // close enough to resolve them. Colony: the build state and sun only change with g; between changes only the crane jibs move,
   // slowly, so every 3rd frame is enough. Space/globe: nothing casts.
   shadowFrame++;
-  if (inSite) { if (forceShadow || (sunLight.intensity > 0.01 && siteDist < 2500)) { renderer.shadowMap.needsUpdate = true; forceShadow = false; } }
+  if (inSite) { if (forceShadow || (sunLight.intensity > 0.01 && (siteDist < 2500 || shadowFrame % 10 === 0))) { renderer.shadowMap.needsUpdate = true; forceShadow = false; } }
   else if (inCol) { if (forceShadow || built || (shadowFrame % 3 === 0 && colonyAPI.cranes.some(craneOn))) { renderer.shadowMap.needsUpdate = true; forceShadow = false; } }
   else { sunLight.target.position.set(0, 0, 0); sunLight.position.copy(sunDir).multiplyScalar(100); }
   // the one cut left: a warm atmospheric-entry flash into Jezero
@@ -803,12 +804,12 @@ function throwaway(w) {
 }
 async function precompile() {
   const t0 = performance.now(), jobs = [];
-  inWorld('site', () => jobs.push(compileIn(site.group)));
+  if (!skip) inWorld('site', () => jobs.push(compileIn(site.group))); // a skipped intro never shows the site
   inWorld('space', () => { for (const o of spaceRoots()) jobs.push(compileIn(o)); });
   if (colonyAPI) inWorld('colony', () => jobs.push(compileIn(colony)));
   await Promise.race([Promise.all(jobs), wait(1500)]);
-  throwaway('site'); throwaway('space'); if (colonyAPI) throwaway('colony');
-  post.warm({ fx: HIGH }); // AO + trails only ever run on the high tier
+  if (!skip) throwaway('site'); throwaway('space'); if (colonyAPI) throwaway('colony');
+  if (!skip) post.warm({ fx: HIGH }); // AO + trails only ever run on the high tier (and only in the site); skip is already live, so no resets
   window.__d5.bootMs = Math.round(performance.now() - t0); window.__d5.bootPrograms = renderer.info.programs.length;
 }
 // the colony is populated after boot (see populateColony): same warm-up for it once it exists, unless it is already on screen
