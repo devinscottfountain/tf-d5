@@ -250,7 +250,7 @@ export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS
   const dot1 = (r, g, b, srgb) => { const t = new THREE.DataTexture(new Uint8Array([r, g, b, 255]), 1, 1); t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace; t.needsUpdate = true; return t; };
   // load -> decode off the main thread -> configure; callers upload before swapping so the first frame that samples it doesn't stall
   const fetchTex = (name, srgb) => new Promise(res => loader.load(`${assetBase}/${name}`, t => {
-    const img = t.image, dec = img && img.decode ? img.decode().catch(() => {}) : Promise.resolve();
+    const img = t.image, dec = img && img.decode ? Promise.race([img.decode().catch(() => {}), new Promise(r => setTimeout(r, 400))]) : Promise.resolve(); // decode can stall in a background tab: cap it
     dec.then(() => {
       t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace; t.anisotropy = anis; t.wrapS = THREE.RepeatWrapping; t.needsUpdate = true;
       res(t);

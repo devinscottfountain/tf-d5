@@ -83,7 +83,7 @@ export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, ear
   const loadInto = (url, tex, on) => new Promise(res => {
     if (!url) return res(false);
     ld.load(url, t => {
-      const img = t.image, dec = img && img.decode ? img.decode().catch(() => {}) : Promise.resolve();
+      const img = t.image, dec = img && img.decode ? Promise.race([img.decode().catch(() => {}), new Promise(r => setTimeout(r, 400))]) : Promise.resolve(); // decode can stall in a background tab: cap it
       dec.then(() => {
         t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; t.needsUpdate = true;
         if (renderer && renderer.initTexture) try { renderer.initTexture(t); } catch (e) { /* first draw uploads it instead */ }
