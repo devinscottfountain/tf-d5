@@ -1,7 +1,5 @@
 # tf-d5
 
-Scene code + textures for the TerraFirma Direction 5 Webflow prototype, served via jsDelivr.
-
 Load on the page (importmap for `three` and `three/addons/` must already be in the page head):
 
 ```html
