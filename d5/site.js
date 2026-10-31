@@ -74,7 +74,70 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU }) {
     float li=clamp((bicubicR(tLights,uv,vec2(2048.,1024.))-.10)/.8,0.,1.), lg=max(textureLod(tLights,uv,3.).r-.07,0.);
     vec3 macroL=SOD*(pow(li,1.35)*2.6+lg*lg*.9);
     alb=M; rough=1.; emit=macroL*uNight;
-    if(w>80.) return;
+    if(w>400.) return;
+    // ---------------- night city LOD (w ~1..360 m/px): energy-conserving lights whose area mean is macroL.
+    // Every component below is normalised to an area mean of 1, so S averages to 1 and Lc to macroL at any w;
+    // dots and lines get wider and dimmer as the pixel grows (gaussian sigma >= pixel) and fade to their mean once
+    // they would overlap their neighbours. Everything converges to exactly macroL by w=360.
+    float mL=dot(macroL,vec3(.3,.5,.2));
+    float dens=smoothstep(.02,1.3,mL);                    // 0 rural .. 1 core, from the real lights map
+    float sg0=.75*w;                                       // pixel footprint as a gaussian sigma
+    vec3 LED=vec3(.62,1.14,3.), LEDm=vec3(.7)+.3*LED;      // white LED relative to sodium (same luminance), and the 70/30 mix
+    // each component has area mean 1; its weight drops once it has faded to its mean, so the energy moves to whatever is
+    // still resolved at this w (sum of weights renormalised -> the mean stays 1, but the frame isn't a flat haze)
+    vec3 S=vec3(.04); float W=.04;                         // unresolved sky glow
+    // jittered point lights at three nested scales: houses/lots (45 m), blocks of shops (260 m), malls/campuses (1.5 km)
+    for(int i=0;i<3;i++){
+      float fi=float(i), c=i==0?45.:i==1?260.:1500., r=i==0?4.:i==1?12.:45., a=i==0?.30:i==1?.21:.10;
+      float pr=i==0?mix(.12,.9,dens):i==1?mix(.08,.75,dens):mix(.05,.6,dens);
+      vec2 cid=floor(p/c), dc=p-(cid+.2+.6*vec2(h21(cid+fi*17.3),h21(cid.yx+fi*5.1+.7)))*c;
+      float hs=h21(cid*1.37+fi*3.9+.11), bb=fract(hs*37.17), b=.3+1.4*bb*bb;
+      float sg=max(r,sg0), dotv=step(hs,pr)*b*exp(-dot(dc,dc)/(sg*sg))*r*r/(sg*sg);
+      float mean=pr*.7667*3.1416*r*r/(c*c), f=smoothstep(.07*c,.18*c,sg);
+      vec3 tint=(i==2||fract(hs*91.7)<.7?vec3(1.):LED)/LEDm;
+      a*=(1.-.92*f)*(i==0?1.:i==1?smoothstep(.7,3.,w):smoothstep(5.,20.,w));   // big clusters only once they read as points
+      S+=a*mix(dotv/mean*tint,vec3(1.),f); W+=a;
+    }
+    // residential streets on the real block grid: streetlights every 36 m, uneven per block edge, some edges dark
+    vec2 uS=p/vec2(${CX}.,${CZ}.), dS=abs(fract(uS)-.5)*vec2(${CX}.,${CZ}.);
+    float hS=3., sgS=max(hS,sg0), sa=max(1.5,sg0);
+    float gX=h21(vec2(floor(uS.x),floor(uS.y+.5))+.37), gZ=h21(vec2(floor(uS.x+.5),floor(uS.y))+5.71);
+    float segX=step(.18,gX)*(.4+1.2*fract(gX*13.1)), segZ=step(.18,gZ)*(.4+1.2*fract(gZ*13.1));
+    float ddX=mod(p.y,36.)-18., ddZ=mod(p.x,36.)-18., fa=smoothstep(4.,9.,sa), dn=36.*1.5/(1.7725*sa);
+    float dotX=mix(exp(-ddX*ddX/(sa*sa))*dn,1.,fa), dotZ=mix(exp(-ddZ*ddZ/(sa*sa))*dn,1.,fa);
+    float Lst=(exp(-dS.x*dS.x/(sgS*sgS))*segX*dotX+exp(-dS.y*dS.y/(sgS*sgS))*segZ*dotZ)*hS/sgS;
+    float mSt=1.7725*hS*(1./${CX}.+1./${CZ}.)*.82;
+    float fS=smoothstep(.05*${CZ}.,.13*${CZ}.,sgS), aS=.14*(1.-.92*fS); S+=aS*mix(Lst/mSt,1.,fS); W+=aS;
+    // arterials: a noise-warped ~1.25 km grid plus a sparser diagonal family, broken into uneven lit segments
+    vec2 q=p+420.*(vec2(vn(p*.0007+1.3),vn(p*.0007+7.9))-.5);
+    vec2 uA=q/vec2(1290.,1210.)+vec2(.31,.17), dA=abs(fract(uA)-.5)*vec2(1290.,1210.);
+    float uD=dot(q,vec2(.82,.57))/2900.+.4, dD=abs(fract(uD)-.5)*2900.;
+    float aX=h21(vec2(floor(uA.x),floor(uA.y*1.7))+2.3), aZ=h21(vec2(floor(uA.x*1.7),floor(uA.y))+8.9), aD=h21(vec2(floor(uD),floor(dot(q,vec2(-.57,.82))/1800.))+4.4);
+    aX=step(.15,aX)*(.5+fract(aX*7.3)); aZ=step(.15,aZ)*(.5+fract(aZ*7.3)); aD=step(.4,aD)*(.5+fract(aD*7.3));
+    aX*=smoothstep(.15,.6,vn(vec2(q.y/2100.,floor(uA.x)*3.1))); aZ*=smoothstep(.15,.6,vn(vec2(q.x/2100.,floor(uA.y)*3.1+40.))); // lit stretches come and go
+    float hA=9., sgA=max(hA,sg0);
+    float LA=(exp(-dA.x*dA.x/(sgA*sgA))*aX+exp(-dA.y*dA.y/(sgA*sgA))*aZ+exp(-dD*dD/(sgA*sgA))*aD)*hA/sgA;
+    float mA=1.7725*hA*((1./1290.+1./1210.)*.85*.6+.6/2900.);
+    float fA=smoothstep(.1*1250.,.24*1250.,sgA), aA=.15*(1.-.85*fA); S+=aA*mix(LA/mA,1.,fA); W+=aA;
+    // freeways: I-35 (matches the detail layer), MoPac, US-183, SH-71, US-290; packed headlights, brightest per metre
+    float hH=24., sgH=max(hH,sg0);
+    float h1=abs(p.x+1620.+40.*sin(p.y/900.)), h2=abs(p.x+7900.+500.*sin(p.y/3100.+1.)),
+          h3=abs(dot(p-vec2(2600.,0.),vec2(.876,.482))+150.*sin(dot(p,vec2(-.482,.876))/2000.)),
+          h4=abs(p.y-7200.-300.*sin(p.x/2600.)), h5=abs(p.y+5600.+200.*sin(p.x/1900.));
+    float LH=(exp(-h1*h1/(sgH*sgH))*1.3+exp(-h2*h2/(sgH*sgH))+exp(-h3*h3/(sgH*sgH))+exp(-h4*h4/(sgH*sgH))+exp(-h5*h5/(sgH*sgH))*.8)*hH/sgH;
+    S+=.06*LH/(1.7725*hH/5000.); W+=.06; S/=W;
+    // organic occupancy: lit clusters and dark pockets (mean ~1), Lady Bird Lake + greenbelt dark
+    float oc=(.15+.85*smoothstep(.33,.6,fb(p*.0006+3.7))*(.4+1.2*vn(p*.0023+9.1)))/.57;
+    float drN=abs(p.y-1250.-160.*sin(p.x/1100.)-60.*sin(p.x/370.+1.));
+    oc*=mix(.08,1.,smoothstep(70.,240.,drN));
+    oc*=mix(1.,.2+1.6*smoothstep(.32,.62,fb(p*.00011+11.3)),1.-dens);   // ragged suburban edge instead of the map's round blob (mean ~1)
+    // exposure-friendly gain: mid altitudes sit a bit under the map's mean (no brighter than macroL), reaching it by w~300
+    float gL=smoothstep(1.1,5.77,log(w));
+    vec3 Lc=macroL*mix(S*oc,vec3(1.),smoothstep(200.,360.,w))*mix(.12,1.,gL*gL);
+    // a thin string of lights along the freeways out past the city edge (fades with the rest)
+    Lc+=SOD*.05*LH*(1.-dens)*(1.-smoothstep(25000.,45000.,length(p)))*(1.-smoothstep(200.,360.,w))*mix(.12,1.,gL*gL);
+    emit=Lc*uNight;
+    if(w>8.) return;   // albedo/roughness below are fully the map's beyond w=8, so skip the detail layer
     // ---------------- detail layer
     float ci=floor(p.x/${CX}.+.5), cj=floor(p.y/${CZ}.+.5);
     vec2 lc=p-vec2(ci*${CX}.,cj*${CZ}.);
@@ -158,18 +221,8 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU }) {
     col=mix(col,mix(vec3(.04,.08,.03),vec3(.02,.04,.015),nz2),park*(1.-water)); col=mix(col,vec3(.012,.035,.035),water);
     // rural beyond the city: field patchwork
     if(city<.99){ vec2 fc=floor(p/vec2(420.,300.)); vec3 fld=mix(vec3(.16,.14,.08),vec3(.08,.1,.04),h21(fc))*(.85+.3*nz); col=mix(fld,col,city); L*=city; }
-    // detail -> macro: keep the detail's structure but ride the real map's colour, then fade to the map entirely
-    // mid scale (a few km up): the street grid as energy-conserving lines, brighter on arterials and I-35, riding the real lights map
-    float wl=max(w,.5);
-    vec2 dl=abs(fract(p/vec2(${CX}.,${CZ}.)+.5)-.5)*vec2(${CX}.,${CZ}.);
-    float minorL=smoothstep(5.+wl,5.,min(dl.x,dl.y))*min(1.,10./wl);
-    float dax=abs(fract((p.x-90.)/720.+.5)-.5)*720., daz=abs(fract((p.y-70.)/700.+.5)-.5)*700.;
-    float artL=smoothstep(11.+wl,11.,min(dax,daz))*min(1.,22./wl);
-    float hwyL=smoothstep(36.+wl,36.,dHwy)*min(1.,72./wl);
-    float pat=minorL*.8+artL*2.5+hwyL*4.+smoothstep(.55,.8,fb(p*.0015))*.4;
-    float mL=dot(macroL,vec3(.3,.5,.2));
-    vec3 Lmid=SOD*pat*(.25+.6*mL)*city*mix(.4,2.2,smoothstep(3.,40.,w));   // dim streetlight grid up close, averages out to the map from orbit
-    vec3 Ln=mix(L*city,Lmid,smoothstep(.8,2.5,w)); Ln=mix(Ln,macroL,smoothstep(25.,70.,w));
+    // detail -> night city LOD
+    vec3 Ln=mix(L*city,Lc,smoothstep(.8,2.5,w));
     alb=mix(col,M,smoothstep(1.5,8.,w));
     emit=Ln*uNight;
     rough=mix(rgh,1.,smoothstep(1.5,8.,w));

@@ -336,10 +336,11 @@ const lastPos = new THREE.Vector3(), camVel = new THREE.Vector3(), velTmp = new 
 const upP = new THREE.Vector3(0, 1, 0).addScaledVector(toSun, -toSun.y).normalize();
 const C0 = EARTH.clone().addScaledVector(toSun, -23).addScaledVector(upP, 10.4);
 const L0 = C0.clone().addScaledVector(toSun, 60).addScaledVector(upP, -9);
-const DIVE = MARS.clone().addScaledVector(new THREE.Vector3(22, 6, 32).normalize(), 7.4);
+const DIVE = MARS.clone().addScaledVector(new THREE.Vector3(15, 4, 35).normalize(), 7.4); // dive line ~ the approach line, so Mars doesn't slew across frame on arrival
 const V = a => (a.isVector3 ? a.clone() : new THREE.Vector3(...a));
 const M3 = (b, o) => b.clone().add(new THREE.Vector3(...o));
 
+const smoother = x => x * x * x * (x * (x * 6 - 15) + 10);
 // monotone cubic (Fritsch-Carlson). Velocity stays continuous through every key and never overshoots,
 // so the camera can't stop dead on a key, fire off again, or swing past a framing and come back.
 function pchip(xs, ys, m0, mN) {
@@ -367,23 +368,29 @@ const SHOTS = [
   [0.11, [6, 9, 36], [0, 1.5, 0], 34],                             // pull back and up: the whole Earth, long lens
   [0.20, [3, 15.5, 4], M3(MOON, [0, -14, 0]), 40],                 // skim over the north, Moon ahead
   [0.30, M3(MOON, [-9, 3.5, 24]), M3(MOON, [1.5, 0, 0]), 44],      // Moon terminator
-  [0.37, M3(MOON, [-6.5, 1.5, -3]), MARS, 46],                     // slide past the lit limb, Mars dead ahead
-  [0.47, M3(MARS, [22, 6, 32]), M3(MARS, [-1, 0, 0]), 36],         // arrive at Mars: the mission copy reads here
-  [0.53, M3(MARS, [14, 4, 20]), MARS, 40],                         // slow push
+  [0.37, M3(MOON, [-9, 2, -4]), MARS, 46],                     // slide past the lit limb, Mars dead ahead
+  [0.47, M3(MARS, [15.5, 4, 36]), M3(MARS, [-1, 0, 0]), 36],         // arrive at Mars: the mission copy reads here
+  [0.53, M3(MARS, [10, 2.7, 23]), MARS, 40],                         // slow push
   [CA, DIVE, MARS, 52]                                             // dive into the entry flash
 ].map(([p, pos, look, fov]) => ({ p, pos: V(pos), look: V(look), fov }));
 const posC = new THREE.CatmullRomCurve3(SHOTS.map(k => k.pos), false, 'centripetal'); posC.arcLengthDivisions = 4000;
 const NK = SHOTS.length, PX = SHOTS.map(k => k.p), arcLens = posC.getLengths();
 const arcAt = t => { const f = t * (arcLens.length - 1), i = Math.floor(f); return i >= arcLens.length - 1 ? arcLens[arcLens.length - 1] : arcLens[i] + (arcLens[i + 1] - arcLens[i]) * (f - i); };
 const arcP = pchip(PX, SHOTS.map((k, i) => arcAt(i / (NK - 1))), 0.6, 2.2); // ease off the opening frame; accelerate into the dive
-const lookD = SHOTS.map(k => k.look.clone().sub(k.pos)), focusD = lookD.map(v => v.length()); lookD.forEach(v => v.normalize());
-const lookX = pchip(PX, lookD.map(v => v.x)), lookY = pchip(PX, lookD.map(v => v.y)), lookZ = pchip(PX, lookD.map(v => v.z));
-const focusP = pchip(PX, focusD), fovP = pchip(PX, SHOTS.map(k => k.fov));
+// look: each shot names a subject. Between two shots the camera aims at both from where it is right now and slerps
+// from one to the other, so a held subject stays locked in frame however fast the camera moves, and subject changes
+// are one smooth pan. The pan rate rides a monotone curve over the shot index, so it never pauses on a key.
+const idxP = pchip(PX, SHOTS.map((k, i) => i)), fovP = pchip(PX, SHOTS.map(k => k.fov));
+const dA = new THREE.Vector3(), dB = new THREE.Vector3(), qL = new THREE.Quaternion(), qL0 = new THREE.Quaternion();
 const spaceCam = (p, outPos, outLook) => {
-  const u = posC.getUtoTmapping(0, Math.max(0, arcP(Math.min(p, CA))));
+  const q = Math.min(p, CA), u = posC.getUtoTmapping(0, Math.max(0, arcP(q)));
   posC.getPoint(u, outPos);
-  const f = focusP(p); outLook.set(lookX(p), lookY(p), lookZ(p)).normalize().multiplyScalar(f).add(outPos);
-  return fovP(Math.min(p, CA));
+  const f = THREE.MathUtils.clamp(idxP(q), 0, NK - 1.0001), i = Math.floor(f), t = f - i;
+  dA.copy(SHOTS[i].look).sub(outPos); dB.copy(SHOTS[i + 1].look).sub(outPos);
+  const fa = dA.length(), fb = dB.length(); dA.normalize(); dB.normalize();
+  qL.setFromUnitVectors(dA, dB); qL0.identity().slerp(qL, smoother(t)); // eased per pan: it settles onto each subject instead of snapping
+  outLook.copy(dA).applyQuaternion(qL0).multiplyScalar(fa + (fb - fa) * t).add(outPos);
+  return fovP(q);
 };
 window.__d5.path = p => { const a = new THREE.Vector3(), b = new THREE.Vector3(), f = spaceCam(p, a, b); return [...a.toArray(), ...b.toArray(), f]; }; // QA hook
 
@@ -403,7 +410,6 @@ const slerpV = (a, b, k, out) => { qT.setFromUnitVectors(a, b); qI.identity().sl
 const TL = 0.64; // share of the intro that is timelapse; the rest is the pull out
 const intro = { s: 0 };
 let spinOff = SPIN_LAND, siteInfo = null;
-const smoother = x => x * x * x * (x * (x * 6 - 15) + 10);
 
 // ---------- satellite: skims past the lens on the Earth to Moon leg ----------
 const sat = new THREE.Group(); scene.add(sat);

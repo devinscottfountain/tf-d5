@@ -12,4 +12,4 @@ Load on the page (importmap for `three` and `three/addons/` must already be in t
 - Moon / Mars normal maps: synthesized for this project.
 - Star catalog: HYG Database v4.1, David Nash / astronexus (CC BY-SA 4.0).
 - Milky Way: Kevinmloch / bsrender, rendered from ESA Gaia EDR3 (ESA/Gaia/DPAC), CC BY-SA 4.0.
-- Saturn map + ring strip: James Hastings-Trew, planetpixelemporium.com (free with credit).
+- Austin site, neighbourhood and construction timelapse: procedural, built for this project.
