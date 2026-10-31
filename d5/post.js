@@ -45,10 +45,11 @@ export function createPost({ THREE, renderer, scene, cam }) {
   };
   const ao = {        // contact AO, half-res SAO from depth, applied to HDR colour before DOF/bloom
     enabled: false,
-    radius: 0.02,     // sample radius as a fraction of view distance (0.02 = 6 m at 300 m), i.e. a constant screen size at any scale
+    radius: 0.03,     // sample radius as a fraction of view distance (0.03 = 9 m at 300 m, 4.5 m at 150 m), i.e. a constant screen size at any scale
     intensity: 1.0,   // 0 = none, 1 = default, 2 = heavy
     bias: 0.12,       // cosine bias: ignores near-coplanar samples (keeps flat terrain clean)
     maxPx: 48,        // cap on the screen-space radius in full-res pixels (cost/cache guard)
+    debug: false,     // true shows the AO term alone (grey) instead of the lit frame
     active: false     // read only
   };
 
@@ -173,7 +174,7 @@ export function createPost({ THREE, renderer, scene, cam }) {
             vec3 v=vpos(ip+ivec2(vec2(cos(ang),sin(ang))*a*rPx))-P;
             float vv=dot(v,v);
             occ+=max(0.,1.-vv/R2)*max(0.,dot(v,N)*inversesqrt(vv+1e-4*R2)-bias); }
-          gl_FragColor=vec4(clamp(1.-intensity*occ/6.,0.,1.),-P.z,0.,1.); }`);
+          gl_FragColor=vec4(clamp(1.-intensity*occ/3.,0.,1.),-P.z,0.,1.); }`);
       this.uAOB = { tAO: { value: null }, dir: { value: new THREE.Vector2(1, 0) }, hres: { value: new THREE.Vector2(W >> 1, H >> 1) } };
       this.mAOBlur = mat(this.uAOB, `
         uniform sampler2D tAO; uniform vec2 dir; uniform vec2 hres; varying vec2 vUv;
@@ -183,9 +184,9 @@ export function createPost({ THREE, renderer, scene, cam }) {
             vec2 t=texelFetch(tAO,clamp(p+ivec2(dir)*i,ivec2(0),mx),0).xy;
             float wt=exp(-float(i*i)*.125)*max(0.,1.-abs(t.y-c.y)*k); s+=t.x*wt; ws+=wt; }
           gl_FragColor=vec4(s/ws,c.y,0.,1.); }`);
-      this.uAOC = { tColor: { value: null }, tDepth: { value: null }, tAO: { value: null }, hres: { value: new THREE.Vector2(W >> 1, H >> 1) }, near: { value: 1 }, far: { value: 1000 } };
+      this.uAOC = { tColor: { value: null }, tDepth: { value: null }, tAO: { value: null }, hres: { value: new THREE.Vector2(W >> 1, H >> 1) }, near: { value: 1 }, far: { value: 1000 }, dbg: { value: 0 } };
       this.mAOComp = mat(this.uAOC, `
-        uniform sampler2D tColor; uniform sampler2D tDepth; uniform sampler2D tAO; uniform vec2 hres; varying vec2 vUv;
+        uniform sampler2D tColor; uniform sampler2D tDepth; uniform sampler2D tAO; uniform vec2 hres; uniform float dbg; varying vec2 vUv;
         ${DEPTH_GLSL}
         void main(){
           vec4 c=texture2D(tColor,vUv); float d=texture2D(tDepth,vUv).x;
@@ -196,7 +197,7 @@ export function createPost({ THREE, renderer, scene, cam }) {
           for(int y=0;y<2;y++) for(int x=0;x<2;x++){
             vec2 t=texelFetch(tAO,clamp(b+ivec2(x,y),ivec2(0),mx),0).xy;
             float wt=(x==0?1.-f.x:f.x)*(y==0?1.-f.y:f.y)*max(1e-3,1.-abs(t.y-z)*k); s+=t.x*wt; ws+=wt; }
-          gl_FragColor=vec4(c.rgb*(s/ws),1.); }`);
+          gl_FragColor=vec4(dbg>.5 ? vec3(.6*s/ws) : c.rgb*(s/ws),1.); }`);
       this.fsQuad = new FullScreenQuad(this.mCopy);
     }
     draw(r, m, target) { this.fsQuad.material = m; r.setRenderTarget(target); this.fsQuad.render(r); }
@@ -219,7 +220,7 @@ export function createPost({ THREE, renderer, scene, cam }) {
         this.draw(r, this.mAO, this.aoA);
         this.uAOB.tAO.value = this.aoA.texture; this.uAOB.dir.value.set(1, 0); this.draw(r, this.mAOBlur, this.aoB);
         this.uAOB.tAO.value = this.aoB.texture; this.uAOB.dir.value.set(0, 1); this.draw(r, this.mAOBlur, this.aoA);
-        const c = this.uAOC; c.tColor.value = src; c.tDepth.value = depth; c.tAO.value = this.aoA.texture; c.near.value = near; c.far.value = far;
+        const c = this.uAOC; c.tColor.value = src; c.tDepth.value = depth; c.tAO.value = this.aoA.texture; c.near.value = near; c.far.value = far; c.dbg.value = ao.debug ? 1 : 0;
         this.draw(r, this.mAOComp, last ? write : this.tmp);
         if (last) done = true; else src = this.tmp.texture;
       }
