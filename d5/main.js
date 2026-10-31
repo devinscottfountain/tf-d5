@@ -403,11 +403,15 @@ const austinLocal = new THREE.Vector3(-Math.cos(2 * Math.PI * lonU) * Math.cos(l
 // park Austin on the night side right under the opening frame: same azimuth as C0, so the pull out lands with the city just below centre
 const SPIN_LAND = Math.atan2(austinLocal.z, austinLocal.x) - Math.atan2(C0.z, C0.x);
 const AUS = austinLocal.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), SPIN_LAND).multiplyScalar(10), AUSn = AUS.clone().normalize();
-const LAM0 = Math.log(240), LAMH = Math.log(650e3), LAM1 = Math.log(C0.distanceTo(AUS) / U_PER_M); // ln(distance in metres): site, hand-off, landing
+const LAM0 = Math.log(400), LAMH = Math.log(650e3), LAM1 = Math.log(C0.distanceTo(AUS) / U_PER_M); // ln(distance in metres): site, hand-off, landing
 const backEnd = C0.clone().sub(AUS).normalize(), lookEnd = L0.clone().sub(C0).normalize(), negN = AUSn.clone().negate();
 const qT = new THREE.Quaternion(), qI = new THREE.Quaternion();
 const slerpV = (a, b, k, out) => { qT.setFromUnitVectors(a, b); qI.identity().slerp(qT, k); return out.copy(a).applyQuaternion(qI); };
-const TL = 0.64; // share of the intro that is timelapse; the rest is the pull out
+// timelapse framing: creep out, snap out, creep out, snap out, then the long pull. Distances in metres, eased in log space.
+const BEATS = [[0, 0.44, 130, 150, 0], [0.44, 0.52, 150, 235, 1], [0.52, 0.9, 235, 262, 0], [0.9, 1, 262, 400, 1]];
+const expoIO = x => (x <= 0 ? 0 : x >= 1 ? 1 : x < 0.5 ? Math.pow(2, 20 * x - 10) / 2 : 1 - Math.pow(2, -20 * x + 10) / 2);
+const lapseDist = g => { for (const [a, b, d0, d1, snap] of BEATS) if (g <= b) { const x = (g - a) / (b - a), e = snap ? expoIO(x) : x; return Math.exp(Math.log(d0) + (Math.log(d1) - Math.log(d0)) * e); } return 400; };
+const TL = 0.51; // share of the intro that is timelapse; the rest is the pull out
 const intro = { s: 0 };
 let spinOff = SPIN_LAND, siteInfo = null;
 
@@ -455,7 +459,7 @@ let zone = -1;
 
 // ---------- load: veil lifts on the lot, the timelapse runs, the camera pulls off to orbit, then the title tracks in ----------
 const h1 = new SplitText('.d5-h1', { type: 'chars,words' });
-const LAPSE = 6.2, PULL = 3.6;
+const LAPSE = 3.0, PULL = 2.9;
 let introDone = false, introOver = false;
 const lockScroll = on => { document.documentElement.style.overflow = on ? 'hidden' : ''; if (window.lenis) on ? lenis.stop() : lenis.start(); };
 const endIntro = () => { if (introOver) return; introOver = true; lockScroll(false); post.resetMotion(); };
@@ -509,7 +513,7 @@ renderer.setAnimationLoop(() => {
     // satellite-ish oblique over the lot; drifts a few degrees during the timelapse, then rises and tips straight down for the pull out
     const g = Math.min(1, s / TL), up = sstep(lam, LAM0, LAM0 + (LAMH - LAM0) * 0.55);
     const a = (window.__d5.siteYaw ?? (-0.06 + 0.12 * g)) * (1 - up), pitch = THREE.MathUtils.degToRad((window.__d5.sitePitch ?? 58) * (1 - up) + 90 * up) - 0.0001;
-    const dist = Math.exp(lam) * (1 - 0.08 * g * (1 - up));
+    const dist = s < TL ? lapseDist(g) : Math.exp(lam);
     siteT.set(0, -1, 3 * (1 - up));
     siteDir.set(Math.sin(a) * Math.cos(pitch), Math.sin(pitch), Math.cos(a) * Math.cos(pitch));
     tmp.copy(siteT).addScaledVector(siteDir, dist); tmp.x += ms.x * 3 * (1 - up); tmp.z += ms.y * 2 * (1 - up);
