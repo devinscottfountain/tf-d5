@@ -347,21 +347,55 @@ const C0 = EARTH.clone().addScaledVector(toSun, -23).addScaledVector(upP, 10.4);
 const L0 = C0.clone().addScaledVector(toSun, 60).addScaledVector(upP, -9);
 const sh = (p, d, k = 1) => [p[0] + d.x * k, p[1] + d.y * k, p[2] + d.z * k]; // shift a key along with its planet
 const DIVE = MARS.clone().addScaledVector(new THREE.Vector3(22, 6, 32).normalize(), 7.4);
-const K = [
-  [0.00, C0.toArray(), L0.toArray()],       // night side, city lights below, sun cresting the limb
-  [0.10, [5, 9.5, 36], [0, 1.5, 0]],
-  [0.20, [-14, 14, 62], sh([8, 0, -14], dMoon, 0.5)], // Earth + Moon together
-  [0.30, sh([17, 9, -16], dMoon), sh([26, 6, -42], dMoon)], // Moon flyby
-  [0.42, sh([-14, 2, -268], dMars), sh([-36, -4, -300], dMars)], // Mars
-  [0.46, DIVE.toArray(), MARS.toArray()],   // diving at the surface, entry flash hides the cut to Jezero
-  [0.64, [-4, 3, -430 * SPREAD.belt], [6, 0, -600 * SPREAD.belt]], // back in space at the belt edge (cut through black)
-  [0.72, [8, 2, -620 * SPREAD.belt], [14, 0, -760 * SPREAD.belt]],  // threading the belt
-  [0.80, sh([-30, 20, -880], dSat), sh([8, -14, -1184], dSat)], // Saturn reveal, planet pushed right of the type
-  [0.90, sh([-20, 34, -975], dSat), sh([24, -18, -1186], dSat)],
-  [1.00, sh([-180, 120, -820], dSat), sh([60, 66, -1160], dSat)] // wide pull-out, Saturn drops below the CTA
-];
-const posC = new THREE.CatmullRomCurve3(K.map(k => new THREE.Vector3(...k[1])), false, 'centripetal');
-const lookC = new THREE.CatmullRomCurve3(K.map(k => new THREE.Vector3(...k[2])), false, 'centripetal');
+// ---------- camera: a shot list, not a keyframe list ----------
+// Film grammar applied: every move eases in and out (no velocity pops at keys), each planet gets a HOLD where the
+// camera settles into a slow push/orbit while the copy reads, lens length changes per shot (long lens = scale and
+// compression on reveals, wide = speed and proximity on passes), and the horizon banks into turns like a real ship.
+const V = a => (a.isVector3 ? a.clone() : new THREE.Vector3(...a));
+const KEYS = [], HOLD = new Set(); // HOLD holds the index i of every segment i -> i+1 that is a hold
+const key = (p, pos, look, fov, roll = 0) => KEYS.push({ p, pos: V(pos), look: V(look), fov, roll: THREE.MathUtils.degToRad(roll) });
+// hold: settle on a framing, then drift through it (slow orbit around the subject + gentle push in)
+const hold = (p0, p1, pos, look, fov, roll = 0, orbit = 3, push = 0.04) => {
+  const P = V(pos), L = V(look); key(p0, P, L, fov, roll); HOLD.add(KEYS.length - 1);
+  const P2 = P.clone().sub(L).applyAxisAngle(new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(orbit)).multiplyScalar(1 - push).add(L);
+  key(p1, P2, L, fov - 1, roll * 1.15);
+};
+hold(0.00, 0.06, C0, L0, 38, 0, 1.2, 0.05);                                           // 1 sunrise over the night side: long hold, slow push toward the light
+hold(0.13, 0.17, [5, 9.5, 36], [0, 1.5, 0], 34, -3, 5, 0.03);                         // 2 Earth whole, long lens, slow orbit
+key(0.225, [-14, 14, 62], sh([8, 0, -14], dMoon, 0.5), 40, 2);                       //   two-shot Earth + Moon, passing through
+hold(0.30, 0.33, sh([17, 9, -16], dMoon), sh([26, 6, -42], dMoon), 46, 6, 7, 0.05); // 3 Moon terminator, wider lens, banked
+hold(0.39, 0.44, sh([-14, 2, -268], dMars), sh([-36, -4, -300], dMars), 36, -3, 4, 0.08); // 4 Mars approach while the mission copy reads
+key(0.46, DIVE, MARS, 52, 4);                                                         //   dive: accelerates into the entry flash
+key(0.64, [-4, 3, -430 * SPREAD.belt], [6, 0, -600 * SPREAD.belt], 58, 0);           // 5 out of the cut at speed, wide lens in the belt
+key(0.72, [8, 2, -620 * SPREAD.belt], [14, 0, -760 * SPREAD.belt], 54, -7);           //   threading, banking through the rocks
+hold(0.80, 0.85, sh([-30, 20, -880], dSat), sh([8, -14, -1184], dSat), 40, 3, 3, 0.04); // 6 Saturn reveal, decelerating into a hold
+hold(0.90, 0.94, sh([-20, 34, -975], dSat), sh([24, -18, -1186], dSat), 38, 2, 4, 0.03);
+hold(0.975, 1.00, sh([-180, 120, -820], dSat), sh([60, 66, -1160], dSat), 36, 0, 2, 0.02); // 7 wide pull-out under the CTA
+const posC = new THREE.CatmullRomCurve3(KEYS.map(k => k.pos), false, 'centripetal');
+const lookC = new THREE.CatmullRomCurve3(KEYS.map(k => k.look), false, 'centripetal');
+posC.arcLengthDivisions = 4000;
+// moves = runs of non-hold segments; each move is eased over ARC LENGTH, so speed is even through pass-through keys
+const NK = KEYS.length, tK = i => i / (NK - 1), arcLens = posC.getLengths(), arcAt = t => { const f = t * (arcLens.length - 1), i = Math.floor(f); return i >= arcLens.length - 1 ? arcLens[arcLens.length - 1] : arcLens[i] + (arcLens[i + 1] - arcLens[i]) * (f - i); };
+const EASE = { io: x => x * x * x * (x * (x * 6 - 15) + 10), in: x => x * x * x, out: x => 1 - Math.pow(1 - x, 3) };
+const MOVES = [], CUTS = new Set([0.46, 0.64]); // the camera must hit these exact frames: the entry flash and the exit cut
+for (let i = 0; i < NK - 1;) {
+  if (HOLD.has(i)) { i++; continue; }
+  let j = i + 1; while (j < NK - 1 && !HOLD.has(j) && !CUTS.has(KEYS[j].p)) j++; // a move ends at the next hold or at a cut frame
+  const ease = KEYS[j].p === 0.46 ? 'in' : KEYS[i].p === 0.64 ? 'out' : 'io'; // accelerate into the dive cut; launch out of the belt cut
+  MOVES.push({ i, j, ease }); i = j;
+}
+const toU = p => {
+  if (p <= KEYS[0].p) return 0; if (p >= KEYS[NK - 1].p) return 1;
+  for (const m of MOVES) if (p >= KEYS[m.i].p && p <= KEYS[m.j].p) {
+    const f = EASE[m.ease]((p - KEYS[m.i].p) / (KEYS[m.j].p - KEYS[m.i].p)), a0 = arcAt(tK(m.i)), a1 = arcAt(tK(m.j));
+    return posC.getUtoTmapping(0, a0 + (a1 - a0) * f);
+  }
+  for (let i = 0; i < NK - 1; i++) if (p <= KEYS[i + 1].p) { const f = (p - KEYS[i].p) / (KEYS[i + 1].p - KEYS[i].p); return tK(i) + (tK(i + 1) - tK(i)) * EASE.io(f) ; } // holds: smooth drift
+  return 1;
+};
+// lens + roll follow the same parameter so zooms and banks ride the move
+window.__d5.path = p => { const u = toU(p); return [...posC.getPoint(u).toArray(), ...lookC.getPoint(u).toArray(), ...lensAt(u)]; }; // QA hook
+const lensAt = u => { const f = u * (NK - 1), i = Math.min(NK - 2, Math.floor(f)), x = EASE.io(f - i); return [KEYS[i].fov + (KEYS[i + 1].fov - KEYS[i].fov) * x, KEYS[i].roll + (KEYS[i + 1].roll - KEYS[i].roll) * x]; };
 // ---------- satellite: skims past the lens on the Earth to Moon leg ----------
 const sat = new THREE.Group(); scene.add(sat);
 {
@@ -384,20 +418,19 @@ const sat = new THREE.Group(); scene.add(sat);
 const satBlink = new THREE.Sprite(new THREE.SpriteMaterial({ map: radialTex([[0, 'rgba(255,255,255,1)'], [1, 'rgba(0,0,0,0)']]), color: 0xff4030, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false }));
 satBlink.scale.setScalar(0.25); satBlink.position.set(0.36, 0.46, 0.36); sat.add(satBlink);
 const SATP = 0.252; // scroll point where it passes the lens
-const toU = p => { for (let i = 0; i < K.length - 1; i++) if (p <= K[i + 1][0]) return (i + (p - K[i][0]) / (K[i + 1][0] - K[i][0])) / (K.length - 1); return 1; };
 // anchor: just right of and below the lens path at SATP; it drifts along the path slower than the camera so the pass lasts
 const satT = posC.getTangent(toU(SATP)).normalize(), satR = new THREE.Vector3().crossVectors(satT, new THREE.Vector3(0, 1, 0)).normalize();
 const SAT0 = posC.getPoint(toU(SATP)).addScaledVector(satR, 2.8).add(new THREE.Vector3(0, -0.9, 0));
 
 // ---------- scroll + overlays ----------
-let prog = 0, sm = 0;
-window.__d5.seek = p => (sm = p); // QA hook: jump the eased scroll straight to a progress value
+let prog = 0, sm = 0, smV = 0, snap = true;
+window.__d5.seek = p => { sm = p; smV = 0; snap = true; }; // QA hook: jump the eased scroll straight to a progress value
 const track = q('.d5-track');
 ScrollTrigger.create({ trigger: track, start: 'top top', end: 'bottom bottom', onUpdate: s => (prog = s.progress) });
 // each overlay owns a scroll window [a, b]; it rises in, holds, then drifts out
 const ovs = qa('[data-w]').map(el => { const [a, b] = el.dataset.w.split(',').map(Number); return { el, a, b}; });
 // scroll windows live here (not in the markup) so pacing can be tuned in one place
-const WIN = { 'd5-mission': [0.34, 0.445], 'd5-belt': [0.515, 0.62], 'd5-sol': [0.79, 0.965] };
+const WIN = { 'd5-mission': [0.375, 0.445], 'd5-belt': [0.515, 0.62], 'd5-sol': [0.79, 0.965] };
 ovs.forEach(o => { const w = WIN[o.el.classList[0]]; if (w) [o.a, o.b] = w; });
 const CA = 0.46, CB = 0.64; // colony segment
 const win = (p, a, b, f = 0.035) => Math.min(THREE.MathUtils.smoothstep(p, a - f, a + f), 1 - THREE.MathUtils.smoothstep(p, b - f, b + f));
@@ -425,17 +458,22 @@ addEventListener('mousemove', e => { mouse.x = e.clientX / innerWidth - 0.5; mou
 
 const step01 = v => (v > 0.6 ? 1 : 0), tmp2 = new THREE.Vector3();
 const pos = new THREE.Vector3(), look = new THREE.Vector3(), tmp = new THREE.Vector3(), clock = new THREE.Clock();
+const camP = new THREE.Vector3(), camL = new THREE.Vector3(), camPV = new THREE.Vector3(), camLV = new THREE.Vector3(), fwd = new THREE.Vector3(), sprTmp = new THREE.Vector3();
+let camF = 38, bank = 0, lastYaw = 0;
+// critically damped spring toward a target (w = stiffness in 1/s); no allocations
+const spring3 = (x, v, target, w, dt) => { sprTmp.copy(target).sub(x).multiplyScalar(w * w).addScaledVector(v, -2 * w); v.addScaledVector(sprTmp, dt); x.addScaledVector(v, dt); };
 let visible = true; document.addEventListener('visibilitychange', () => (visible = !document.hidden));
 renderer.setAnimationLoop(() => {
   if (!visible) return;
   const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
-  sm += (prog - sm) * Math.min(1, dt * 3.2);                 // eased scroll so the dolly feels heavy
+  { const W = 3.6; smV += (W * W * (prog - sm) - 2 * W * smV) * dt; sm += smV * dt; } // critically damped scroll: flicks ramp up and settle, never snap
   ms.x += (mouse.x - ms.x) * dt * 2; ms.y += (mouse.y - ms.y) * dt * 2;
   const inCol = sm >= CA && sm < CB, cg = clamp01((sm - CA) / (CB - CA));
-  if (inCol) { cPos.getPoint(cg, pos); cLook.getPoint(cg, look); pos.x += ms.x * 8; pos.y -= ms.y * 5; }
+  let fov = 46, roll = 0;
+  if (inCol) { cPos.getPoint(cg, pos); cLook.getPoint(cg, look); pos.x += ms.x * 8; pos.y -= ms.y * 5; fov = 44; }
   else {
     const u = toU(sm);
-    posC.getPoint(u, pos); lookC.getPoint(u, look);
+    posC.getPoint(u, pos); lookC.getPoint(u, look); [fov, roll] = lensAt(u);
     // intro: camera starts a touch lower (sun hidden behind Earth) and rises so the sun crests the limb
     const ip = 1 - intro.t; pos.addScaledVector(upP, -ip * 1.6).addScaledVector(toSun, -ip * 4);
     pos.x += ms.x * 2.2; pos.y -= ms.y * 1.4;
@@ -450,6 +488,17 @@ renderer.setAnimationLoop(() => {
   // cuts: warm atmospheric-entry flash going down, hard black going back out to space
   const hIn = sstep(sm, CA - 0.022, CA) * (1 - sstep(sm, CA, CA + 0.026)), hOut = sstep(sm, CB - 0.016, CB) * (1 - sstep(sm, CB, CB + 0.02));
   if (introDone) { veil.style.opacity = Math.max(hIn, hOut).toFixed(3); veil.style.background = hIn > hOut ? 'radial-gradient(circle at 50% 55%, #fff4e6 0%, #ffb27a 45%, #c8582a 100%)' : '#000'; }
+  // operator layer: springs give the rig weight (look trails position slightly, like a fluid head), the lens breathes,
+  // the horizon banks into turns, and a faint handheld drift keeps holds alive. Cuts snap the springs.
+  if (snap || camP.distanceToSquared(pos) > 150 * 150) { camP.copy(pos); camL.copy(look); camPV.set(0, 0, 0); camLV.set(0, 0, 0); camF = fov; snap = false; }
+  spring3(camP, camPV, pos, 5.5, dt); spring3(camL, camLV, look, 4.2, dt); camF += (fov - camF) * Math.min(1, dt * 2.5);
+  const dist = camP.distanceTo(camL);
+  pos.copy(camP).add(tmp.set(Math.sin(t * 0.21) * 0.6 + Math.sin(t * 0.53 + 1.3) * 0.25, Math.sin(t * 0.17 + 2.1) * 0.5 + Math.sin(t * 0.41) * 0.2, Math.sin(t * 0.13 + 4) * 0.4).multiplyScalar(dist * 0.0035));
+  look.copy(camL);
+  fwd.copy(look).sub(pos).normalize(); const yaw = Math.atan2(fwd.x, fwd.z), dYaw = Math.atan2(Math.sin(yaw - lastYaw), Math.cos(yaw - lastYaw)); lastYaw = yaw;
+  bank += (THREE.MathUtils.clamp(-dYaw / Math.max(dt, 1e-3) * 0.35, -0.14, 0.14) - bank) * Math.min(1, dt * 2); // lean into the turn, max ~8 deg
+  cam.up.set(0, 1, 0).applyAxisAngle(fwd, roll + bank);
+  if (Math.abs(cam.fov - camF) > 0.01) { cam.fov = camF; cam.updateProjectionMatrix(); }
   cam.position.copy(pos); cam.lookAt(look);
   // dust: smoothed camera velocity drives streak length (a short virtual shutter); cuts reset it so nothing smears across them
   if (hasLast && dt > 0) { velTmp.copy(pos).sub(lastPos).divideScalar(dt); if (velTmp.length() > 4000) velTmp.set(0, 0, 0); camVel.lerp(velTmp, Math.min(1, dt * 6)); }
