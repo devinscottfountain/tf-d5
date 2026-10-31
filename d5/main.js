@@ -72,26 +72,90 @@ const fbm2 = (x, y) => { let s = 0, a = 0.5; for (let o = 0; o < 5; o++) { s += 
 const sstep = THREE.MathUtils.smoothstep, clamp01 = v => Math.min(1, Math.max(0, v)), easeOut = v => 1 - Math.pow(1 - clamp01(v), 3);
 const radialTex = (stops) => { const c = document.createElement('canvas'); c.width = c.height = 128; const x = c.getContext('2d'), g = x.createRadialGradient(64, 64, 0, 64, 64, 64); stops.forEach(([o, s]) => g.addColorStop(o, s)); x.fillStyle = g; x.fillRect(0, 0, 128, 128); return new THREE.CanvasTexture(c); };
 
-// terrain: flat pad for the city + solar farm, rolling dunes, crater rim ridges out at the horizon
+// terrain: the real floor of Jezero Crater, 2 km east of the delta front (18.4455 N, 77.4635 E).
+// Shape: USGS Mars 2020 HiRISE 1 m DTM (inner 1.6 km) blended into the CTX 20 m DTM (12 km), both packed as 16-bit RG.
+// Light: HiRISE 25 cm / CTX 6 m orbital images used ONLY as bump (they are greyscale). Colour: the colour Mars map at Jezero
+// plus procedural regolith (butterscotch fines, rust, dark basaltic sand, pale bedrock on steep faces).
+// The city sits on a graded pad that eases back into the real ground.
+const MARS_DATA = window.D5_MARS || {
+  dtm: 'https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae61db91fa9583ba8461fbf_jezero-dtm-16bit.png',
+  hiBump: 'https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae61db8dea8f77cde215b51_jezero-hirise-bump-1600m.jpg',
+  ctxBump: 'https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae61db9dea8f77cde215b79_jezero-ctx-bump-12km.jpg'
+};
+const terrU = { tDtm: { value: null }, tHi: { value: null }, tCtx: { value: null }, uOn: { value: new THREE.Vector3(0, 0, 0) }, tMars: planets.mars.material.uniforms.tMap };
 {
-  const g = new THREE.PlaneGeometry(3200, 3200, 240, 240); g.rotateX(-Math.PI / 2);
-  const a = g.attributes.position, col = new Float32Array(a.count * 3), c = new THREE.Color();
-  for (let i = 0; i < a.count; i++) {
-    const x = a.getX(i), z = a.getZ(i), d = Math.hypot(x, z);
-    let h = (fbm2(x * 0.004, z * 0.004) - 0.45) * 70 + fbm2(x * 0.03, z * 0.03) * 6;
-    h *= sstep(d, 350, 580); h += sstep(d, 900, 1250) * (1 - sstep(d, 1250, 1500)) * 120 * fbm2(x * 0.002 + 5, z * 0.002);
-    a.setY(i, h);
-    // graded pad inside the city reads paler, like compacted regolith
-    const n = fbm2(x * 0.01 + 9, z * 0.01), pad = 1 - sstep(d, 230, 260); c.setRGB(0.42 + n * 0.22 + pad * 0.05, 0.18 + n * 0.1 + pad * 0.04, 0.09 + n * 0.04 + pad * 0.03); col.set([c.r, c.g, c.b], i * 3);
-  }
-  g.setAttribute('color', new THREE.BufferAttribute(col, 3)); g.computeVertexNormals();
-  const terrain = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, flatShading: true }));
-  terrain.receiveShadow = true; colony.add(terrain); // receives only: inside r<350 it is graded flat, so it has nothing to cast and no self-shadow acne
+  const px = (r, g, b) => { const d = new THREE.DataTexture(new Uint8Array([r, g, b, 255]), 1, 1); d.needsUpdate = true; return d; };
+  terrU.tDtm.value = px(128, 0, 0); terrU.tHi.value = px(128, 128, 128); terrU.tCtx.value = px(128, 128, 128);
+  const ld = new THREE.TextureLoader(); ld.setCrossOrigin('anonymous');
+  ld.load(MARS_DATA.dtm, t => { t.colorSpace = THREE.NoColorSpace; t.magFilter = t.minFilter = THREE.NearestFilter; t.generateMipmaps = false; t.flipY = true; terrU.tDtm.value = t; terrU.uOn.value.x = 1; });
+  ld.load(MARS_DATA.hiBump, t => { t.colorSpace = THREE.NoColorSpace; t.anisotropy = 8; terrU.tHi.value = t; terrU.uOn.value.y = 1; });
+  ld.load(MARS_DATA.ctxBump, t => { t.colorSpace = THREE.NoColorSpace; t.anisotropy = 8; terrU.tCtx.value = t; terrU.uOn.value.z = 1; });
+}
+const TERR_GL = /* glsl */ `
+uniform sampler2D tDtm, tHi, tCtx, tMars; uniform vec3 uOn;
+// 16-bit heights live in R (hi byte) and G (lo byte); filter by hand so the bytes never blend across a carry
+float dtmTap(vec2 uv, float side){ vec2 t=vec2(uv.x*.5+side*.5, uv.y); vec4 c=texture2D(tDtm,t); return (c.r*255.*256.+c.g*255.)/65535.; }
+float dtmBil(vec2 uv, float side){ vec2 p=uv*512.-.5, f=fract(p), i=floor(p);
+  float a=dtmTap((i+vec2(.5,.5))/512.,side), b=dtmTap((i+vec2(1.5,.5))/512.,side), c=dtmTap((i+vec2(.5,1.5))/512.,side), d=dtmTap((i+vec2(1.5,1.5))/512.,side);
+  return mix(mix(a,b,f.x),mix(c,d,f.x),f.y); }
+float hA(vec2 p){ return -2621.547+62.5074*dtmBil(vec2(p.x/1600.+.5,.5-p.y/1600.),0.); }   // HiRISE DTM, metres (areoid)
+float hB(vec2 p){ return -2664.712+352.3924*dtmBil(vec2(p.x/12000.+.5,.5-p.y/12000.),1.); } // CTX DTM
+float terrH(vec2 p){
+  float b=hB(p), a=hA(p), wa=1.-smoothstep(560.,780.,max(abs(p.x),abs(p.y)));
+  float h=mix(b,a,wa)-hB(vec2(0.));
+  float d=length(p);
+  return uOn.x*h*smoothstep(330.,620.,d);           // the city's graded pad eases back into the real ground
+}`;
+{
+  const g = new THREE.PlaneGeometry(9000, 9000, 420, 420); g.rotateX(-Math.PI / 2);
+  const mat = new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0 });
+  mat.customProgramCacheKey = () => 'jezeroTerrain';
+  mat.onBeforeCompile = sh => {
+    Object.assign(sh.uniforms, terrU);
+    sh.vertexShader = TERR_GL + '\nvarying vec3 vTP; varying vec3 vTN;\n' + sh.vertexShader
+      .replace('#include <beginnormal_vertex>', `vec3 objectNormal; { vec2 p=position.xz; float e=8.;
+          objectNormal=normalize(vec3(-(terrH(p+vec2(e,0.))-terrH(p-vec2(e,0.)))/(2.*e),1.,-(terrH(p+vec2(0.,e))-terrH(p-vec2(0.,e)))/(2.*e))); vTN=objectNormal; }
+        #ifdef USE_TANGENT
+          vec3 objectTangent = vec3( tangent.xyz );
+        #endif`)
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\ntransformed.y+=terrH(position.xz); vTP=transformed;');
+    sh.fragmentShader = TERR_GL + '\nvarying vec3 vTP; varying vec3 vTN;\n' + NOISE + `
+      // greyscale orbital images -> height for shading only
+      float bumpL(vec2 p){ float a=uOn.y*(1.-smoothstep(640.,790.,max(abs(p.x),abs(p.y)))), b=uOn.z*(1.-smoothstep(5000.,5900.,max(abs(p.x),abs(p.y))));
+        float hb=texture2D(tCtx,vec2(p.x/12000.+.5,.5-p.y/12000.)).r, ha=texture2D(tHi,vec2(p.x/1600.+.5,.5-p.y/1600.)).r;
+        return mix(.5,mix(hb,ha,a),max(a,b)); }
+      vec3 tA; float tR;
+    ` + sh.fragmentShader
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        { vec2 p=vTP.xz; float d=length(p);
+          // colour: the colour map's own hue for Jezero (sampled wide so it's a tint, not pixels), then regolith variety on top
+          vec3 hue=textureLod(tMars,vec2((77.46+180.)/360.,(18.45+90.)/180.),5.).rgb;
+          float n1=fbm(vec3(p*.004,1.)), n2=fbm(vec3(p*.03,7.)), n3=fbm(vec3(p*.35,3.));
+          vec3 fines=vec3(.62,.38,.22), rust=vec3(.45,.21,.11), sand=vec3(.16,.11,.09), bed=vec3(.7,.55,.42);
+          vec3 c=mix(fines,rust,smoothstep(.35,.7,n1));
+          c=mix(c,sand,smoothstep(.62,.8,n2)*.75);                        // dark basaltic sand drifts
+          float slope=1.-vTN.y; c=mix(c,bed,smoothstep(.05,.25,slope)*.6);  // steep faces expose paler bedrock
+          c*=.85+.3*n3; c=mix(c,c*hue/max(dot(hue,vec3(.33)),.05)*.42,.35);
+          c=mix(c*1.08+.02,c,smoothstep(240.,300.,d));                     // the graded pad reads a touch paler, compacted
+          tA=c*.85; tR=mix(.9,1.,n3);
+          diffuseColor.rgb=tA; }`)
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor=tR;')
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+        { vec2 p=vTP.xz; float w=max(length(fwidth(p)),1e-3), e=max(.3,w*.7);
+          float gx=(bumpL(p+vec2(e,0.))-bumpL(p-vec2(e,0.)))/(2.*e), gz=(bumpL(p+vec2(0.,e))-bumpL(p-vec2(0.,e)))/(2.*e);
+          float k=mix(9.,2.5,smoothstep(1.,6.,w));                          // metres of relief per unit brightness, gentler when far
+          // pebbles + wind ripples up close
+          float r=sin(dot(p,vec2(.9,.43))*2.6+fbm(vec3(p*.2,2.))*6.)*.5+.5, fade=1.-smoothstep(.15,.8,w);
+          gx+=fade*(fbm(vec3(p*3.,5.))-.5)*.6+fade*r*.08; gz+=fade*(fbm(vec3(p*3.+9.,5.))-.5)*.6;
+          normal=normalize(normal+(viewMatrix*vec4(-gx*k*.1,0.,-gz*k*.1,0.)).xyz); }`);
+  };
+  const terrain = new THREE.Mesh(g, mat);
+  terrain.receiveShadow = true; colony.add(terrain);
 }
 
 // sky: butterscotch by day, Mars' blue halo around the sun at dusk, stars at night
 const skyU = { sunDir: { value: new THREE.Vector3() }, night: { value: 0 } };
-colony.add(new THREE.Mesh(new THREE.SphereGeometry(2400, 48, 24), new THREE.ShaderMaterial({
+colony.add(new THREE.Mesh(new THREE.SphereGeometry(7000, 48, 24), new THREE.ShaderMaterial({
   side: THREE.BackSide, depthWrite: false, fog: false, uniforms: skyU,
   vertexShader: `varying vec3 vD; void main(){ vD=normalize(position); gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
   fragmentShader: `uniform vec3 sunDir; uniform float night; varying vec3 vD; ${NOISE}
@@ -266,7 +330,7 @@ function buildColony(g, t) {
   { const c = sunLight.shadow.camera, V = 390 * Math.max(colSun.y, 0.06) + 80; sunLight.target.position.copy(COL); sunLight.position.copy(COL).addScaledVector(colSun, 600);
     if (c.top !== V) { c.top = V; c.bottom = -V; c.updateProjectionMatrix(); } }
   skyU.sunDir.value.copy(colSun); skyU.night.value = night; lightU.g.value = g; lightU.night.value = night; lightU.t.value = t; winU.night.value = night;
-  scene.fog.color.copy(skyCol.copy(dayH).lerp(duskH, night)); scene.fog.near = 260; scene.fog.far = 1650;
+  scene.fog.color.copy(skyCol.copy(dayH).lerp(duskH, night)); scene.fog.near = 500; scene.fog.far = 4200; // haze out to the delta front ~2 km west
   sunLight.intensity = THREE.MathUtils.lerp(2.2, 0.1, night); ambient.intensity = THREE.MathUtils.lerp(0.5, 0.1, night); hemi.intensity = THREE.MathUtils.lerp(1.5, 0.12, night);
   hemi.color.copy(skyCol); tubeMat.emissiveIntensity = night * 0.35;
   // lander cycle: descend on a burn, sit, lift off; repeats a few times across the scroll
