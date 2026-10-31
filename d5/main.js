@@ -12,7 +12,20 @@ const host = q('.d5-canvas');
 
 // ---------- renderer + bloom (the Expanse look is mostly glow against black) ----------
 const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+// quality tier, picked once at boot (?q=low|high overrides). 'high' is the full look; 'low' is for phones, few cores
+// and weak GPUs: 1x pixel ratio, half-size shadow map, no AO/trails/DOF, half the hab instances, coarser terrain grid.
+const QUALITY = (() => {
+  const o = new URLSearchParams(location.search).get('q'); if (o === 'low' || o === 'high') return o;
+  const coarse = matchMedia('(pointer: coarse)').matches, small = Math.min(screen.width, screen.height) < 820;
+  if ((coarse && small) || (navigator.hardwareConcurrency || 8) <= 4) return 'low';
+  let gpu = '';
+  try { const gl = renderer.getContext(), ext = gl.getExtension('WEBGL_debug_renderer_info'); gpu = String(gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER) || ''); } catch (e) { /* unknown GPU: keep high */ }
+  const adreno = /adreno\D*(\d{3})/i.exec(gpu);
+  const weak = /swiftshader|llvmpipe|softpipe|software/i.test(gpu) || (/intel/i.test(gpu) && /\bu?hd\b/i.test(gpu) && !/iris/i.test(gpu)) ||
+    /mali-g[57]\d\b/i.test(gpu) || (adreno && +adreno[1] < 600) || /powervr/i.test(gpu);
+  return weak ? 'low' : 'high';
+})(), HIGH = QUALITY === 'high';
+renderer.setPixelRatio(Math.min(devicePixelRatio, HIGH ? 1.5 : 1));
 renderer.setSize(innerWidth, innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
@@ -24,7 +37,7 @@ scene.background = new THREE.Color(0x010103);
 const cam = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.1, 9000);
 // post: motion blur -> DOF -> bloom -> auto exposure + ACES -> SMAA -> lens (CA, grain, vignette)
 const post = createPost({ THREE, renderer, scene, cam }), { dof, lens, bloom } = post;
-window.__d5 = { renderer, post, dof, lens };
+window.__d5 = { renderer, post, dof, lens, quality: QUALITY };
 addEventListener('resize', () => post.setSize(innerWidth, innerHeight));
 
 // the sun sits far off to the left and behind, so every planet shows a lit crescent and a night side
@@ -50,7 +63,7 @@ planets.moon.material.uniforms.uRelief.value = 0.35; planets.mars.material.unifo
 
 // sky: real HYG star catalog (12.5k stars, true colors) + Gaia Milky Way, drawn at infinity
 let sky = null;
-createSky({ THREE, scene, assetBase: ASSETS, milkyWayIntensity: 0.14 }).then(s => (sky = s)).catch(() => {});
+createSky({ THREE, scene, assetBase: ASSETS, milkyWayIntensity: 0.14 }).then(s => { sky = s; inWorld('space', () => compileIn(s.group)); }).catch(() => {}); // compile now, not on its first frame
 
 const sunLight = new THREE.DirectionalLight(0xfff1dc, 2.4); sunLight.position.copy(toSun).multiplyScalar(100); scene.add(sunLight, sunLight.target, new THREE.AmbientLight(0x223044, 0.35));
 
@@ -63,7 +76,7 @@ const hemi = new THREE.HemisphereLight(0xffc896, 0x5a2a14, 1.4); scene.add(hemi)
 // squashes the ground disc along the light's up axis; buildColony() resizes the vertical extent with the sun elevation every frame.
 // castShadow stays true all the time so lit materials never recompile when the colony toggles; the map itself only renders when the loop requests it.
 sunLight.castShadow = true;
-{ const sh = sunLight.shadow, c = sh.camera; sh.mapSize.set(4096, 2048); sh.bias = -0.0005; sh.normalBias = 0.35; c.left = -390; c.right = 390; c.near = 60; c.far = 1300; }
+{ const sh = sunLight.shadow, c = sh.camera; sh.mapSize.set(HIGH ? 4096 : 2048, HIGH ? 2048 : 1024); sh.bias = -0.0005; sh.normalBias = 0.35; c.left = -390; c.right = 390; c.near = 60; c.far = 1300; }
 scene.fog = new THREE.Fog(0x000000, 1e8, 1e9); // parked far away outside the colony so nothing recompiles
 const ambient = scene.children.find(o => o.isAmbientLight);
 const rnd = (() => { let a = 7; return () => ((a = (a * 16807) % 2147483647) / 2147483647); })(); // seeded so the city is identical every load
@@ -73,6 +86,12 @@ const fbm2 = (x, y) => { let s = 0, a = 0.5; for (let o = 0; o < 5; o++) { s += 
 const sstep = THREE.MathUtils.smoothstep, clamp01 = v => Math.min(1, Math.max(0, v)), easeOut = v => 1 - Math.pow(1 - clamp01(v), 3);
 const radialTex = (stops) => { const c = document.createElement('canvas'); c.width = c.height = 128; const x = c.getContext('2d'), g = x.createRadialGradient(64, 64, 0, 64, 64, 64); stops.forEach(([o, s]) => g.addColorStop(o, s)); x.fillStyle = g; x.fillRect(0, 0, 128, 128); return new THREE.CanvasTexture(c); };
 
+// The colony's contents are built lazily: populateColony() is a generator that yields between its heavy chunks, so it can be
+// stepped in idle time after the intro (scheduleColony) or run to completion on demand (ensureColony) the first time colony
+// mode needs it. It fills colonyAPI when done. The group itself, the shared lights and the shot curves stay at module level.
+const colSun = new THREE.Vector3(); // colony sun direction, written by buildColony, read by the loop
+let colonyAPI = null;               // { build(g, t), cranes } once populated
+function* populateColony() {
 // terrain: the real floor of Jezero Crater, 2 km east of the delta front (18.4455 N, 77.4635 E).
 // Shape: USGS Mars 2020 HiRISE 1 m DTM (inner 1.6 km) blended into the CTX 20 m DTM (12 km), both packed as 16-bit RG.
 // Light: HiRISE 25 cm / CTX 6 m orbital images used ONLY as bump (they are greyscale). Colour: the colour Mars map at Jezero
@@ -124,7 +143,16 @@ function readHB0(tex) {
   return -2664.712 + 352.3924 * v;
 }
 {
-  const g = new THREE.PlaneGeometry(9000, 9000, 420, 420); g.rotateX(-Math.PI / 2);
+  // the grid is written straight into typed arrays in XZ (same vertex order and winding as PlaneGeometry + rotateX(-PI/2)).
+  // Position only: the shader rebuilds the normal from the DTM (beginnormal_vertex is replaced) and the material samples no uv.
+  const N = HIGH ? 420 : 210, N1 = N + 1, S = 9000, step = S / N, pos = new Float32Array(N1 * N1 * 3), idx = new Uint32Array(N * N * 6);
+  for (let iz = 0, k = 0; iz < N1; iz++) { const z = -S / 2 + iz * step; for (let ix = 0; ix < N1; ix++, k += 3) { pos[k] = -S / 2 + ix * step; pos[k + 2] = z; } }
+  for (let iz = 0, k = 0; iz < N; iz++) for (let ix = 0; ix < N; ix++, k += 6) {
+    const a = ix + N1 * iz, b = a + N1, c = b + 1, d = a + 1;
+    idx[k] = a; idx[k + 1] = b; idx[k + 2] = d; idx[k + 3] = b; idx[k + 4] = c; idx[k + 5] = d;
+  }
+  const g = new THREE.BufferGeometry(); g.setIndex(new THREE.BufferAttribute(idx, 1)); g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), S * 0.7072); g.boundingBox = new THREE.Box3(new THREE.Vector3(-S / 2, 0, -S / 2), new THREE.Vector3(S / 2, 0, S / 2));
   const mat = new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0 });
   mat.customProgramCacheKey = () => 'jezeroTerrain';
   mat.onBeforeCompile = sh => {
@@ -187,6 +215,8 @@ colony.add(new THREE.Mesh(new THREE.SphereGeometry(7000, 48, 24), new THREE.Shad
     gl_FragColor=vec4(c,1.); }`
 })));
 
+yield; // terrain + sky are in
+
 // city plan: ring roads + 8 avenues + glass corridors from the hub dome to 4 outer domes
 const RINGS = [62, 132, 204], AVE = 8, DOMES = [[0, 0, 20, 0.02]], TUBES = [];
 for (let k = 0; k < 4; k++) { const a = Math.PI / 8 + k * Math.PI / 2; DOMES.push([Math.cos(a) * 96, Math.sin(a) * 96, 15, 0.26 + k * 0.08]); TUBES.push(a); }
@@ -211,18 +241,23 @@ for (let r = 34; r < 238; r += 14) {
 const winU = { night: { value: 0 } };
 // habitat.js: real geodesic struts, mirror/bronze glass panels with a Mars sky env map, airlocks, antennas, vaulted hangars, big domes with interiors
 const marsEnv = createMarsEnv({ THREE, renderer });
+yield; // PMREM env done
 const HAB = createHabitatAssets({ THREE, renderer, envMap: marsEnv, frameDetail: 'low' });
-const shell = new THREE.InstancedMesh(HAB.habShellGeo, HAB.habShellMat, habs.length); shell.customDepthMaterial = HAB.habShellDepthMat;
-const habGlass = new THREE.InstancedMesh(HAB.habGlassGeo, HAB.habGlassMat, habs.length); habGlass.receiveShadow = true; // same matrices as shell (glass/opaque split is hashed from position)
-const frame = new THREE.InstancedMesh(HAB.habFrameGeo, HAB.habFrameMat, habs.length); frame.receiveShadow = true; frame.castShadow = false; // the shell silhouette already casts the dome
-const ringPad = new THREE.InstancedMesh(HAB.ringPadGeo, HAB.ringPadMat, habs.length);
-const skirt = new THREE.InstancedMesh(HAB.skirtGeo, HAB.skirtMat, habs.length);
-const sheds = new THREE.InstancedMesh(HAB.shedGeo, HAB.shedMat, fabs.length); sheds.customDepthMaterial = HAB.shedDepthMat;
+yield; // habitat geometry + materials done
 // colours drawn in the original order (same rnd() stream), then instances are laid out by build threshold so each frame
 // draws only the started prefix (mesh.count) instead of paying vertex work for hidden ones. habs/fabs keep their order for everything else.
 habs.forEach(l => (l.col = new THREE.Color().setHSL(0.08, 0.06 + rnd() * 0.06, 0.72 + rnd() * 0.16)));
 fabs.forEach(l => (l.col = new THREE.Color().setHSL(0.07, 0.08, 0.55 + rnd() * 0.15)));
-const byBt = (a, b) => a.bt - b.bt, habI = [...habs].sort(byBt), fabI = [...fabs].sort(byBt); // stable sort
+const byBt = (a, b) => a.bt - b.bt, habAll = [...habs].sort(byBt), fabI = [...fabs].sort(byBt); // stable sort
+// low tier: every other hab in build order is dropped, so the city keeps its full extent at half the instances
+if (!HIGH) habAll.forEach((l, i) => (l.skip = i % 2 === 1));
+const habI = habAll.filter(l => !l.skip);
+const shell = new THREE.InstancedMesh(HAB.habShellGeo, HAB.habShellMat, habI.length); shell.customDepthMaterial = HAB.habShellDepthMat;
+const habGlass = new THREE.InstancedMesh(HAB.habGlassGeo, HAB.habGlassMat, habI.length); habGlass.receiveShadow = true; // same matrices as shell (glass/opaque split is hashed from position)
+const frame = new THREE.InstancedMesh(HAB.habFrameGeo, HAB.habFrameMat, habI.length); frame.receiveShadow = true; frame.castShadow = false; // the shell silhouette already casts the dome
+const ringPad = new THREE.InstancedMesh(HAB.ringPadGeo, HAB.ringPadMat, habI.length);
+const skirt = new THREE.InstancedMesh(HAB.skirtGeo, HAB.skirtMat, habI.length);
+const sheds = new THREE.InstancedMesh(HAB.shedGeo, HAB.shedMat, fabs.length); sheds.customDepthMaterial = HAB.shedDepthMat;
 habI.forEach((l, i) => shell.setColorAt(i, l.col)); fabI.forEach((l, i) => sheds.setColorAt(i, l.col));
 // instances outside .count are never drawn, so give each mesh a fixed bound instead of one computed from whatever prefix exists first
 const bnd = r => new THREE.Sphere(new THREE.Vector3(0, 10, 0), r);
@@ -246,7 +281,7 @@ const DOT = `varying vec3 vC; varying float vA; void main(){ float d=length(gl_P
   colony.add(new THREE.Points(g, ptsMat(`attribute float bt; uniform float g; uniform float night; varying vec3 vC; varying float vA; void main(){ vec4 mv=modelViewMatrix*vec4(position,1.); vC=vec3(1.,0.66,0.3); vA=smoothstep(bt,bt+0.025,g)*(0.15+0.85*night); gl_PointSize=clamp(520./-mv.z,1.2,6.); gl_Position=projectionMatrix*mv; }`, DOT)));
 }
 {
-  const p = [], s = []; habs.filter(l => l.r > 5).forEach(l => { p.push(l.x, l.r * l.ys + 0.6, l.z); s.push(l.bt + 0.16, rnd()); });
+  const p = [], s = []; habs.filter(l => l.r > 5).forEach(l => { const k = rnd(); if (!l.skip) { p.push(l.x, l.r * l.ys + 0.6, l.z); s.push(l.bt + 0.16, k); } }); // rnd() drawn for every hab so the stream is tier-independent
   const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3)); g.setAttribute('bs', new THREE.Float32BufferAttribute(s, 2));
   colony.add(new THREE.Points(g, ptsMat(`attribute vec2 bs; uniform float g; uniform float t; uniform float night; varying vec3 vC; varying float vA; void main(){ vec4 mv=modelViewMatrix*vec4(position,1.); vC=vec3(1.,0.12,0.06); vA=step(bs.x,g)*step(0.55,fract(t*0.7+bs.y))*(0.3+0.7*night)*1.6; gl_PointSize=clamp(900./-mv.z,2.,9.); gl_Position=projectionMatrix*mv; }`, DOT)));
 }
@@ -298,7 +333,7 @@ colony.add(plume);
 
 // tower cranes: show up just ahead of the build front, swing like a timelapse, then pack up
 const craneMat = new THREE.MeshStandardMaterial({ color: 0xf0a35a, emissive: 0x3a1a00, roughness: 0.6 });
-const craneLots = habs.filter(l => l.r > 4.2);
+const craneLots = habs.filter(l => l.r > 4.2 && !l.skip);
 const cranes = craneLots.filter((l, i) => i % Math.max(1, Math.floor(craneLots.length / 20)) === 3).slice(0, 20).map((l, i) => {
   const g = new THREE.Group(); g.position.set(l.x + l.r + 2, 0, l.z + 2); const H = Math.max(22, l.r * l.ys + 16);
   const mast = new THREE.Mesh(new THREE.BoxGeometry(1, H, 1).translate(0, H / 2, 0), craneMat);
@@ -309,7 +344,7 @@ const cranes = craneLots.filter((l, i) => i % Math.max(1, Math.floor(craneLots.l
 
 let lastG = -1;
 const mtx = new THREE.Matrix4(), q4 = new THREE.Quaternion(), yAx = new THREE.Vector3(0, 1, 0), v3 = new THREE.Vector3(), s3 = new THREE.Vector3(), q0 = new THREE.Quaternion();
-const colSun = new THREE.Vector3(), skyCol = new THREE.Color(), dayH = new THREE.Color(0.78, 0.54, 0.36), duskH = new THREE.Color(0.2, 0.14, 0.13);
+const skyCol = new THREE.Color(), dayH = new THREE.Color(0.78, 0.54, 0.36), duskH = new THREE.Color(0.2, 0.14, 0.13);
 const qPanel = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 0.5)); // panels tilt toward the low western sun
 const started = (list, g) => { let n = 0; while (n < list.length && list[n].bt < g) n++; return n; }; // easeOut(x) > 0 exactly when bt < g
 // returns true when the build state (and so the shadow casters and sun) changed this frame
@@ -359,6 +394,14 @@ function buildColony(g, t) {
   cranes.forEach(c => { const v = Math.min(easeOut((g - c.bt + 0.08) / 0.04), 1 - easeOut((g - c.bt - 0.2) / 0.04)); c.g.scale.set(1, Math.max(0.001, v), 1); c.g.visible = v > 0.01; });
   return true;
 }
+colonyAPI = { build: buildColony, cranes };
+} // populateColony
+let colonyGen = null, colonyIdle = false;
+const ric = window.requestIdleCallback ? f => requestIdleCallback(f, { timeout: 400 }) : f => setTimeout(f, 40);
+// one chunk of the build; after the last one, queue the colony's shader programs + shadow/upload warm-up
+function colonyStep() { if (colonyAPI) return true; colonyGen = colonyGen || populateColony(); if (colonyGen.next().done) { warmColony(); return true; } return false; }
+function ensureColony() { while (!colonyStep()); }   // synchronous: colony mode is about to render
+function scheduleColony() { if (colonyIdle || colonyAPI) return; colonyIdle = true; const tick = () => { if (!colonyStep()) ric(tick); }; ric(tick); }
 const cPos = new THREE.CatmullRomCurve3([[150, 430, 170], [175, 240, 130], [195, 115, 45], [175, 36, -55]].map(p => new THREE.Vector3(...p).add(COL)), false, 'centripetal');
 const cLook = new THREE.CatmullRomCurve3([[0, 0, 0], [0, 0, 0], [-20, 8, -8], [-210, 28, -40]].map(p => new THREE.Vector3(...p).add(COL)), false, 'centripetal');
 
@@ -457,7 +500,7 @@ window.__d5.path = p => { const a = new THREE.Vector3(), b = new THREE.Vector3()
 
 // ---------- the opening: Austin lot timelapse, then a powers-of-ten pull out to the shot above ----------
 const SITE0 = new THREE.Vector3(0, 40000, 0);
-const site = createSite({ THREE, scene, sunLight, hemi, ORIGIN: SITE0, earthU: earth.material.uniforms, orthoUrl: window.D5_ORTHO || ['https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae5f95dd2740562ba491292_austin-site-ortho.jpg', 'https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae5ffb0de480245132a293d_austin-ortho-8km.jpg', 'https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae5ffb1acea8bf85e7e3734_austin-ortho-80km.jpg'] }); // TxGIO StratMap 2019 (800 m, 8 km) + NAIP 2022 (80 km), public domain, hosted in Webflow assets
+const site = createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN: SITE0, earthU: earth.material.uniforms, orthoUrl: window.D5_ORTHO || ['https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae5f95dd2740562ba491292_austin-site-ortho.jpg', 'https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae5ffb0de480245132a293d_austin-ortho-8km.jpg', 'https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae5ffb1acea8bf85e7e3734_austin-ortho-80km.jpg'] }); // TxGIO StratMap 2019 (800 m, 8 km) + NAIP 2022 (80 km), public domain, hosted in Webflow assets
 const EARTH_SPIN = 0.012, U_PER_M = 10 / 6371000; // Earth radius is 10 units
 const latR = THREE.MathUtils.degToRad(AUSTIN.lat), lonU = (AUSTIN.lon + 180) / 360;
 const austinLocal = new THREE.Vector3(-Math.cos(2 * Math.PI * lonU) * Math.cos(latR), Math.sin(latR), Math.sin(2 * Math.PI * lonU) * Math.cos(latR));
@@ -525,7 +568,7 @@ const h1 = new SplitText('.d5-h1', { type: 'chars,words' });
 const LAPSE = 3.0, PULL = 2.9;
 let introDone = false, introOver = false;
 const lockScroll = on => { document.documentElement.style.overflow = on ? 'hidden' : ''; if (window.lenis) on ? lenis.stop() : lenis.start(); };
-const endIntro = () => { if (introOver) return; introOver = true; lockScroll(false); post.resetMotion(); };
+const endIntro = () => { if (introOver) return; introOver = true; lockScroll(false); post.resetMotion(); planets.loadDeferred(); scheduleColony(); };
 const tl = gsap.timeline({ paused: true, defaults: { ease: 'power3.out' }, onComplete: endIntro }); window.__d5.tl = tl;
 tl.to('.d5-veil', { opacity: 0, duration: 1.6, ease: 'power2.inOut', onComplete: () => (introDone = true) }, 0)
   .to(intro, { s: TL, duration: LAPSE, ease: 'none' }, 0.2)
@@ -537,7 +580,6 @@ tl.to('.d5-veil', { opacity: 0, duration: 1.6, ease: 'power2.inOut', onComplete:
 // arriving mid-page (reload, back button) skips straight to orbit
 const skip = scrollY > 40;
 if (!skip) lockScroll(true);
-(window.tfReady || (f => f()))(() => { if (skip) { tl.progress(1); introDone = true; } else tl.play(); });
 // any scroll intent during the opening fast-forwards it instead of being swallowed
 const hurry = () => { if (!introOver && tl.isActive()) tl.timeScale(4); };
 addEventListener('wheel', hurry, { passive: true }); addEventListener('touchmove', hurry, { passive: true }); addEventListener('keydown', hurry);
@@ -551,6 +593,14 @@ const pos = new THREE.Vector3(), look = new THREE.Vector3(), tmp = new THREE.Vec
 const camUp = new THREE.Vector3(0, 1, 0), NORTH = new THREE.Vector3(0, 0, -1), fwd = new THREE.Vector3();
 const spaceMeshes = [planets.earth, planets.clouds, planets.moon, planets.mars, planets.earthAtmo, planets.marsAtmo];
 const COLOR_SPACE_SUN = new THREE.Color(0xfff1dc);
+// light rig + shadow box per set (the loop calls it on a mode change; the boot warm-up uses it for its throwaway renders)
+function rig(inSite) {
+  const c = sunLight.shadow.camera;
+  sunLight.shadow.normalBias = inSite ? 0.1 : 0.35; // crisper contact shadows under tracks and tyres on the lot
+  if (inSite) { c.left = -160; c.right = 160; c.top = 80; c.bottom = -80; c.near = 50; c.far = 900; ambient.intensity = 0.03; }
+  else { c.left = -390; c.right = 390; c.near = 60; c.far = 1300; sunLight.color.copy(COLOR_SPACE_SUN); }
+  c.updateProjectionMatrix();
+}
 let lastMode = '', lastCover = 0, introEndT = -1, visible = true; document.addEventListener('visibilitychange', () => (visible = !document.hidden));
 const setClip = (n, f) => { if (cam.near !== n || cam.far !== f) { cam.near = n; cam.far = f; cam.updateProjectionMatrix(); } };
 const fmtH = h => { const hh = Math.floor(h), mm = Math.floor((h - hh) * 60); return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0'); };
@@ -561,9 +611,9 @@ const q3 = v => Math.round(v * 1000); // opacity compare at the precision the ol
 // per-frame argument objects, reused (callees destructure them)
 const siteArg = { g: 0, t: 0 }, planetArg = { t: 0, intro: 1, camPos: pos, spin: 0, hole: AUSn }, postArg = { dt: 0, t: 0, focus: 0, aperture: 0, maxblur: 0, ca: 0 };
 const craneOn = c => c.g.visible;
-let siteDist = 0, lastAu = -1, shadowFrame = 0, forceShadow = true, veilSet = false;
+let siteDist = 0, lastAu = -1, shadowFrame = 0, forceShadow = true, veilSet = false, booted = false;
 renderer.setAnimationLoop(() => {
-  if (!visible) return;
+  if (!visible || (!booted && !skip)) return; // under the veil nothing draws until the boot warm-up is done
   const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
   // the plain page below covers the canvas; once it does, stop drawing
   const cover = after ? clamp01(1 - after.getBoundingClientRect().top / innerHeight) : 0;
@@ -577,6 +627,7 @@ renderer.setAnimationLoop(() => {
   const live = introOn ? 0 : sstep(t - introEndT, 0, 2.5); // mouse drift + handheld fade in after the opening lands
   const s = intro.s, zPull = clamp01((s - TL) / (1 - TL)), lam = LAM0 + (LAM1 - LAM0) * smoother(Math.pow(zPull, 0.85));
   const mode = introOn ? (lam < LAMH ? 'site' : 'globe') : (sm >= CA ? 'colony' : 'space');
+  if (mode === 'colony') ensureColony(); else if (sm > 0.3) scheduleColony(); // normally already built in idle time by now
   const inCol = mode === 'colony', inSite = mode === 'site';
   let fov = 46, focus = 30;
   camUp.set(0, 1, 0);
@@ -622,27 +673,23 @@ renderer.setAnimationLoop(() => {
   renderer.toneMappingExposure = introOn && zPull > 0 ? 1.05 * (1 - 0.72 * sstep(lam, Math.log(2e3), Math.log(4e4)) * (1 - sstep(lam, Math.log(8e5), Math.log(5e6)))) : 1.05;
   // per-set switches: what is in the world, which light rig, shadow box
   if (mode !== lastMode) {
-    const c = sunLight.shadow.camera;
     site.group.visible = inSite; colony.visible = inCol;
     spaceMeshes.forEach(m => (m.visible = !inSite && !inCol));
-    sunLight.shadow.normalBias = inSite ? 0.1 : 0.35; // crisper contact shadows under tracks and tyres on the lot
-    if (inSite) { c.left = -160; c.right = 160; c.top = 80; c.bottom = -80; c.near = 50; c.far = 900; ambient.intensity = 0.03; }
-    else { c.left = -390; c.right = 390; c.near = 60; c.far = 1300; sunLight.color.copy(COLOR_SPACE_SUN); }
-    c.updateProjectionMatrix();
+    rig(inSite);
     post.motion.cutDist = mode === 'site' || mode === 'globe' ? 1e12 : 400;
-    post.trails.enabled = inSite; post.ao.enabled = inSite; // long-exposure smears on the moving machines + contact shadows, only on the job site // the pull out is one long zoom: keep the blur on through it
+    post.trails.enabled = post.ao.enabled = inSite && HIGH; // long-exposure smears on the moving machines + contact shadows, only on the job site // the pull out is one long zoom: keep the blur on through it
     if ((lastMode === 'site' && mode === 'globe') || lastMode === '') post.resetMotion();
     lastMode = mode; forceShadow = true; // never show a shadow map left over from another set
   }
   const sunDir = inCol ? colSun : toSun;
-  const built = inCol && buildColony(clamp01((sm - CA) / (1 - CA)), t);
+  const built = inCol && colonyAPI.build(clamp01((sm - CA) / (1 - CA)), t);
   if (!inCol && !inSite) { scene.fog.near = 1e8; scene.fog.far = 1e9; sunLight.intensity = 2.4; ambient.intensity = 0.35; hemi.intensity = 0; }
   // shadow policy (autoUpdate is off). Site: machines move every frame, so redraw every frame while the sun is up and the lot is
   // close enough to resolve them. Colony: the build state and sun only change with g; between changes only the crane jibs move,
   // slowly, so every 3rd frame is enough. Space/globe: nothing casts.
   shadowFrame++;
   if (inSite) { if (forceShadow || (sunLight.intensity > 0.01 && siteDist < 2500)) { renderer.shadowMap.needsUpdate = true; forceShadow = false; } }
-  else if (inCol) { if (forceShadow || built || (shadowFrame % 3 === 0 && cranes.some(craneOn))) { renderer.shadowMap.needsUpdate = true; forceShadow = false; } }
+  else if (inCol) { if (forceShadow || built || (shadowFrame % 3 === 0 && colonyAPI.cranes.some(craneOn))) { renderer.shadowMap.needsUpdate = true; forceShadow = false; } }
   else { sunLight.target.position.set(0, 0, 0); sunLight.position.copy(sunDir).multiplyScalar(100); }
   // the one cut left: a warm atmospheric-entry flash into Jezero
   const hIn = sstep(sm, CA - 0.022, CA) * (1 - sstep(sm, CA, CA + 0.026));
@@ -685,7 +732,7 @@ renderer.setAnimationLoop(() => {
   if (sat.visible) { const sd = pos.distanceTo(sat.position), inFront = tmp.copy(sat.position).sub(pos).normalize().dot(tmp2.copy(look).sub(pos).normalize()); if (sd < 14 && inFront > 0.55) fd = THREE.MathUtils.lerp(fd, sd, sstep(sd, 14, 6)); }
   const deep = inSite || mode === 'globe';
   postArg.dt = dt; postArg.t = t; postArg.focus = fd; postArg.aperture = (deep ? 0.0004 : inCol ? 0.006 : fd < 12 ? 0.02 : 0.003) / fd;
-  postArg.maxblur = deep ? 0.0008 : inCol ? 0.0042 : fd < 12 ? 0.005 : 0.0018; postArg.ca = 0.012 + hIn * 0.06;
+  postArg.maxblur = !HIGH ? 0 : deep ? 0.0008 : inCol ? 0.0042 : fd < 12 ? 0.005 : 0.0018; postArg.ca = 0.012 + hIn * 0.06;
   post.update(postArg); // post skips the DOF pass itself when its blur would be sub-pixel (the deep site/globe focus usually is)
 
   // overlays
@@ -716,3 +763,65 @@ const STOPS = [['Earth', 0], ['Luna', 0.3], ['Mars', 0.47], ['Jezero', 0.72]];
 qa('.d5-stop').forEach((s, i) => { if (STOPS[i]) { s.textContent = STOPS[i][0]; s.dataset.p = STOPS[i][1]; } else s.remove(); });
 qa('.d5-stop').forEach(s => (s.style.top = (+s.dataset.p * 100) + '%'));
 qa('.d5-stop').forEach(s => s.addEventListener('click', e => { e.preventDefault(); const p = +s.dataset.p, y = track.offsetTop + p * (track.offsetHeight - innerHeight); window.lenis ? lenis.scrollTo(y, { duration: 2.4 }) : scrollTo(0, y); }));
+
+// ---------- boot warm-up: compile every program and upload every buffer while the veil is still up ----------
+// compileAsync covers the main programs (KHR_parallel_shader_compile lets the driver build them off the main thread);
+// throwaway draws cover what it can't see (shadow depth programs, buffer + texture uploads, the shadow map itself);
+// post.warm() covers the post chain. Goal: no mode's first frame compiles anything.
+const rtWarm = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType }); // the scene pass also draws into a half-float target, so program keys match
+const wait = ms => new Promise(r => setTimeout(r, ms));
+// queue a subtree's programs. Without KHR_parallel_shader_compile, compileAsync only adds polling (and a console warning
+// per call), so compile() directly; the throwaway draws that follow wait for the programs either way.
+const PARALLEL = renderer.extensions.has('KHR_parallel_shader_compile'), NOOP = new THREE.Object3D();
+const compileIn = root => PARALLEL ? renderer.compileAsync(root, cam, scene) : (renderer.compile(root, cam, scene), Promise.resolve());
+const spaceRoots = () => [...spaceMeshes, sunCore, streak, dust, sat, ...(sky ? [sky.group] : [])];
+// run fn with exactly one world shown, as the loop shows it in that mode. Only site.group holds lights (the two work lights),
+// so its visibility is what sets the light count in the program keys; the rest only matters for the throwaway draws.
+function inWorld(w, fn) {
+  const roots = [site.group, colony, ...spaceRoots()], vis = roots.map(o => o.visible), rt = renderer.getRenderTarget();
+  site.group.visible = w === 'site'; colony.visible = w === 'colony'; for (const o of spaceRoots()) o.visible = w === 'space';
+  renderer.setRenderTarget(rtWarm);
+  try { return fn(); } finally { roots.forEach((o, i) => (o.visible = vis[i])); renderer.setRenderTarget(rt); }
+}
+// one draw of a world into the 4x4 target with every object in it shown and nothing culled
+function throwaway(w) {
+  const touched = [];
+  inWorld(w, () => {
+    for (const r of w === 'site' ? [site.group] : w === 'colony' ? [colony] : spaceRoots())
+      r.traverse(o => { touched.push([o, o.visible, o.frustumCulled]); o.visible = true; o.frustumCulled = false; });
+    try {
+      rig(w === 'site');
+      if (w === 'colony') colonyAPI.build(0, 0);
+      // render() draws the shadow map before it sets up this frame's lights, and depth program keys include the light
+      // counts, so set the lights up first (a compile of nothing does exactly that) or the depth programs get stale keys
+      renderer.compile(NOOP, cam, scene);
+      renderer.shadowMap.needsUpdate = w !== 'space'; // nothing casts in space
+      renderer.render(scene, cam);
+    } finally { for (const [o, v, f] of touched) { o.visible = v; o.frustumCulled = f; } }
+  });
+  lastMode = ''; forceShadow = true; // the loop re-applies its own rig and redraws its shadow map on its next frame
+}
+async function precompile() {
+  const t0 = performance.now(), jobs = [];
+  inWorld('site', () => jobs.push(compileIn(site.group)));
+  inWorld('space', () => { for (const o of spaceRoots()) jobs.push(compileIn(o)); });
+  if (colonyAPI) inWorld('colony', () => jobs.push(compileIn(colony)));
+  await Promise.race([Promise.all(jobs), wait(1500)]);
+  throwaway('site'); throwaway('space'); if (colonyAPI) throwaway('colony');
+  post.warm({ fx: HIGH }); // AO + trails only ever run on the high tier
+  window.__d5.bootMs = Math.round(performance.now() - t0); window.__d5.bootPrograms = renderer.info.programs.length;
+}
+// the colony is populated after boot (see populateColony): same warm-up for it once it exists, unless it is already on screen
+async function warmColony() {
+  let job; inWorld('colony', () => (job = compileIn(colony)));
+  await Promise.race([job, wait(1500)]);
+  if (lastMode !== 'colony') throwaway('colony');
+  window.__d5.colonyPrograms = renderer.info.programs.length;
+}
+window.__d5.ensureColony = ensureColony; // QA hook
+
+// ---------- start: the timelapse waits for the warm-up and its first photos (800 m ortho + Earth maps), at most 2.5 s for the photos ----------
+const bootP = precompile().catch(e => console.warn('d5 warm-up:', e)).then(() => { booted = true; });
+const loadP = Promise.race([Promise.all([site.ready, planets.ready]), wait(2500)]);
+window.__d5.boot = bootP;
+(window.tfReady || (f => f()))(() => { if (skip) { tl.progress(1); introDone = true; } else Promise.all([bootP, loadP]).then(() => { window.__d5.startMs = Math.round(performance.now()); tl.play(); }); });

@@ -67,7 +67,7 @@ const BUMP = k => /* glsl */ `{
     normal=normalize(normal+(viewMatrix*vec4(-gx,0.,-gz,0.)).xyz*${k}*fade);
   } }`;
 
-export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU, orthoUrl }) {
+export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, earthU, orthoUrl }) {
   const group = new THREE.Group(); group.position.copy(ORIGIN); group.visible = false; scene.add(group);
   const U = { uG: { value: 0 }, uNight: { value: 0 }, uT: { value: 0 }, uWork: { value: 0 }, uSunL: { value: new THREE.Vector3(0, 1, 0) },
     uOrigin: { value: ORIGIN.clone() }, tMap: earthU.tMap, tLights: earthU.tLights, uLL: { value: new THREE.Vector2(AUSTIN.lat, AUSTIN.lon) },
@@ -78,8 +78,22 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU, ortho
   // three nested photos, all north-up on the same centre: 800 m (6 in), 8 km (StratMap 2019 resampled ~4 m), 80 km (NAIP 2022 resampled ~40 m)
   { const d = new THREE.DataTexture(new Uint8Array([70, 72, 60, 255]), 1, 1); d.needsUpdate = true; U.tOrthoB.value = d; U.tOrthoC.value = d; }
   const ld = new THREE.TextureLoader(); ld.setCrossOrigin('anonymous');
-  const loadInto = (url, tex, on) => url && ld.load(url, t => { t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; t.needsUpdate = true; U[tex].value = t; U[on].value = 1; });
-  if (orthoUrl) { const [a, b, c] = [].concat(orthoUrl); loadInto(a, 'tOrtho', 'uOrthoOn'); loadInto(b, 'tOrthoB', 'uOrthoBOn'); loadInto(c, 'tOrthoC', 'uOrthoCOn'); }
+  // load -> decode off the main thread -> upload -> swap, so the first frame that samples a photo never stalls on it.
+  // Resolves true once swapped in, false if it failed (CORS, 404): the procedural ground just stays.
+  const loadInto = (url, tex, on) => new Promise(res => {
+    if (!url) return res(false);
+    ld.load(url, t => {
+      const img = t.image, dec = img && img.decode ? img.decode().catch(() => {}) : Promise.resolve();
+      dec.then(() => {
+        t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; t.needsUpdate = true;
+        if (renderer && renderer.initTexture) try { renderer.initTexture(t); } catch (e) { /* first draw uploads it instead */ }
+        U[tex].value = t; U[on].value = 1; res(true);
+      });
+    }, undefined, () => res(false));
+  });
+  const [oA, oB, oC] = [].concat(orthoUrl || []);
+  const ready = loadInto(oA, 'tOrtho', 'uOrthoOn'); // the 800 m lot photo: the opening frame waits on this one (main.js races it)
+  const readyAll = Promise.all([ready, loadInto(oB, 'tOrthoB', 'uOrthoBOn'), loadInto(oC, 'tOrthoC', 'uOrthoCOn')]);
   let patchN = 0;
   const patch = (mat, vHead, vBody, fHead, fColor, fRough, fEmit, normalFn, fNormal) => {
     const key = 'tfsite' + patchN++; mat.customProgramCacheKey = () => key; // each patched material needs its own program
@@ -504,5 +518,5 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU, ortho
     cloudU.uFade.value = cloudFade; cloudU.uT.value = t;
     clouds.forEach(m => { m.visible = cloudFade > 0.001; const cs = Math.max(20000, alt * 14); m.scale.set(cs, 1, cs); m.position.x = camLocal.x; m.position.z = camLocal.z; });
   }
-  return { group, update, follow, uniforms: U, D };
+  return { group, update, follow, uniforms: U, D, ready, readyAll };
 }

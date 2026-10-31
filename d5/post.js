@@ -425,12 +425,27 @@ export function createPost({ THREE, renderer, scene, cam }) {
 
   function render() { composer.render(lastDt); }
 
+  // boot hook: run the whole chain twice with every stage forced on (blur + optional AO/trails, then the plain copy path)
+  // so all pass programs compile now instead of on the frame that first needs them. The scene pass is skipped (the
+  // output is garbage; call it while the canvas is hidden). History and exposure restart clean afterwards.
+  function warm({ fx = true } = {}) {
+    const keep = [scenePass.enabled, scenePass.useRT, mbPass.enabled, mbPass.blur, dof.enabled, trails.enabled, ao.enabled];
+    try {
+      scenePass.enabled = false; scenePass.useRT = true; mbPass.enabled = true; dof.enabled = true;
+      mbPass.blur = true; trails.enabled = ao.enabled = fx; composer.render(1 / 60);
+      mbPass.blur = false; trails.enabled = ao.enabled = false; composer.render(1 / 60);
+    } finally {
+      [scenePass.enabled, scenePass.useRT, mbPass.enabled, mbPass.blur, dof.enabled, trails.enabled, ao.enabled] = keep;
+      mbPass.histOk = false; tonePass.snap = true; resetNext = true;
+    }
+  }
+
   // debug / QA: synchronous readback (stalls the GPU, never call in production)
   const _px = new Float32Array(4);
   function getExposure() { renderer.readRenderTargetPixels(tonePass.sA, 0, 0, 1, 1, _px); return { exposure: _px[0], lnLum: _px[1] }; }
 
   return {
-    composer, dof, lens, bloom, smaa, setSize, update, render,
+    composer, dof, lens, bloom, smaa, setSize, update, render, warm,
     motion, auto, trails, ao,
     resetMotion() { resetNext = true; },          // call on hard cuts if you know about them (big jumps are also auto-detected)
     snapExposure() { tonePass.snap = true; },     // jump exposure to target next frame (no adaptation)
