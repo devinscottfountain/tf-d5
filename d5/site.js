@@ -4,6 +4,7 @@
 // The ground is one camera-following quad whose shader paints the neighbourhood procedurally and fades into the
 // real Earth colour + NASA night-lights maps at altitude, so the hand-off to the globe in main.js matches.
 
+import { createMachines } from './machines.js';
 export const AUSTIN = { lat: 30.250453, lon: -97.719913 }; // a real 2019 dirt site by Lady Bird Lake, East Austin
 // the lot's long axis runs 17 deg south of east, so the local frame is turned to it; the photo stays north-up
 export const SITE_ROT = 17 * Math.PI / 180;
@@ -348,72 +349,18 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU, ortho
     segs.forEach(([x, z, r], i) => { tmpM.compose(tv.set(x, 0, z), tq.setFromAxisAngle(YA, r ? Math.PI / 2 : 0), ts.set(1, 1, 1)); f.setMatrixAt(i, tmpM); });
     f.castShadow = true; group.add(f);
   }
-  // site furniture: trailer, toilets, dumpster, rebar + form stock, light towers
-  box(18, 3.2, 3.4, mats.white, 52, 1.6, -45); box(16, 0.25, 3.8, mats.grey, 52, 3.3, -45);
-  for (let i = 0; i < 3; i++) box(1.2, 2.3, 1.2, mats.blue, 66 + i * 1.5, 1.15, -46);
-  box(6, 1.8, 2.4, mats.blue, 62, 0.9, 44);
-  for (let i = 0; i < 6; i++) box(12, 0.35, 1.2, mats.rust, -58, 0.2 + (i % 2) * 0.36, 34 + i * 1.6);
-  for (let i = 0; i < 4; i++) box(2.4, 1.1, 2.4, mats.ply, -44 + i * 3, 0.55, 44);
-  const towers = [[-60, -42], [60, -42], [-60, 42], [20, 30]].map(([x, z]) => {
-    const g = new THREE.Group(); g.position.set(x, 0, z); group.add(g);
-    box(2.2, 1.2, 1.4, mats.yel, 0, 0.6, 0, g); box(0.2, 9, 0.2, mats.grey, 0, 5.5, 0, g);
-    const head = box(2.2, 0.5, 0.4, mats.lamp, 0, 10, 0, g); head.castShadow = false; return head;
-  });
   const workLights = [new THREE.PointLight(0xfff0d8, 0, 90, 1.6), new THREE.PointLight(0xfff0d8, 0, 90, 1.6)];
   workLights[0].position.set(-30, 14, -10); workLights[1].position.set(30, 14, 10); workLights.forEach(l => group.add(l));
 
-  // ---------------------------------------------------------------- machines
-  const excavator = (x, z) => {
-    const g = new THREE.Group(); g.position.set(x, 0, z); group.add(g);
-    for (const s of [-1, 1]) box(4.9, 1, 0.65, mats.dark, 0, 0.5, s * 1.25, g);
-    const up = new THREE.Group(); up.position.y = 1.1; g.add(up);
-    box(3.1, 1.3, 2.9, mats.yel, -0.4, 0.65, 0, up); box(1.1, 1.0, 2.9, mats.dark, -2.3, 0.6, 0, up); box(1.0, 1.6, 1.0, mats.glass, 0.6, 1.6, -0.9, up);
-    const boom = new THREE.Group(); boom.position.set(1.1, 1.0, 0.45); up.add(boom); box(6.4, 0.7, 0.6, mats.yel, 3.2, 0, 0, boom);
-    const stick = new THREE.Group(); stick.position.set(6.4, 0, 0); boom.add(stick); box(3.2, 0.5, 0.45, mats.yel, 1.6, 0, 0, stick);
-    const bucket = box(1.1, 1.0, 1.4, mats.dark, 3.5, -0.2, 0, stick);
-    return { g, up, boom, stick, bucket };
-  };
-  const exA = excavator(-20, -13), exB = excavator(-10, 13);
-  const truck = () => {
-    const g = new THREE.Group(); group.add(g);
-    box(2.4, 2.6, 2.5, mats.white, 3.4, 1.6, 0, g); box(0.6, 0.9, 2.3, mats.glass, 4.4, 2.3, 0, g);
-    box(8, 0.5, 2.3, mats.dark, 0.4, 0.8, 0, g); box(5.4, 1.5, 2.5, mats.yel, -0.9, 1.9, 0, g);
-    const load = box(5.0, 0.6, 2.2, M(0x6e5a44, 1), -0.9, 2.5, 0, g);
-    for (const ax of [3.2, -0.8, -2.6]) for (const s of [-1, 1]) cyl(0.55, 0.45, mats.dark, ax, 0.55, s * 1.05, g);
-    return { g, load };
-  };
-  const trucks = [truck(), truck(), truck(), truck()];
-  const dozer = (() => { const g = new THREE.Group(); group.add(g); box(4.2, 1.8, 2.6, mats.yel, 0, 1.4, 0, g); box(1.4, 1.2, 1.4, mats.glass, -0.6, 2.8, 0, g);
-    for (const s of [-1, 1]) box(4.6, 0.9, 0.6, mats.dark, 0, 0.45, s * 1.15, g); box(0.4, 1.3, 3.8, mats.yel, 2.7, 0.8, 0, g); return g; })();
-  // concrete pump with a two piece boom, plus two mixers
-  const pump = (() => {
-    const g = new THREE.Group(); group.add(g); box(11, 1.0, 2.5, mats.white, 0, 1.2, 0, g); box(2.4, 2.4, 2.5, mats.white, 5.2, 2.2, 0, g); box(3, 1.4, 2.5, mats.grey, -1, 2.3, 0, g);
-    const s1 = box(1, 0.6, 0.6, mats.orange, 0, 0, 0), s2 = box(1, 0.5, 0.5, mats.orange, 0, 0, 0), hose = box(1, 0.25, 0.25, mats.dark, 0, 0, 0);
-    return { g, s1, s2, hose };
-  })();
-  const mixer = () => { const g = new THREE.Group(); group.add(g); box(2.4, 2.6, 2.5, mats.white, 3.2, 1.6, 0, g); box(8, 0.5, 2.3, mats.dark, 0.4, 0.8, 0, g);
-    const d = cyl(1.25, 4.6, mats.drum, -0.8, 2.6, 0, g, 'x'); d.rotation.z = 0.2; return { g, d }; };
-  const mixers = [mixer(), mixer()];
-  // tower crane in the footprint: mast grows, then the jib swings all day
-  const crane = (() => {
-    const g = new THREE.Group(); g.position.set(-4, -D, 4); group.add(g);
-    const mast = box(1.6, 1, 1.6, mats.yel, 0, 0, 0, g); mast.geometry.translate(0, 0.5, 0);
-    const top = new THREE.Group(); g.add(top);
-    box(52, 1.2, 1.2, mats.yel, 22, 0, 0, top); box(15, 1.2, 1.2, mats.yel, -7.5, 0, 0, top); box(4, 2.6, 2.4, mats.conc, -12.5, -0.6, 0, top); box(2, 2, 2, mats.white, 1.8, -1.8, -1.6, top);
-    const trolley = new THREE.Group(); top.add(trolley); box(1.4, 0.4, 1.4, mats.dark, 0, -0.8, 0, trolley);
-    const line = box(0.08, 1, 0.08, mats.dark, 0, 0, 0, trolley); const hook = box(0.8, 0.8, 0.8, mats.orange, 0, 0, 0, trolley);
-    return { g, mast, top, trolley, line, hook };
-  })();
+  // ---------------------------------------------------------------- machines, crew, light towers, site furniture (machines.js: CAT 336s, tri-axle dumps, D6, boom pump, mixers, flat-top crane)
+  const { exA, exB, trucks, dozer, pump, mixers, crane, crew, towers } = createMachines({ THREE, group, D });
+  const NW = 44;
   // building: 40 columns, two cores, then the first deck's forms
   const COLS = []; for (let x = -28; x <= 28; x += 8) for (let z = -16; z <= 16; z += 8) COLS.push([x, z]);
   const colMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.75, 1, 0.75).translate(0, 0.5, 0), mats.conc, COLS.length); colMesh.castShadow = colMesh.receiveShadow = true; group.add(colMesh);
   const cores = [[-12, -4, 8, 6], [14, 5, 6, 6]].map(([x, z, w, d]) => { const m = box(w, 1, d, mats.conc, x, -D, z); m.geometry.translate(0, 0.5, 0); return m; });
   const DECK = []; for (let x = -28; x < 28; x += 8) for (let z = -18; z < 18; z += 9) DECK.push([x + 4, z + 4.5]);
   const deck = new THREE.InstancedMesh(new THREE.BoxGeometry(7.8, 0.35, 8.8), mats.ply, DECK.length); deck.castShadow = deck.receiveShadow = true; group.add(deck);
-  // crew
-  const NW = 44, crew = new THREE.InstancedMesh(new THREE.BoxGeometry(0.55, 1.75, 0.4).translate(0, 0.88, 0), M(0xffffff, 0.6, 0, 0x331100), NW);
-  for (let i = 0; i < NW; i++) crew.setColorAt(i, new THREE.Color([0xff6a00, 0xffc400, 0xb8ff2a][i % 3])); crew.castShadow = true; group.add(crew);
-
   // ---------------------------------------------------------------- clock: 2.6 days of Austin late October, work only in daylight
   const H0 = 7.5, HSPAN = 63, LAT = THREE.MathUtils.degToRad(AUSTIN.lat), DEC = THREE.MathUtils.degToRad(-13);
   const workHrs = h => { const d = Math.floor(h / 24), hd = h - d * 24; return d * 11 + Math.min(11, Math.max(0, hd - 7)); };

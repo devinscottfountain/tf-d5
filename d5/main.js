@@ -549,6 +549,7 @@ renderer.setAnimationLoop(() => {
     const c = sunLight.shadow.camera;
     site.group.visible = inSite; colony.visible = inCol;
     spaceMeshes.forEach(m => (m.visible = !inSite && !inCol));
+    sunLight.shadow.normalBias = inSite ? 0.1 : 0.35; // crisper contact shadows under tracks and tyres on the lot
     if (inSite) { c.left = -160; c.right = 160; c.top = 80; c.bottom = -80; c.near = 50; c.far = 900; ambient.intensity = 0.03; }
     else { c.left = -390; c.right = 390; c.near = 60; c.far = 1300; sunLight.color.copy(COLOR_SPACE_SUN); }
     c.updateProjectionMatrix();

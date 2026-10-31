@@ -415,11 +415,11 @@ export function createMachines({ THREE, group, D = 4 }) {
     const kd = Kit(2.6, 0.45), prof = [[0.0, 2.5], [0.45, 2.48], [0.62, 2.3], [1.14, 1.25], [1.2, 0.9], [1.2, -0.25], [1.15, -0.6], [0.72, -1.95], [0.46, -2.42], [0.0, -2.44]], pts = [];
     for (let i = 0; i < prof.length - 1; i++) { const n = i === 0 || i === prof.length - 2 ? 1 : 5; for (let j = 0; j < n; j++) { const t = j / n; pts.push(new THREE.Vector2(prof[i][0] + (prof[i + 1][0] - prof[i][0]) * t, prof[i][1] + (prof[i + 1][1] - prof[i][1]) * t)); } }
     pts.push(new THREE.Vector2(...prof[prof.length - 1]));
-    const lathe = new THREE.LatheGeometry(pts, 56).rotateZ(-Math.PI / 2);
+    const lathe = new THREE.LatheGeometry(pts.reverse(), 56).rotateZ(-Math.PI / 2); // profile must run -y to +y for outward faces
     const ca = new THREE.Color(P.a), cb = new THREE.Color(P.b), cm = new THREE.Color();
     kd.add('paint', P.a, lathe, null, { vf: (x, y, z) => { const a = Math.atan2(z, y) / (Math.PI * 2), s = ((a * 2 + x * 0.32) % 1 + 1) % 1, e = Math.min(1, Math.max(0, (Math.min(s, 0.32 - s) + 0.02) / 0.04)); return cm.copy(ca).lerp(cb, s < 0.34 ? e : 0); }, rust: 0.05, jit: 0 });
     kd.add('rough', 0x8d8a83, new THREE.CylinderGeometry(0.47, 0.47, 0.05, 20).rotateZ(Math.PI / 2), T(-2.43, 0, 0), { dirt: 1 }); // crusted mouth
-    kd.rod('metal', 0x55534f, [-0.52, 0, 0], [-0.4, 0, 0], 1.23, 32, { rust: 0.4 }); // roller ring
+    kd.rod('metal', 0x55534f, [-0.52, 0, 0], [-0.4, 0, 0], 1.2, 32, { rust: 0.4 }); // roller ring
     for (let j = 0; j < 6; j++) { const a = j / 6 * Math.PI * 2; kd.bar('rough', 0x9b978f, [-2.0, Math.cos(a) * 0.86, Math.sin(a) * 0.86], [-1.2, Math.cos(a + 0.5) * 1.17, Math.sin(a + 0.5) * 1.17], 0.08, { dirt: 1 }); } // concrete drips
     kd.build(d);
     return { g, d };
@@ -576,7 +576,7 @@ export function createMachines({ THREE, group, D = 4 }) {
       k.B('paint', 0xd5d5cf, x - 0.4, 0.15, z + 0.58, x + 0.4, 2.0, z + 0.6);
     });
     { // 30 yd roll-off dumpster at (62,44) with debris
-      const X = 62, Z = 44, L = 6.2, W = 2.4, H = 1.75, DC = 0x2f557d, O = { rust: 0.85, dirt: 0.7 };
+      const X = 62, Z = 44, L = 6.2, W = 2.4, H = 1.75, DC = 0x3a5873, O = { rust: 0.85, dirt: 0.7 };
       k.B('paint', DC, X - L / 2, 0.15, Z - W / 2, X + L / 2, 0.3, Z + W / 2, O);
       for (const s of [-1, 1]) { k.B('paint', DC, X - L / 2, 0.15, Z + s * W / 2 - 0.05, X + L / 2, H, Z + s * W / 2 + 0.05, O); k.B('paint', DC, X + s * L / 2 - 0.05, 0.15, Z - W / 2, X + s * L / 2 + 0.05, H, Z + W / 2, O);
         k.B('paint', DC, X - L / 2, H - 0.06, Z + s * W / 2 - 0.1, X + L / 2, H + 0.06, Z + s * W / 2 + 0.1, O);
