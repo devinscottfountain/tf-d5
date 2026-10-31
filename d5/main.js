@@ -3,8 +3,7 @@ import * as THREE from 'three';
 import { createPost } from './post.js';
 import { createSky } from './sky.js';
 import { createPlanets } from './planets.js';
-import { createSaturn } from './saturn.js';
-import { createBelt } from './belt.js';
+import { createSite, AUSTIN } from './site.js';
 const ASSETS = new URL('./assets', import.meta.url).href; // textures + star catalog live next to this file
 
 const q = (s, r = document) => r.querySelector(s), qa = (s, r = document) => [...r.querySelectorAll(s)];
@@ -40,31 +39,25 @@ float fbm(vec3 p){float v=0.,a=.5;for(int i=0;i<5;i++){v+=a*n3(p);p*=2.03;a*=.5;
 
 // ---------- the solar system, laid out along -z so the camera can fly "outward" ----------
 // spacing: each body's distance from Earth scales out by its factor; sizes stay, so the gaps read as real travel
-const SPREAD = { moon: 1.7, mars: 1.9, belt: 1.9, saturn: 1.8 };
-const MOON0 = new THREE.Vector3(26, 6, -42), MARS0 = new THREE.Vector3(-36, -4, -300), SATURN0 = new THREE.Vector3(72, -14, -1160);
-const EARTH = new THREE.Vector3(0, 0, 0), MOON = MOON0.clone().multiplyScalar(SPREAD.moon), MARS = MARS0.clone().multiplyScalar(SPREAD.mars), SATURN = SATURN0.clone().multiplyScalar(SPREAD.saturn);
-const dMoon = MOON.clone().sub(MOON0), dMars = MARS.clone().sub(MARS0), dSat = SATURN.clone().sub(SATURN0);
+const SPREAD = { moon: 1.7, mars: 1.9 };
+const MOON0 = new THREE.Vector3(26, 6, -42), MARS0 = new THREE.Vector3(-36, -4, -300);
+const EARTH = new THREE.Vector3(0, 0, 0), MOON = MOON0.clone().multiplyScalar(SPREAD.moon), MARS = MARS0.clone().multiplyScalar(SPREAD.mars);
 // Earth/Moon/Mars: user color maps + NASA night lights, clouds w/ shadows, ocean glint, relief, single-scatter atmospheres
 const planets = createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS, assetBase: ASSETS });
 const { earth, moon, mars } = planets;
 planets.moon.material.uniforms.uRelief.value = 0.35; planets.mars.material.uniforms.uRelief.value = 0.4; // relief is synthesized, keep it a whisper so the real maps lead
-// Saturn: real map, ring strip, ring shadow on the planet + planet shadow on the rings
-const saturnMod = createSaturn({ THREE, scene, toSun, SATURN, assetBase: ASSETS });
 
 // sky: real HYG star catalog (12.5k stars, true colors) + Gaia Milky Way, drawn at infinity
 let sky = null;
 createSky({ THREE, scene, assetBase: ASSETS, milkyWayIntensity: 0.14 }).then(s => (sky = s)).catch(() => {});
 
-// the belt: instanced lumpy rocks the camera threads through
 const sunLight = new THREE.DirectionalLight(0xfff1dc, 2.4); sunLight.position.copy(toSun).multiplyScalar(100); scene.add(sunLight, sunLight.target, new THREE.AmbientLight(0x223044, 0.35));
-// belt: displaced, triplanar-textured rock variants tumbling in the vertex shader
-const belt = createBelt({ THREE, scene, SPREAD }), rocks = belt.rocks;
 
 // ---------- Jezero Base: close-up construction timelapse on the Mars surface ----------
 // lives far below the solar system inside its own sky dome; the camera cuts to it behind an entry flash
 const COL = new THREE.Vector3(0, -6000, 0);
 const colony = new THREE.Group(); colony.position.copy(COL); colony.visible = false; scene.add(colony);
-const hemi = new THREE.HemisphereLight(0xffc896, 0x5a2a14, 1.4); colony.add(hemi); // dusty sky bounce so facades aren't black
+const hemi = new THREE.HemisphereLight(0xffc896, 0x5a2a14, 1.4); scene.add(hemi); hemi.intensity = 0; // sky bounce, shared by the Austin site and the colony (one light, so materials never recompile)
 // sun shadow: orthographic box fitted around the colony (radius ~350 plus the solar farm). The map is wider than tall because a low sun
 // squashes the ground disc along the light's up axis; buildColony() resizes the vertical extent with the sun elevation every frame.
 // castShadow stays true all the time so lit materials never recompile when the colony toggles; the map itself only renders when the loop requests it.
@@ -339,63 +332,79 @@ const dust = new THREE.Group(); scene.add(dust);
 }
 const lastPos = new THREE.Vector3(), camVel = new THREE.Vector3(), velTmp = new THREE.Vector3(); let hasLast = false;
 
-// ---------- camera path: [scroll progress, position, look target] ----------
-// opening shot: camera on Earth's night side, looking toward the sun, raised just enough that
-// the sun sits right behind the top limb. upP = "up" with the sun direction removed.
+// ---------- opening frame in space: Earth's night side, sun about to crest the limb ----------
 const upP = new THREE.Vector3(0, 1, 0).addScaledVector(toSun, -toSun.y).normalize();
 const C0 = EARTH.clone().addScaledVector(toSun, -23).addScaledVector(upP, 10.4);
 const L0 = C0.clone().addScaledVector(toSun, 60).addScaledVector(upP, -9);
-const sh = (p, d, k = 1) => [p[0] + d.x * k, p[1] + d.y * k, p[2] + d.z * k]; // shift a key along with its planet
 const DIVE = MARS.clone().addScaledVector(new THREE.Vector3(22, 6, 32).normalize(), 7.4);
-// ---------- camera: a shot list, not a keyframe list ----------
-// Film grammar applied: every move eases in and out (no velocity pops at keys), each planet gets a HOLD where the
-// camera settles into a slow push/orbit while the copy reads, lens length changes per shot (long lens = scale and
-// compression on reveals, wide = speed and proximity on passes), and the horizon banks into turns like a real ship.
 const V = a => (a.isVector3 ? a.clone() : new THREE.Vector3(...a));
-const KEYS = [], HOLD = new Set(); // HOLD holds the index i of every segment i -> i+1 that is a hold
-const key = (p, pos, look, fov, roll = 0) => KEYS.push({ p, pos: V(pos), look: V(look), fov, roll: THREE.MathUtils.degToRad(roll) });
-// hold: settle on a framing, then drift through it (slow orbit around the subject + gentle push in)
-const hold = (p0, p1, pos, look, fov, roll = 0, orbit = 3, push = 0.04) => {
-  const P = V(pos), L = V(look); key(p0, P, L, fov, roll); HOLD.add(KEYS.length - 1);
-  const P2 = P.clone().sub(L).applyAxisAngle(new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(orbit)).multiplyScalar(1 - push).add(L);
-  key(p1, P2, L, fov - 1, roll * 1.15);
-};
-hold(0.00, 0.06, C0, L0, 38, 0, 1.2, 0.05);                                           // 1 sunrise over the night side: long hold, slow push toward the light
-hold(0.13, 0.17, [5, 9.5, 36], [0, 1.5, 0], 34, -3, 5, 0.03);                         // 2 Earth whole, long lens, slow orbit
-key(0.225, [-14, 14, 62], sh([8, 0, -14], dMoon, 0.5), 40, 2);                       //   two-shot Earth + Moon, passing through
-hold(0.30, 0.33, sh([17, 9, -16], dMoon), sh([26, 6, -42], dMoon), 46, 6, 7, 0.05); // 3 Moon terminator, wider lens, banked
-hold(0.39, 0.44, sh([-14, 2, -268], dMars), sh([-36, -4, -300], dMars), 36, -3, 4, 0.08); // 4 Mars approach while the mission copy reads
-key(0.46, DIVE, MARS, 52, 4);                                                         //   dive: accelerates into the entry flash
-key(0.64, [-4, 3, -430 * SPREAD.belt], [6, 0, -600 * SPREAD.belt], 58, 0);           // 5 out of the cut at speed, wide lens in the belt
-key(0.72, [8, 2, -620 * SPREAD.belt], [14, 0, -760 * SPREAD.belt], 54, -7);           //   threading, banking through the rocks
-hold(0.80, 0.85, sh([-30, 20, -880], dSat), sh([8, -14, -1184], dSat), 40, 3, 3, 0.04); // 6 Saturn reveal, decelerating into a hold
-hold(0.90, 0.94, sh([-20, 34, -975], dSat), sh([24, -18, -1186], dSat), 38, 2, 4, 0.03);
-hold(0.975, 1.00, sh([-180, 120, -820], dSat), sh([60, 66, -1160], dSat), 36, 0, 2, 0.02); // 7 wide pull-out under the CTA
-const posC = new THREE.CatmullRomCurve3(KEYS.map(k => k.pos), false, 'centripetal');
-const lookC = new THREE.CatmullRomCurve3(KEYS.map(k => k.look), false, 'centripetal');
-posC.arcLengthDivisions = 4000;
-// moves = runs of non-hold segments; each move is eased over ARC LENGTH, so speed is even through pass-through keys
-const NK = KEYS.length, tK = i => i / (NK - 1), arcLens = posC.getLengths(), arcAt = t => { const f = t * (arcLens.length - 1), i = Math.floor(f); return i >= arcLens.length - 1 ? arcLens[arcLens.length - 1] : arcLens[i] + (arcLens[i + 1] - arcLens[i]) * (f - i); };
-const EASE = { io: x => x * x * x * (x * (x * 6 - 15) + 10), in: x => x * x * x, out: x => 1 - Math.pow(1 - x, 3) };
-const MOVES = [], CUTS = new Set([0.46, 0.64]); // the camera must hit these exact frames: the entry flash and the exit cut
-for (let i = 0; i < NK - 1;) {
-  if (HOLD.has(i)) { i++; continue; }
-  let j = i + 1; while (j < NK - 1 && !HOLD.has(j) && !CUTS.has(KEYS[j].p)) j++; // a move ends at the next hold or at a cut frame
-  const ease = KEYS[j].p === 0.46 ? 'in' : KEYS[i].p === 0.64 ? 'out' : 'io'; // accelerate into the dive cut; launch out of the belt cut
-  MOVES.push({ i, j, ease }); i = j;
+const M3 = (b, o) => b.clone().add(new THREE.Vector3(...o));
+
+// monotone cubic (Fritsch-Carlson). Velocity stays continuous through every key and never overshoots,
+// so the camera can't stop dead on a key, fire off again, or swing past a framing and come back.
+function pchip(xs, ys, m0, mN) {
+  const n = xs.length, h = [], d = [], m = new Array(n);
+  for (let i = 0; i < n - 1; i++) { h[i] = xs[i + 1] - xs[i]; d[i] = (ys[i + 1] - ys[i]) / h[i]; }
+  for (let i = 1; i < n - 1; i++) { if (d[i - 1] * d[i] <= 0) m[i] = 0; else { const w1 = 2 * h[i] + h[i - 1], w2 = h[i] + 2 * h[i - 1]; m[i] = (w1 + w2) / (w1 / d[i - 1] + w2 / d[i]); } }
+  const end = (h0, h1, d0, d1) => { let v = ((2 * h0 + h1) * d0 - h0 * d1) / (h0 + h1); if (Math.sign(v) !== Math.sign(d0)) v = 0; else if (Math.sign(d0) !== Math.sign(d1) && Math.abs(v) > 3 * Math.abs(d0)) v = 3 * d0; return v; };
+  m[0] = m0 !== undefined ? m0 * d[0] : end(h[0], h[1], d[0], d[1]);
+  m[n - 1] = mN !== undefined ? mN * d[n - 2] : end(h[n - 2], h[n - 3], d[n - 2], d[n - 3]);
+  return x => {
+    if (x <= xs[0]) return ys[0] + m[0] * (x - xs[0]); if (x >= xs[n - 1]) return ys[n - 1];
+    let i = 0; while (x > xs[i + 1]) i++;
+    const t = (x - xs[i]) / h[i], t2 = t * t, t3 = t2 * t;
+    return (2 * t3 - 3 * t2 + 1) * ys[i] + (t3 - 2 * t2 + t) * h[i] * m[i] + (-2 * t3 + 3 * t2) * ys[i + 1] + (t3 - t2) * h[i] * m[i + 1];
+  };
 }
-const toU = p => {
-  if (p <= KEYS[0].p) return 0; if (p >= KEYS[NK - 1].p) return 1;
-  for (const m of MOVES) if (p >= KEYS[m.i].p && p <= KEYS[m.j].p) {
-    const f = EASE[m.ease]((p - KEYS[m.i].p) / (KEYS[m.j].p - KEYS[m.i].p)), a0 = arcAt(tK(m.i)), a1 = arcAt(tK(m.j));
-    return posC.getUtoTmapping(0, a0 + (a1 - a0) * f);
-  }
-  for (let i = 0; i < NK - 1; i++) if (p <= KEYS[i + 1].p) { const f = (p - KEYS[i].p) / (KEYS[i + 1].p - KEYS[i].p); return tK(i) + (tK(i + 1) - tK(i)) * EASE.io(f) ; } // holds: smooth drift
-  return 1;
+
+// ---------- camera: one continuous flight, Earth -> Moon -> Mars -> dive ----------
+// Each shot is [scroll, position, look target, lens]. Position rides a centripetal spline; scroll maps to distance
+// along it through a monotone curve, so it slows near each planet (the copy reads) and runs between them without
+// ever stopping. The look direction is its own monotone curve over the same scroll, so turns are gentle and never reverse.
+const CA = 0.58; // the entry flash: everything after this is the Jezero timelapse
+const SHOTS = [
+  [0.00, C0, L0, 38],                                              // sunrise over the night side (where the opening lands)
+  [0.11, [6, 9, 36], [0, 1.5, 0], 34],                             // pull back and up: the whole Earth, long lens
+  [0.20, [3, 15.5, 4], M3(MOON, [0, -14, 0]), 40],                 // skim over the north, Moon ahead
+  [0.30, M3(MOON, [-9, 3.5, 24]), M3(MOON, [1.5, 0, 0]), 44],      // Moon terminator
+  [0.37, M3(MOON, [-6.5, 1.5, -3]), MARS, 46],                     // slide past the lit limb, Mars dead ahead
+  [0.47, M3(MARS, [22, 6, 32]), M3(MARS, [-1, 0, 0]), 36],         // arrive at Mars: the mission copy reads here
+  [0.53, M3(MARS, [14, 4, 20]), MARS, 40],                         // slow push
+  [CA, DIVE, MARS, 52]                                             // dive into the entry flash
+].map(([p, pos, look, fov]) => ({ p, pos: V(pos), look: V(look), fov }));
+const posC = new THREE.CatmullRomCurve3(SHOTS.map(k => k.pos), false, 'centripetal'); posC.arcLengthDivisions = 4000;
+const NK = SHOTS.length, PX = SHOTS.map(k => k.p), arcLens = posC.getLengths();
+const arcAt = t => { const f = t * (arcLens.length - 1), i = Math.floor(f); return i >= arcLens.length - 1 ? arcLens[arcLens.length - 1] : arcLens[i] + (arcLens[i + 1] - arcLens[i]) * (f - i); };
+const arcP = pchip(PX, SHOTS.map((k, i) => arcAt(i / (NK - 1))), 0.6, 2.2); // ease off the opening frame; accelerate into the dive
+const lookD = SHOTS.map(k => k.look.clone().sub(k.pos)), focusD = lookD.map(v => v.length()); lookD.forEach(v => v.normalize());
+const lookX = pchip(PX, lookD.map(v => v.x)), lookY = pchip(PX, lookD.map(v => v.y)), lookZ = pchip(PX, lookD.map(v => v.z));
+const focusP = pchip(PX, focusD), fovP = pchip(PX, SHOTS.map(k => k.fov));
+const spaceCam = (p, outPos, outLook) => {
+  const u = posC.getUtoTmapping(0, Math.max(0, arcP(Math.min(p, CA))));
+  posC.getPoint(u, outPos);
+  const f = focusP(p); outLook.set(lookX(p), lookY(p), lookZ(p)).normalize().multiplyScalar(f).add(outPos);
+  return fovP(Math.min(p, CA));
 };
-// lens + roll follow the same parameter so zooms and banks ride the move
-window.__d5.path = p => { const u = toU(p); return [...posC.getPoint(u).toArray(), ...lookC.getPoint(u).toArray(), ...lensAt(u)]; }; // QA hook
-const lensAt = u => { const f = u * (NK - 1), i = Math.min(NK - 2, Math.floor(f)), x = EASE.io(f - i); return [KEYS[i].fov + (KEYS[i + 1].fov - KEYS[i].fov) * x, KEYS[i].roll + (KEYS[i + 1].roll - KEYS[i].roll) * x]; };
+window.__d5.path = p => { const a = new THREE.Vector3(), b = new THREE.Vector3(), f = spaceCam(p, a, b); return [...a.toArray(), ...b.toArray(), f]; }; // QA hook
+
+// ---------- the opening: Austin lot timelapse, then a powers-of-ten pull out to the shot above ----------
+const SITE0 = new THREE.Vector3(0, 40000, 0);
+const site = createSite({ THREE, scene, sunLight, hemi, ORIGIN: SITE0, earthU: earth.material.uniforms });
+const EARTH_SPIN = 0.012, U_PER_M = 10 / 6371000; // Earth radius is 10 units
+const latR = THREE.MathUtils.degToRad(AUSTIN.lat), lonU = (AUSTIN.lon + 180) / 360;
+const austinLocal = new THREE.Vector3(-Math.cos(2 * Math.PI * lonU) * Math.cos(latR), Math.sin(latR), Math.sin(2 * Math.PI * lonU) * Math.cos(latR));
+// park Austin on the night side right under the opening frame: same azimuth as C0, so the pull out lands with the city just below centre
+const SPIN_LAND = Math.atan2(austinLocal.z, austinLocal.x) - Math.atan2(C0.z, C0.x);
+const AUS = austinLocal.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), SPIN_LAND).multiplyScalar(10), AUSn = AUS.clone().normalize();
+const LAM0 = Math.log(240), LAMH = Math.log(650e3), LAM1 = Math.log(C0.distanceTo(AUS) / U_PER_M); // ln(distance in metres): site, hand-off, landing
+const backEnd = C0.clone().sub(AUS).normalize(), lookEnd = L0.clone().sub(C0).normalize(), negN = AUSn.clone().negate();
+const qT = new THREE.Quaternion(), qI = new THREE.Quaternion();
+const slerpV = (a, b, k, out) => { qT.setFromUnitVectors(a, b); qI.identity().slerp(qT, k); return out.copy(a).applyQuaternion(qI); };
+const TL = 0.64; // share of the intro that is timelapse; the rest is the pull out
+const intro = { s: 0 };
+let spinOff = SPIN_LAND, siteInfo = null;
+const smoother = x => x * x * x * (x * (x * 6 - 15) + 10);
+
 // ---------- satellite: skims past the lens on the Earth to Moon leg ----------
 const sat = new THREE.Group(); scene.add(sat);
 {
@@ -417,130 +426,187 @@ const sat = new THREE.Group(); scene.add(sat);
 }
 const satBlink = new THREE.Sprite(new THREE.SpriteMaterial({ map: radialTex([[0, 'rgba(255,255,255,1)'], [1, 'rgba(0,0,0,0)']]), color: 0xff4030, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false }));
 satBlink.scale.setScalar(0.25); satBlink.position.set(0.36, 0.46, 0.36); sat.add(satBlink);
-const SATP = 0.252; // scroll point where it passes the lens
-// anchor: just right of and below the lens path at SATP; it drifts along the path slower than the camera so the pass lasts
-const satT = posC.getTangent(toU(SATP)).normalize(), satR = new THREE.Vector3().crossVectors(satT, new THREE.Vector3(0, 1, 0)).normalize();
-const SAT0 = posC.getPoint(toU(SATP)).addScaledVector(satR, 2.8).add(new THREE.Vector3(0, -0.9, 0));
+const SATP = 0.245; // scroll point where it passes the lens
+const satA = new THREE.Vector3(), satB = new THREE.Vector3(), satL = new THREE.Vector3();
+spaceCam(SATP + 0.002, satA, satL); spaceCam(SATP - 0.002, satB, satL);
+const satT = satA.clone().sub(satB).normalize(), satR = new THREE.Vector3().crossVectors(satT, new THREE.Vector3(0, 1, 0)).normalize();
+spaceCam(SATP, satA, satL); const SAT0 = satA.clone().addScaledVector(satR, 2.8).add(new THREE.Vector3(0, -0.9, 0));
 
 // ---------- scroll + overlays ----------
-let prog = 0, sm = 0, smV = 0, snap = true;
-window.__d5.seek = p => { sm = p; smV = 0; snap = true; }; // QA hook: jump the eased scroll straight to a progress value
-const track = q('.d5-track');
+let prog = 0, sm = 0, smV = 0;
+window.__d5.seek = p => { sm = p; smV = 0; }; // QA hook: jump the eased scroll straight to a progress value
+window.__d5.intro = intro;
+const track = q('.d5-track'), after = q('.d5-after');
 ScrollTrigger.create({ trigger: track, start: 'top top', end: 'bottom bottom', onUpdate: s => (prog = s.progress) });
-// each overlay owns a scroll window [a, b]; it rises in, holds, then drifts out
-const ovs = qa('[data-w]').map(el => { const [a, b] = el.dataset.w.split(',').map(Number); return { el, a, b}; });
-// scroll windows live here (not in the markup) so pacing can be tuned in one place
-const WIN = { 'd5-mission': [0.375, 0.445], 'd5-belt': [0.515, 0.62], 'd5-sol': [0.79, 0.965] };
+// each overlay owns a scroll window [a, b]; it rises in, holds, then drifts out. Sections in the plain page below are left alone.
+const ovs = qa('[data-w]').filter(el => !el.closest('.d5-after')).map(el => { const [a, b] = el.dataset.w.split(',').map(Number); return { el, a, b }; });
+const WIN = { 'd5-hero': [-1, 0.06], 'd5-mission': [0.43, 0.55], 'd5-belt': [0.8, 9] };
 ovs.forEach(o => { const w = WIN[o.el.classList[0]]; if (w) [o.a, o.b] = w; });
-const CA = 0.46, CB = 0.64; // colony segment
 const win = (p, a, b, f = 0.035) => Math.min(THREE.MathUtils.smoothstep(p, a - f, a + f), 1 - THREE.MathUtils.smoothstep(p, b - f, b + f));
-const ZONES = [[0, 'Sol · Earth', 1.0], [0.25, 'Earth · Luna', 1.003], [0.36, 'Sol · Mars', 1.52], [CA, 'Mars · Jezero Base', 1.52, 1], [CB, 'The Belt', 2.77], [0.75, 'Sol · Saturn', 9.54]];
-const veil = q('.d5-veil'), loc = q('.d5-loc'), au = q('.d5-au'), fill = q('.d5-rail-fill');
+const ZONES = [[0, 'Sol · Earth', 1.0], [0.22, 'Earth · Luna', 1.003], [0.38, 'Sol · Mars', 1.52], [CA, 'Mars · Jezero Base', 1.52, 1]];
+const veil = q('.d5-veil'), loc = q('.d5-loc'), au = q('.d5-au'), fill = q('.d5-rail-fill'), fadeEls = qa('.d5-hud, .d5-rail');
 let zone = -1;
 
-// ---------- load: black veil lifts, title tracks in from wide spacing, sun crests ----------
-const intro = { t: 0 };
-// runs once fonts are in (site-wide gate), so the split measures the real typeface
+// ---------- load: veil lifts on the lot, the timelapse runs, the camera pulls off to orbit, then the title tracks in ----------
 const h1 = new SplitText('.d5-h1', { type: 'chars,words' });
-const tl = gsap.timeline({ paused: true, defaults: { ease: 'power3.out' } });
-(window.tfReady || (f => f()))(() => tl.play());
-let introDone = false;
-tl.to('.d5-veil', { opacity: 0, duration: 2.2, ease: 'power2.inOut', onComplete: () => (introDone = true) })
-  .to(intro, { t: 1, duration: 4.2, ease: 'power2.out' }, 0)
-  .from(h1.chars, { opacity: 0, filter: 'blur(14px)', x: (i, el, arr) => (i - arr.length / 2) * 6, duration: 2.2, stagger: { each: 0.035, from: 'center' } }, 1.0)
-  .fromTo('.d5-h1', { letterSpacing: '0.5em' }, { letterSpacing: '0.14em', duration: 3.4, ease: 'expo.out' }, 1.0)
-  .from('.d5-kicker, .d5-lead, .d5-btn', { opacity: 0, y: 16, stagger: 0.15, duration: 1.2 }, 2.2)
-  .from('.d5-nav > *, .d5-hud, .d5-rail', { opacity: 0, duration: 1.4, stagger: 0.1 }, 2.6);
+const LAPSE = 6.2, PULL = 3.6;
+let introDone = false, introOver = false;
+const lockScroll = on => { document.documentElement.style.overflow = on ? 'hidden' : ''; if (window.lenis) on ? lenis.stop() : lenis.start(); };
+const endIntro = () => { if (introOver) return; introOver = true; lockScroll(false); post.resetMotion(); };
+const tl = gsap.timeline({ paused: true, defaults: { ease: 'power3.out' }, onComplete: endIntro }); window.__d5.tl = tl;
+tl.to('.d5-veil', { opacity: 0, duration: 1.6, ease: 'power2.inOut', onComplete: () => (introDone = true) }, 0)
+  .to(intro, { s: TL, duration: LAPSE, ease: 'none' }, 0.2)
+  .to(intro, { s: 1, duration: PULL, ease: 'none' }, 0.2 + LAPSE)
+  .from(h1.chars, { opacity: 0, filter: 'blur(14px)', x: (i, el, arr) => (i - arr.length / 2) * 6, duration: 2.2, stagger: { each: 0.035, from: 'center' } }, 0.2 + LAPSE + PULL - 0.8)
+  .fromTo('.d5-h1', { letterSpacing: '0.5em' }, { letterSpacing: '0.14em', duration: 3.4, ease: 'expo.out' }, 0.2 + LAPSE + PULL - 0.8)
+  .from('.d5-kicker, .d5-lead, .d5-btn', { opacity: 0, y: 16, stagger: 0.15, duration: 1.2 }, 0.2 + LAPSE + PULL + 0.4)
+  .from('.d5-nav > *, .d5-hud, .d5-rail', { opacity: 0, duration: 1.4, stagger: 0.1 }, 0.8);
+// arriving mid-page (reload, back button) skips straight to orbit
+const skip = scrollY > 40;
+if (!skip) lockScroll(true);
+(window.tfReady || (f => f()))(() => { if (skip) { tl.progress(1); introDone = true; } else tl.play(); });
+// any scroll intent during the opening fast-forwards it instead of being swallowed
+const hurry = () => { if (!introOver && tl.isActive()) tl.timeScale(4); };
+addEventListener('wheel', hurry, { passive: true }); addEventListener('touchmove', hurry, { passive: true }); addEventListener('keydown', hurry);
 
 // cursor: tiny camera drift, like a handheld long lens
 const mouse = { x: 0, y: 0 }, ms = { x: 0, y: 0 };
 addEventListener('mousemove', e => { mouse.x = e.clientX / innerWidth - 0.5; mouse.y = e.clientY / innerHeight - 0.5; });
 
-const step01 = v => (v > 0.6 ? 1 : 0), tmp2 = new THREE.Vector3();
+const step01 = v => (v > 0.6 ? 1 : 0), tmp2 = new THREE.Vector3(), tmp3 = new THREE.Vector3(), siteT = new THREE.Vector3(), siteDir = new THREE.Vector3();
 const pos = new THREE.Vector3(), look = new THREE.Vector3(), tmp = new THREE.Vector3(), clock = new THREE.Clock();
-const camP = new THREE.Vector3(), camL = new THREE.Vector3(), camPV = new THREE.Vector3(), camLV = new THREE.Vector3(), fwd = new THREE.Vector3(), sprTmp = new THREE.Vector3();
-let camF = 38, bank = 0, lastYaw = 0;
-// critically damped spring toward a target (w = stiffness in 1/s); no allocations
-const spring3 = (x, v, target, w, dt) => { sprTmp.copy(target).sub(x).multiplyScalar(w * w).addScaledVector(v, -2 * w); v.addScaledVector(sprTmp, dt); x.addScaledVector(v, dt); };
-let visible = true; document.addEventListener('visibilitychange', () => (visible = !document.hidden));
+const camUp = new THREE.Vector3(0, 1, 0), NORTH = new THREE.Vector3(0, 0, -1), fwd = new THREE.Vector3();
+const spaceMeshes = [planets.earth, planets.clouds, planets.moon, planets.mars, planets.earthAtmo, planets.marsAtmo];
+const COLOR_SPACE_SUN = new THREE.Color(0xfff1dc);
+let lastMode = '', lastCover = 0, introEndT = -1, visible = true; document.addEventListener('visibilitychange', () => (visible = !document.hidden));
+const setClip = (n, f) => { if (cam.near !== n || cam.far !== f) { cam.near = n; cam.far = f; cam.updateProjectionMatrix(); } };
+const fmtH = h => { const hh = Math.floor(h), mm = Math.floor((h - hh) * 60); return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0'); };
 renderer.setAnimationLoop(() => {
   if (!visible) return;
   const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
+  // the plain page below covers the canvas; once it does, stop drawing
+  const cover = after ? clamp01(1 - after.getBoundingClientRect().top / innerHeight) : 0;
+  host.style.opacity = (1 - 0.6 * cover).toFixed(3); if (cover > 0 || lastCover > 0) fadeEls.forEach(el => (el.style.opacity = (1 - cover).toFixed(3))); lastCover = cover;
+  if (cover >= 0.999) return;
   { const W = 3.6; smV += (W * W * (prog - sm) - 2 * W * smV) * dt; sm += smV * dt; } // critically damped scroll: flicks ramp up and settle, never snap
   ms.x += (mouse.x - ms.x) * dt * 2; ms.y += (mouse.y - ms.y) * dt * 2;
-  const inCol = sm >= CA && sm < CB, cg = clamp01((sm - CA) / (CB - CA));
-  let fov = 46, roll = 0;
-  if (inCol) { cPos.getPoint(cg, pos); cLook.getPoint(cg, look); pos.x += ms.x * 8; pos.y -= ms.y * 5; fov = 44; }
-  else {
-    const u = toU(sm);
-    posC.getPoint(u, pos); lookC.getPoint(u, look); [fov, roll] = lensAt(u);
-    // intro: camera starts a touch lower (sun hidden behind Earth) and rises so the sun crests the limb
-    const ip = 1 - intro.t; pos.addScaledVector(upP, -ip * 1.6).addScaledVector(toSun, -ip * 4);
-    pos.x += ms.x * 2.2; pos.y -= ms.y * 1.4;
+  const introOn = intro.s < 1 && !introOver;
+  if (introOn && window.lenis && !lenis.isStopped) lenis.stop();
+  if (!introOn && introEndT < 0) introEndT = t;
+  const live = introOn ? 0 : sstep(t - introEndT, 0, 2.5); // mouse drift + handheld fade in after the opening lands
+  const s = intro.s, zPull = clamp01((s - TL) / (1 - TL)), lam = LAM0 + (LAM1 - LAM0) * smoother(Math.pow(zPull, 0.85));
+  const mode = introOn ? (lam < LAMH ? 'site' : 'globe') : (sm >= CA ? 'colony' : 'space');
+  const inCol = mode === 'colony', inSite = mode === 'site';
+  let fov = 46, focus = 30;
+  camUp.set(0, 1, 0);
+  if (inSite) {
+    // satellite-ish oblique over the lot; drifts a few degrees during the timelapse, then rises and tips straight down for the pull out
+    const g = Math.min(1, s / TL), up = sstep(lam, LAM0, LAM0 + (LAMH - LAM0) * 0.55);
+    const a = (window.__d5.siteYaw ?? (-0.06 + 0.12 * g)) * (1 - up), pitch = THREE.MathUtils.degToRad((window.__d5.sitePitch ?? 58) * (1 - up) + 90 * up) - 0.0001;
+    const dist = Math.exp(lam) * (1 - 0.08 * g * (1 - up));
+    siteT.set(0, -1, 3 * (1 - up));
+    siteDir.set(Math.sin(a) * Math.cos(pitch), Math.sin(pitch), Math.cos(a) * Math.cos(pitch));
+    tmp.copy(siteT).addScaledVector(siteDir, dist); tmp.x += ms.x * 3 * (1 - up); tmp.z += ms.y * 2 * (1 - up);
+    pos.copy(tmp).add(SITE0); look.copy(siteT).add(SITE0);
+    camUp.set(-Math.sin(a), 0, -Math.cos(a));                   // screen-up = north, so the hand-off to the globe keeps its heading
+    fov = 38; focus = dist;
+    setClip(Math.max(0.3, dist * 0.004), dist * 8 + 3000);
+    siteInfo = site.update({ g, t }); site.follow(tmp, dist); scene.fog.near = 1e8; scene.fog.far = 1e9;
+  } else if (mode === 'globe') {
+    // straight up off Austin, then curve round onto the opening frame (C0). Distances stay logarithmic the whole way.
+    const D = Math.exp(lam) * U_PER_M, f2 = clamp01((lam - LAMH) / (LAM1 - LAMH)), e = smoother(f2);
+    slerpV(AUSn, backEnd, e, tmp); pos.copy(AUS).addScaledVector(tmp, D);
+    slerpV(negN, lookEnd, smoother(Math.min(1, f2 * 1.1)), tmp2); look.copy(pos).addScaledVector(tmp2, D);
+    fov = THREE.MathUtils.lerp(38, 38, e); focus = D;
+    setClip(Math.min(0.1, Math.max(0.0005, D * 0.04)), 9000);
+  } else if (inCol) {
+    const cg = clamp01((sm - CA) / (1 - CA)), u = cg * (1.5 - 0.5 * cg); // launches out of the flash, settles on the last frame
+    cPos.getPoint(u, pos); cLook.getPoint(u, look); pos.x += ms.x * 8; pos.y -= ms.y * 5; fov = 44; focus = pos.distanceTo(look);
+    setClip(0.1, 9000);
+  } else {
+    fov = spaceCam(sm, pos, look); focus = pos.distanceTo(look);
+    pos.x += ms.x * 2.2 * live; pos.y -= ms.y * 1.4 * live;
+    setClip(0.1, 9000);
   }
-  colony.visible = inCol;
+  // exposure ride on the pull out: a real camera would stop down while a whole lit city fills the frame, then open back up for orbit
+  post.auto.min = introOn ? 0.12 : 0.55; // let the exposure ride below the normal floor during the pull out
+  renderer.toneMappingExposure = introOn && zPull > 0 ? 1.05 * (1 - 0.72 * sstep(lam, Math.log(2e3), Math.log(4e4)) * (1 - sstep(lam, Math.log(8e5), Math.log(5e6)))) : 1.05;
+  // per-set switches: what is in the world, which light rig, shadow box
+  if (mode !== lastMode) {
+    const c = sunLight.shadow.camera;
+    site.group.visible = inSite; colony.visible = inCol;
+    spaceMeshes.forEach(m => (m.visible = !inSite && !inCol));
+    if (inSite) { c.left = -160; c.right = 160; c.top = 80; c.bottom = -80; c.near = 50; c.far = 900; ambient.intensity = 0.03; }
+    else { c.left = -390; c.right = 390; c.near = 60; c.far = 1300; sunLight.color.copy(COLOR_SPACE_SUN); }
+    c.updateProjectionMatrix();
+    post.motion.cutDist = mode === 'site' || mode === 'globe' ? 1e12 : 400; // the pull out is one long zoom: keep the blur on through it
+    if ((lastMode === 'site' && mode === 'globe') || lastMode === '') post.resetMotion();
+    lastMode = mode;
+  }
   const sunDir = inCol ? colSun : toSun;
-  if (inCol) buildColony(cg, t);
-  else { scene.fog.near = 1e8; scene.fog.far = 1e9; sunLight.intensity = 2.4; ambient.intensity = 0.35; }
-  // shadows: the colony set owns its own sun placement (buildColony); in space keep the original far-sun placement and render no shadow map at all
-  if (inCol) renderer.shadowMap.needsUpdate = true;
+  if (inCol) buildColony(clamp01((sm - CA) / (1 - CA)), t);
+  else if (!inSite) { scene.fog.near = 1e8; scene.fog.far = 1e9; sunLight.intensity = 2.4; ambient.intensity = 0.35; hemi.intensity = 0; }
+  if (inCol || inSite) renderer.shadowMap.needsUpdate = true;
   else { sunLight.target.position.set(0, 0, 0); sunLight.position.copy(sunDir).multiplyScalar(100); }
-  // cuts: warm atmospheric-entry flash going down, hard black going back out to space
-  const hIn = sstep(sm, CA - 0.022, CA) * (1 - sstep(sm, CA, CA + 0.026)), hOut = sstep(sm, CB - 0.016, CB) * (1 - sstep(sm, CB, CB + 0.02));
-  if (introDone) { veil.style.opacity = Math.max(hIn, hOut).toFixed(3); veil.style.background = hIn > hOut ? 'radial-gradient(circle at 50% 55%, #fff4e6 0%, #ffb27a 45%, #c8582a 100%)' : '#000'; }
-  // operator layer: springs give the rig weight (look trails position slightly, like a fluid head), the lens breathes,
-  // the horizon banks into turns, and a faint handheld drift keeps holds alive. Cuts snap the springs.
-  if (snap || camP.distanceToSquared(pos) > 150 * 150) { camP.copy(pos); camL.copy(look); camPV.set(0, 0, 0); camLV.set(0, 0, 0); camF = fov; snap = false; }
-  spring3(camP, camPV, pos, 5.5, dt); spring3(camL, camLV, look, 4.2, dt); camF += (fov - camF) * Math.min(1, dt * 2.5);
-  const dist = camP.distanceTo(camL);
-  pos.copy(camP).add(tmp.set(Math.sin(t * 0.21) * 0.6 + Math.sin(t * 0.53 + 1.3) * 0.25, Math.sin(t * 0.17 + 2.1) * 0.5 + Math.sin(t * 0.41) * 0.2, Math.sin(t * 0.13 + 4) * 0.4).multiplyScalar(dist * 0.0035));
-  look.copy(camL);
-  fwd.copy(look).sub(pos).normalize(); const yaw = Math.atan2(fwd.x, fwd.z), dYaw = Math.atan2(Math.sin(yaw - lastYaw), Math.cos(yaw - lastYaw)); lastYaw = yaw;
-  bank += (THREE.MathUtils.clamp(-dYaw / Math.max(dt, 1e-3) * 0.35, -0.14, 0.14) - bank) * Math.min(1, dt * 2); // lean into the turn, max ~8 deg
-  cam.up.set(0, 1, 0).applyAxisAngle(fwd, roll + bank);
-  if (Math.abs(cam.fov - camF) > 0.01) { cam.fov = camF; cam.updateProjectionMatrix(); }
+  // the one cut left: a warm atmospheric-entry flash into Jezero
+  const hIn = sstep(sm, CA - 0.022, CA) * (1 - sstep(sm, CA, CA + 0.026));
+  if (introDone) { veil.style.opacity = hIn.toFixed(3); veil.style.background = 'radial-gradient(circle at 50% 55%, #fff4e6 0%, #ffb27a 45%, #c8582a 100%)'; }
+  // operator layer: only a faint handheld drift; no springs, no banking, no roll. The curves above are already smooth.
+  const dist = pos.distanceTo(look);
+  if (!introOn) pos.add(tmp.set(Math.sin(t * 0.21) * 0.6 + Math.sin(t * 0.53 + 1.3) * 0.25, Math.sin(t * 0.17 + 2.1) * 0.5 + Math.sin(t * 0.41) * 0.2, Math.sin(t * 0.13 + 4) * 0.4).multiplyScalar(dist * 0.002 * live));
+  cam.up.copy(camUp);
+  if (Math.abs(cam.fov - fov) > 0.01) { cam.fov = fov; cam.updateProjectionMatrix(); }
   cam.position.copy(pos); cam.lookAt(look);
-  // dust: smoothed camera velocity drives streak length (a short virtual shutter); cuts reset it so nothing smears across them
+  // dust: smoothed camera velocity drives streak length (a short virtual shutter)
   if (hasLast && dt > 0) { velTmp.copy(pos).sub(lastPos).divideScalar(dt); if (velTmp.length() > 4000) velTmp.set(0, 0, 0); camVel.lerp(velTmp, Math.min(1, dt * 6)); }
   lastPos.copy(pos); hasLast = true;
   const shutter = camVel.clone().multiplyScalar(DCFG.shutter).clampLength(0, BOX * DCFG.maxStreak);
   dustU.cp.value.copy(pos); dustU.vel.value.copy(shutter); dustU.t.value = t; dustU.spd.value = Math.min(1, shutter.length() / 6);
-  dust.visible = !inCol; dustU.amt.value = 1 - Math.max(hIn, hOut);
+  dust.visible = mode === 'space'; dustU.amt.value = 1 - hIn;
 
-  planets.update({ t, intro: intro.t, camPos: pos }); saturnMod.update({ t }); belt.update({ t }); // spins, clouds, city lights spreading on load
-  rocks.rotation.z = Math.sin(t * 0.05) * 0.02;
-  if (sky) { sky.update(pos); sky.group.visible = !inCol; }
+  // Earth holds Austin under the opening frame until the pull out lands, then spins on from there
+  if (introOn) spinOff = SPIN_LAND - t * EARTH_SPIN;
+  planets.update({ t, intro: 1, camPos: pos, spin: spinOff, hole: AUSn });
+  if (sky) { sky.update(pos); sky.group.visible = !inCol && !inSite; }
 
-  // sun always sits far along toSun from the camera; the streak stays horizontal and grows on load
+  // sun + streak: off on the ground, cresting the limb as the pull out lands
+  const f2 = mode === 'globe' ? clamp01((lam - LAMH) / (LAM1 - LAMH)) : 1;
+  sunCore.visible = streak.visible = !inSite;
   sunCore.position.copy(pos).addScaledVector(sunDir, 1600); streak.position.copy(sunCore.position);
   const facing = Math.max(0, tmp.copy(look).sub(pos).normalize().dot(sunDir));
-  const flare = (0.35 + 0.65 * intro.t) * (0.25 + facing * 0.9) * (inCol ? 0.22 * (1 - sstep(colSun.y, 0.02, -0.04)) : 1);
+  const flare = sstep(f2, 0.55, 1) * (0.25 + facing * 0.9) * (inCol ? 0.22 * (1 - sstep(colSun.y, 0.02, -0.04)) : 1);
   sunCore.scale.setScalar(260 * flare + 40); streak.scale.set(2600 * flare, 26 * flare, 1);
   streak.material.opacity = 0.55 * flare; sunCore.material.opacity = Math.min(1, flare * 1.3);
   bloom.strength = 0.6 + flare * 0.3;
 
-  // camera: rack focus to the look target; shallower depth on the surface, deep focus in space so stars survive
-  const sp = sm - SATP; sat.visible = !inCol && Math.abs(sp) < 0.06;
+  // satellite + focus: rack to the look target; deep focus everywhere except the colony
+  const sp = sm - SATP; sat.visible = mode === 'space' && Math.abs(sp) < 0.06;
   sat.position.copy(SAT0).addScaledVector(satT, sp * 420); sat.rotation.set(0.4 + t * 0.05, t * 0.12, 0.25); satBlink.material.opacity = step01(Math.sin(t * 5));
-  let fd = pos.distanceTo(look);
-  // focus puller grabs the satellite while it is close and in front of the lens
+  let fd = focus;
   if (sat.visible) { const sd = pos.distanceTo(sat.position), inFront = tmp.copy(sat.position).sub(pos).normalize().dot(tmp2.copy(look).sub(pos).normalize()); if (sd < 14 && inFront > 0.55) fd = THREE.MathUtils.lerp(fd, sd, sstep(sd, 14, 6)); }
-  post.update({ dt, t, focus: fd, aperture: (inCol ? 0.006 : fd < 12 ? 0.02 : 0.003) / fd, maxblur: inCol ? 0.0042 : fd < 12 ? 0.005 : 0.0018,
-    ca: 0.012 + Math.max(hIn, hOut) * 0.06 }); // fringing blows out through the cuts
+  const deep = inSite || mode === 'globe';
+  post.update({ dt, t, focus: fd, aperture: (deep ? 0.0004 : inCol ? 0.006 : fd < 12 ? 0.02 : 0.003) / fd, maxblur: deep ? 0.0008 : inCol ? 0.0042 : fd < 12 ? 0.005 : 0.0018, ca: 0.012 + hIn * 0.06 });
 
   // overlays
-  ovs.forEach(o => { const v = win(sm, o.a, o.b); o.el.style.opacity = v.toFixed(3); o.el.style.visibility = v > 0.01 ? 'visible' : 'hidden'; o.el.style.transform = `translate3d(0,${(1 - v) * (sm < o.a ? 30 : -30)}px,0)`; });
-  // HUD: location rescrambles per zone, AU counter tracks the flight
-  let z = 0; ZONES.forEach((zz, i) => { if (sm >= zz[0]) z = i; });
-  if (z !== zone) { zone = z; gsap.to(loc, { duration: 0.8, scrambleText: { text: ZONES[z][1], chars: 'upperCase', speed: 0.6 } }); }
-  const a = ZONES[z], b = ZONES[Math.min(z + 1, ZONES.length - 1)], span = (b[0] - a[0]) || 1;
-  // on the surface the readout becomes a sol counter, so the timelapse reads as months of work
-  au.textContent = a[3] ? 'SOL ' + String(1 + Math.floor(cg * 667)).padStart(4, '0') : (a[2] + (b[2] - a[2]) * THREE.MathUtils.clamp((sm - a[0]) / span, 0, 1)).toFixed(2) + ' AU';
+  ovs.forEach(o => { const v = win(sm, o.a, o.b) * (1 - cover); o.el.style.opacity = v.toFixed(3); o.el.style.visibility = v > 0.01 ? 'visible' : 'hidden'; o.el.style.transform = `translate3d(0,${(1 - win(sm, o.a, o.b)) * (sm < o.a ? 30 : -30)}px,0)`; });
+  // HUD: on the lot it is a site clock, on the way up an altimeter, in space the zone + AU readout
+  if (introOn) {
+    if (zone !== -2) { zone = -2; gsap.to(loc, { duration: 0.8, scrambleText: { text: 'Austin · Texas', chars: 'upperCase', speed: 0.6 } }); }
+    if (inSite && s < TL && siteInfo) au.textContent = 'DAY ' + String(siteInfo.day).padStart(2, '0') + ' · ' + fmtH(siteInfo.hd);
+    else { const km = Math.exp(lam) / 1000; au.textContent = 'ALT ' + (km < 10 ? km.toFixed(1) : Math.round(km).toLocaleString('en-US')) + ' KM'; }
+  } else {
+    let z = 0; ZONES.forEach((zz, i) => { if (sm >= zz[0]) z = i; });
+    if (z !== zone) { zone = z; gsap.to(loc, { duration: 0.8, scrambleText: { text: ZONES[z][1], chars: 'upperCase', speed: 0.6 } }); }
+    const a = ZONES[z], b = ZONES[Math.min(z + 1, ZONES.length - 1)], span = (b[0] - a[0]) || 1, cg = clamp01((sm - CA) / (1 - CA));
+    // on the surface the readout becomes a sol counter, so the timelapse reads as months of work
+    au.textContent = a[3] ? 'SOL ' + String(1 + Math.floor(cg * 667)).padStart(4, '0') : (a[2] + (b[2] - a[2]) * THREE.MathUtils.clamp((sm - a[0]) / span, 0, 1)).toFixed(2) + ' AU';
+  }
   fill.style.transform = `scaleY(${sm})`;
   post.render();
 });
 
 // rail dots sit at their scroll position and jump there on click
-{ const st = qa('.d5-stop')[2]; if (st) { st.textContent = 'Jezero'; st.dataset.p = '0.55'; } }
+const STOPS = [['Earth', 0], ['Luna', 0.3], ['Mars', 0.47], ['Jezero', 0.72]];
+qa('.d5-stop').forEach((s, i) => { if (STOPS[i]) { s.textContent = STOPS[i][0]; s.dataset.p = STOPS[i][1]; } else s.remove(); });
 qa('.d5-stop').forEach(s => (s.style.top = (+s.dataset.p * 100) + '%'));
 qa('.d5-stop').forEach(s => s.addEventListener('click', e => { e.preventDefault(); const p = +s.dataset.p, y = track.offsetTop + p * (track.offsetHeight - innerHeight); window.lenis ? lenis.scrollTo(y, { duration: 2.4 }) : scrollTo(0, y); }));

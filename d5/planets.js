@@ -15,6 +15,12 @@ float vnoise(vec3 x){ vec3 i = floor(x), f = fract(x); f = f * f * (3.0 - 2.0 * 
   return mix(mix(mix(hash13(i), hash13(i + vec3(1,0,0)), f.x), mix(hash13(i + vec3(0,1,0)), hash13(i + vec3(1,1,0)), f.x), f.y),
              mix(mix(hash13(i + vec3(0,0,1)), hash13(i + vec3(1,0,1)), f.x), mix(hash13(i + vec3(0,1,1)), hash13(i + vec3(1,1,1)), f.x), f.y), f.z); }
 float fbm3(vec3 p){ float v = 0., a = .5; for(int i = 0; i < 3; i++){ v += a * vnoise(p); p *= 2.07; a *= .5; } return v; }
+vec4 cubicW(float v){ float v2=v*v, v3=v2*v; return vec4(1.-3.*v+3.*v2-v3, 4.-6.*v2+3.*v3, 1.+3.*v+3.*v2-3.*v3, v3)/6.; }
+float bicubicR(sampler2D t, vec2 uv, vec2 res){   // B-spline from 4 bilinear taps: low-res maps stay round up close
+  uv=uv*res-.5; vec2 f=fract(uv); uv-=f; vec4 xc=cubicW(f.x), yc=cubicW(f.y);
+  vec4 c=uv.xxyy+vec2(-.5,1.5).xyxy, sw=vec4(xc.xz+xc.yw, yc.xz+yc.yw), o=(c+vec4(xc.yw,yc.yw)/sw)/res.xxyy;
+  float a=texture2D(t,o.xz).r, b=texture2D(t,o.yz).r, d=texture2D(t,o.xw).r, e=texture2D(t,o.yw).r;
+  return mix(mix(e,d,sw.x/(sw.x+sw.y)), mix(b,a,sw.x/(sw.x+sw.y)), sw.z/(sw.z+sw.w)); }
 // direction on the unit sphere -> three.js SphereGeometry uv
 vec2 dirToUv(vec3 p){ return vec2(fract(atan(p.z, -p.x) / (2. * PI)), 0.5 + asin(clamp(p.y, -1., 1.)) / PI); }
 // tangent frame on the sphere in object space (east = +u, north = +v)
@@ -83,7 +89,7 @@ void main(){
 
   // night lights: real NASA map, warm sodium, switched on region by region as 'uGrow' rises
   float night = 1. - smoothstep(-0.14, 0.06, mu);
-  float li = clamp((texture2D(tLights, vUv).r - 0.10) / 0.8, 0., 1.);   // the source map has a dim continental haze; keep only lamps
+  float li = clamp((bicubicR(tLights, vUv, vec2(2048., 1024.)) - 0.10) / 0.8, 0., 1.);   // bicubic: the 2k map stays round on the close pull out   // the source map has a dim continental haze; keep only lamps
   float lg = max(textureLod(tLights, vUv, 3.0).r - 0.07, 0.);               // bleed for the glow around cities
   float dCell = hash12(floor(vUv * vec2(72., 36.)) + 3.1);  // ~5 degree regions pop on in random order
   float dTex = hash12(floor(vUv * vec2(2048., 1024.)));     // individual lamps trail behind their region
@@ -100,7 +106,7 @@ void main(){
 // Earth cloud deck
 // ---------------------------------------------------------------------------------------------
 const CLOUD_FRAG = /* glsl */ `
-uniform sampler2D tClouds; uniform vec3 uSun; uniform float uSunI; uniform sampler2D tLights;
+uniform sampler2D tClouds; uniform vec3 uSun; uniform float uSunI; uniform sampler2D tLights; uniform vec4 uHole;
 varying vec3 vP; varying vec2 vUv; varying vec3 vV;
 ${GLSL_COMMON}
 void main(){
@@ -113,6 +119,7 @@ void main(){
   float nz = fbm3(p * 26.) - 0.5;
   float dens = clamp(d0 + nz * 0.55 * smoothstep(0.03, 0.4, d0) * (1.1 - d0), 0., 1.);
   dens = smoothstep(0.06, 0.78, dens);
+  dens *= 1. - uHole.w * (1. - smoothstep(0.07, 0.16, length(p - uHole.xyz)));   // clear night over the opening site
   // puffiness: treat density as height, light the bumps
   vec3 e, n; sphFrame(p, e, n);
   vec3 N = normalize(p - (e * (dx - d0) + n * (dy - d0)) * 14.);
@@ -258,7 +265,7 @@ export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS
     new THREE.ShaderMaterial({ vertexShader: PLANET_VERT, fragmentShader: EARTH_FRAG, uniforms: earthU }));
   earth.position.copy(EARTH); scene.add(earth);
 
-  const cloudU = { tClouds: earthU.tClouds, tLights: earthU.tLights, uSun: sunVec(), uSunI: earthU.uSunI };
+  const cloudU = { tClouds: earthU.tClouds, tLights: earthU.tLights, uSun: sunVec(), uSunI: earthU.uSunI, uHole: { value: new THREE.Vector4(0, 1, 0, 0) } };
   const clouds = new THREE.Mesh(new THREE.SphereGeometry(R_EARTH * 1.0085, 160, 80),
     new THREE.ShaderMaterial({ vertexShader: PLANET_VERT, fragmentShader: CLOUD_FRAG, uniforms: cloudU, transparent: true, depthWrite: false }));
   clouds.position.copy(EARTH); clouds.renderOrder = 1; scene.add(clouds);
@@ -309,8 +316,11 @@ export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS
   const qi = new THREE.Quaternion(), tv = new THREE.Vector3();
   const sunInto = (mesh, uni) => { qi.copy(mesh.quaternion).invert(); uni.value.copy(toSun).applyQuaternion(qi); };
   const EARTH_SPIN = 0.012, CLOUD_SPIN = 0.0158;
-  function update({ t = 0, intro = 1, camPos } = {}) {
-    earth.rotation.y = t * EARTH_SPIN; clouds.rotation.y = t * CLOUD_SPIN; moon.rotation.y = t * 0.01; mars.rotation.y = t * 0.02;
+  const hq = new THREE.Quaternion(), hv = new THREE.Vector3();
+  // spin: extra yaw so main.js can park a given city under the camera; hole: world direction kept free of cloud
+  function update({ t = 0, intro = 1, camPos, spin = 0, hole } = {}) {
+    earth.rotation.y = spin + t * EARTH_SPIN; clouds.rotation.y = spin + t * CLOUD_SPIN;
+    if (hole) { clouds.updateMatrixWorld(); hq.copy(clouds.quaternion).invert(); hv.copy(hole).applyQuaternion(hq); cloudU.uHole.value.set(hv.x, hv.y, hv.z, 1); } moon.rotation.y = t * 0.01; mars.rotation.y = t * 0.02;
     sunInto(earth, earthU.uSun); sunInto(clouds, cloudU.uSun); sunInto(moon, moonU.uSun); sunInto(mars, marsU.uSun);
     earthU.uCloudOff.value = (earth.rotation.y - clouds.rotation.y) / (2 * Math.PI);   // cloud deck slides over the ground
     earthU.uGrow.value = 0.03 + 0.97 * intro;                                          // city lights spread on load
