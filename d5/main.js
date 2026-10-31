@@ -396,7 +396,7 @@ window.__d5.path = p => { const a = new THREE.Vector3(), b = new THREE.Vector3()
 
 // ---------- the opening: Austin lot timelapse, then a powers-of-ten pull out to the shot above ----------
 const SITE0 = new THREE.Vector3(0, 40000, 0);
-const site = createSite({ THREE, scene, sunLight, hemi, ORIGIN: SITE0, earthU: earth.material.uniforms, orthoUrl: window.D5_ORTHO || 'https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae5f95dd2740562ba491292_austin-site-ortho.jpg' }); // TxGIO StratMap 2019 6in orthophoto, 800 m square, hosted in Webflow assets
+const site = createSite({ THREE, scene, sunLight, hemi, ORIGIN: SITE0, earthU: earth.material.uniforms, orthoUrl: window.D5_ORTHO || ['https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae5f95dd2740562ba491292_austin-site-ortho.jpg', 'https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae5ffb0de480245132a293d_austin-ortho-8km.jpg', 'https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae5ffb1acea8bf85e7e3734_austin-ortho-80km.jpg'] }); // TxGIO StratMap 2019 (800 m, 8 km) + NAIP 2022 (80 km), public domain, hosted in Webflow assets
 const EARTH_SPIN = 0.012, U_PER_M = 10 / 6371000; // Earth radius is 10 units
 const latR = THREE.MathUtils.degToRad(AUSTIN.lat), lonU = (AUSTIN.lon + 180) / 360;
 const austinLocal = new THREE.Vector3(-Math.cos(2 * Math.PI * lonU) * Math.cos(latR), Math.sin(latR), Math.sin(2 * Math.PI * lonU) * Math.cos(latR));
@@ -524,7 +524,10 @@ renderer.setAnimationLoop(() => {
     camUp.set(-Math.sin(a), 0, -Math.cos(a));                   // screen-up = north, so the hand-off to the globe keeps its heading
     fov = 38; focus = dist;
     setClip(Math.max(0.3, dist * 0.004), dist * 8 + 3000);
-    siteInfo = site.update({ g, t }); site.follow(tmp, dist); scene.fog.near = 1e8; scene.fog.far = 1e9;
+    siteInfo = site.update({ g, t });
+    const cloudFade = sstep(lam, Math.log(500), Math.log(1400)) * (1 - sstep(lam, Math.log(15e3), Math.log(70e3)));
+    site.follow(tmp, dist, cloudFade, t); scene.fog.near = 1e8; scene.fog.far = 1e9;
+    hemi.intensity *= 1 - sstep(lam, Math.log(3e3), Math.log(60e3)); // moonlight on the photos dies away so the ground meets the black night side of the globe
   } else if (mode === 'globe') {
     // straight up off Austin, then curve round onto the opening frame (C0). Distances stay logarithmic the whole way.
     const D = Math.exp(lam) * U_PER_M, f2 = clamp01((lam - LAMH) / (LAM1 - LAMH)), e = smoother(f2);
@@ -542,6 +545,8 @@ renderer.setAnimationLoop(() => {
     setClip(0.1, 9000);
   }
   // exposure ride on the pull out: a real camera would stop down while a whole lit city fills the frame, then open back up for orbit
+  // motion blur swells through the climb (photos -> clouds -> city lights) and settles before orbit
+  { const swell = introOn ? sstep(zPull, 0.08, 0.28) * (1 - sstep(zPull, 0.62, 0.85)) : 0; post.motion.shutter = 0.6 + 2.4 * swell; post.motion.maxLen = 0.035 + 0.11 * swell; }
   post.auto.min = introOn ? 0.12 : 0.55; // let the exposure ride below the normal floor during the pull out
   renderer.toneMappingExposure = introOn && zPull > 0 ? 1.05 * (1 - 0.72 * sstep(lam, Math.log(2e3), Math.log(4e4)) * (1 - sstep(lam, Math.log(8e5), Math.log(5e6)))) : 1.05;
   // per-set switches: what is in the world, which light rig, shadow box
@@ -553,7 +558,8 @@ renderer.setAnimationLoop(() => {
     if (inSite) { c.left = -160; c.right = 160; c.top = 80; c.bottom = -80; c.near = 50; c.far = 900; ambient.intensity = 0.03; }
     else { c.left = -390; c.right = 390; c.near = 60; c.far = 1300; sunLight.color.copy(COLOR_SPACE_SUN); }
     c.updateProjectionMatrix();
-    post.motion.cutDist = mode === 'site' || mode === 'globe' ? 1e12 : 400; // the pull out is one long zoom: keep the blur on through it
+    post.motion.cutDist = mode === 'site' || mode === 'globe' ? 1e12 : 400;
+    post.trails.enabled = inSite; post.ao.enabled = inSite; // long-exposure smears on the moving machines + contact shadows, only on the job site // the pull out is one long zoom: keep the blur on through it
     if ((lastMode === 'site' && mode === 'globe') || lastMode === '') post.resetMotion();
     lastMode = mode;
   }

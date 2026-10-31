@@ -399,6 +399,7 @@ export function createPost({ THREE, renderer, scene, cam }) {
     if (trails.enabled) { mbPass.invVP.copy(invRel); mbPass.histRel.multiplyMatrices(mbPass.histVP, toCam); }
     else if (mbPass.hist) { mbPass.hist.forEach(t => t.dispose()); mbPass.hist = null; } // free ~2 full-res HDR buffers while off
     if (!ao.enabled && mbPass.aoA) { mbPass.aoA.dispose(); mbPass.aoB.dispose(); mbPass.aoA = mbPass.aoB = null; }
+    if (!ao.enabled && mbPass.tmp) { mbPass.tmp.dispose(); mbPass.tmp = null; }
     mbPass.blur = on;
     const fx = on || trails.enabled || ao.enabled;   // depth target + FX pass only when something needs them
     motion.active = on; trails.active = trails.enabled; ao.active = ao.enabled;

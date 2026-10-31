@@ -38,6 +38,13 @@ const ORTHO = /* glsl */ `
 vec2 toGeo(vec2 p){ return vec2(p.x*uRot.x-p.y*uRot.y, p.x*uRot.y+p.y*uRot.x); }
 float orthoW(vec2 g){ vec2 a=abs(g); return uOrthoOn*(1.-smoothstep(${OHALF - 90}.,${OHALF - 4}.,max(a.x,a.y))); }
 vec3 ortho(vec2 g){ return texture2D(tOrtho,vec2(g.x/${2 * OHALF}.+.5,.5-g.y/${2 * OHALF}.)).rgb; }
+// round feathers, never square: each photo hands over to the next one out well inside its own edge
+float circW(vec2 g, float hf){ return 1.-smoothstep(.55*hf,.95*hf,length(g)); }
+vec4 photoLayers(vec2 g){
+  float wc=uOrthoCOn*circW(g,40000.), wb=uOrthoBOn*circW(g,4000.), wa=uOrthoOn*circW(g,${OHALF}.);
+  vec3 c=texture2D(tOrthoC,vec2(g.x/80000.+.5,.5-g.y/80000.)).rgb;
+  c=mix(c,texture2D(tOrthoB,vec2(g.x/8000.+.5,.5-g.y/8000.)).rgb,wb); c=mix(c,ortho(g),wa);
+  return vec4(c,max(wc,max(wb,wa))); }
 // night over the photo: sodium/LED lamps dropped on the photo's own asphalt (dark, unsaturated pixels), one candidate per 18 m cell
 vec3 orthoNight(vec2 g, float w){
   vec2 c=floor(g/18.), j=vec2(h21(c),h21(c+7.3))*.7+.15, dp=(fract(g/18.)-j)*18.;
@@ -65,10 +72,14 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU, ortho
   const U = { uG: { value: 0 }, uNight: { value: 0 }, uT: { value: 0 }, uWork: { value: 0 }, uSunL: { value: new THREE.Vector3(0, 1, 0) },
     uOrigin: { value: ORIGIN.clone() }, tMap: earthU.tMap, tLights: earthU.tLights, uLL: { value: new THREE.Vector2(AUSTIN.lat, AUSTIN.lon) },
     uDig: { value: 0 }, uPile: { value: 0 }, uBack: { value: 0 }, uClear: { value: 0 }, uProg: { value: 0 },
-    tOrtho: { value: null }, uOrthoOn: { value: 0 }, uRot: { value: new THREE.Vector2(Math.cos(SITE_ROT), Math.sin(SITE_ROT)) } };
+    tOrtho: { value: null }, uOrthoOn: { value: 0 }, tOrthoB: { value: null }, uOrthoBOn: { value: 0 }, tOrthoC: { value: null }, uOrthoCOn: { value: 0 }, uRot: { value: new THREE.Vector2(Math.cos(SITE_ROT), Math.sin(SITE_ROT)) } };
   // real orthophoto: TxGIO StratMap 2019, 6 inch, Jan 2019 (public domain). Until it loads the procedural ground stands in.
   { const d = new THREE.DataTexture(new Uint8Array([90, 80, 66, 255]), 1, 1); d.needsUpdate = true; U.tOrtho.value = d; }
-  if (orthoUrl) { const l = new THREE.TextureLoader(); l.setCrossOrigin('anonymous'); l.load(orthoUrl, t => { t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; t.needsUpdate = true; U.tOrtho.value = t; U.uOrthoOn.value = 1; }); }
+  // three nested photos, all north-up on the same centre: 800 m (6 in), 8 km (StratMap 2019 resampled ~4 m), 80 km (NAIP 2022 resampled ~40 m)
+  { const d = new THREE.DataTexture(new Uint8Array([70, 72, 60, 255]), 1, 1); d.needsUpdate = true; U.tOrthoB.value = d; U.tOrthoC.value = d; }
+  const ld = new THREE.TextureLoader(); ld.setCrossOrigin('anonymous');
+  const loadInto = (url, tex, on) => url && ld.load(url, t => { t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; t.needsUpdate = true; U[tex].value = t; U[on].value = 1; });
+  if (orthoUrl) { const [a, b, c] = [].concat(orthoUrl); loadInto(a, 'tOrtho', 'uOrthoOn'); loadInto(b, 'tOrthoB', 'uOrthoBOn'); loadInto(c, 'tOrthoC', 'uOrthoCOn'); }
   let patchN = 0;
   const patch = (mat, vHead, vBody, fHead, fColor, fRough, fEmit, normalFn, fNormal) => {
     const key = 'tfsite' + patchN++; mat.customProgramCacheKey = () => key; // each patched material needs its own program
@@ -77,7 +88,7 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU, ortho
       sh.vertexShader = 'uniform vec3 uOrigin; uniform float uDig,uPile,uBack; varying vec3 vLoc;\n' + GL + vHead + '\n' + sh.vertexShader;
       if (normalFn) sh.vertexShader = sh.vertexShader.replace('#include <beginnormal_vertex>', normalFn);
       sh.vertexShader = sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n' + vBody + '\nvLoc=(modelMatrix*vec4(transformed,1.)).xyz-uOrigin;');
-      sh.fragmentShader = 'uniform float uG,uNight,uT,uWork,uClear,uProg,uOrthoOn; uniform vec3 uSunL; uniform sampler2D tMap,tLights,tOrtho; uniform vec2 uLL,uRot; varying vec3 vLoc;\n' + GL + ORTHO + fHead + '\n' + sh.fragmentShader
+      sh.fragmentShader = 'uniform float uG,uNight,uT,uWork,uClear,uProg,uOrthoOn,uOrthoBOn,uOrthoCOn; uniform vec3 uSunL; uniform sampler2D tMap,tLights,tOrtho,tOrthoB,tOrthoC; uniform vec2 uLL,uRot; varying vec3 vLoc;\n' + GL + ORTHO + fHead + '\n' + sh.fragmentShader
         .replace('#include <color_fragment>', '#include <color_fragment>\n' + fColor)
         .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n' + fRough)
         .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n' + fEmit)
@@ -266,7 +277,7 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU, ortho
   }`;
   const groundMat = patch(new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 }),
     '', '', GROUND + '\nvec3 gA; float gR; vec3 gE;',
-    'if(abs(vLoc.x)<74.8&&abs(vLoc.z)<54.8) discard; // the lot mesh owns this patch (the pit goes below the ground plane)\n  float gw=max(length(fwidth(vLoc.xz)),1e-3); groundShade(vLoc.xz,gw,gA,gR,gE);\n  { vec2 gq=toGeo(vLoc.xz); float ow=orthoW(gq); if(ow>0.){ gA=mix(gA,ortho(gq),ow); gR=mix(gR,.95,ow); gE=mix(gE,orthoNight(gq,gw)*uNight,ow*(1.-smoothstep(1.,3.,gw))); } }\n  diffuseColor.rgb=gA;',
+    'if(abs(vLoc.x)<74.8&&abs(vLoc.z)<54.8) discard; // the lot mesh owns this patch (the pit goes below the ground plane)\n  float gw=max(length(fwidth(vLoc.xz)),1e-3); groundShade(vLoc.xz,gw,gA,gR,gE);\n  { vec2 gq=toGeo(vLoc.xz); vec4 ph=photoLayers(gq); if(ph.a>0.){ gA=mix(gA,ph.rgb,ph.a); gR=mix(gR,.95,ph.a); }\n    float ow=uOrthoOn*circW(gq,${OHALF}.); if(ow>0.) gE=mix(gE,orthoNight(gq,gw)*uNight,ow*(1.-smoothstep(1.,3.,gw))); }\n  diffuseColor.rgb=gA;',
     'roughnessFactor=gR;',
     'totalEmissiveRadiance+=gE;', null, BUMP(0.35));
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), groundMat);
@@ -390,7 +401,7 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU, ortho
   const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3();
 
   function update({ g, t }) {
-    const hour = H0 + g * HSPAN, hd = ((hour % 24) + 24) % 24;
+    const hour = g < 0.86 ? H0 + (g / 0.86) * 60.5 : 68 + (g - 0.86) / 0.14 * 3, hd = ((hour % 24) + 24) % 24; // timelapse ends at 20:00 so the whole pull out is night
     const prog = g, wt = g * 33; // round-the-clock job: progress and the machine clock never stop, night shifts run under the light towers
     const working = 1;
     // sun: hour angle from solar noon (~13:00 CDT)
@@ -471,7 +482,26 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU, ortho
     crew.instanceMatrix.needsUpdate = true;
     return { hour, prog, day: Math.floor(hour / 24) + 1, hd, sunL, night };
   }
+  // clouds on the climb: six thin layers between 1.5 and 2.8 km, moonlit on top, lit orange from the city underneath.
+  // Climbing through them hides the hand-over from the photos to the map; they thin out again before the globe takes over.
+  const cloudU = { uFade: { value: 0 }, uT: { value: 0 }, uOrigin: U.uOrigin };
+  const cloudMat = new THREE.ShaderMaterial({ uniforms: cloudU, transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    vertexShader: `uniform vec3 uOrigin; varying vec3 vL; varying float vD; void main(){ vec4 w=modelMatrix*vec4(position,1.); vL=w.xyz-uOrigin; vec4 mv=viewMatrix*w; vD=-mv.z; gl_Position=projectionMatrix*mv; }`,
+    fragmentShader: GL + `uniform float uFade, uT; varying vec3 vL; varying float vD;
+      void main(){
+        vec2 p=vL.xz*.0011+vec2(vL.y*.0007,uT*.004);
+        float c=fb(p)*.65+fb(p*3.1+7.)*.35;
+        float cov=smoothstep(.42,.66,c), thick=smoothstep(.5,.85,c);
+        vec3 col=mix(vec3(.05,.055,.07),vec3(.02,.022,.03),thick)+vec3(1.,.58,.24)*.06*(1.-thick);
+        float a=cov*.42*uFade*smoothstep(80.,600.,vD);   // fade the slab right at the lens so it never pops
+        gl_FragColor=vec4(col*a,a); }` });
+  cloudMat.blending = THREE.CustomBlending; cloudMat.blendSrc = THREE.OneFactor; cloudMat.blendDst = THREE.OneMinusSrcAlphaFactor;
+  const clouds = [1500, 1750, 2000, 2250, 2500, 2800].map(h => { const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), cloudMat); m.position.y = h; m.frustumCulled = false; m.renderOrder = 3; group.add(m); return m; });
   // ground quad follows the camera and scales with altitude so it always fills the frame
-  function follow(camLocal, alt) { const s = Math.max(4000, alt * 12); ground.scale.set(s, 1, s); ground.position.x = camLocal.x; ground.position.z = camLocal.z; }
+  function follow(camLocal, alt, cloudFade = 0, t = 0) {
+    const s = Math.max(4000, alt * 12); ground.scale.set(s, 1, s); ground.position.x = camLocal.x; ground.position.z = camLocal.z;
+    cloudU.uFade.value = cloudFade; cloudU.uT.value = t;
+    clouds.forEach(m => { m.visible = cloudFade > 0.001; const cs = Math.max(20000, alt * 14); m.scale.set(cs, 1, cs); m.position.x = camLocal.x; m.position.z = camLocal.z; });
+  }
   return { group, update, follow, uniforms: U, D };
 }
