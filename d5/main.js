@@ -4,6 +4,7 @@ import { createPost } from './post.js';
 import { createSky } from './sky.js';
 import { createPlanets } from './planets.js';
 import { createSite, AUSTIN, SITE_ROT } from './site.js';
+import { createHabitatAssets, createMarsEnv } from './habitat.js';
 const ASSETS = new URL('./assets', import.meta.url).href; // textures + star catalog live next to this file
 
 const q = (s, r = document) => r.querySelector(s), qa = (s, r = document) => [...r.querySelectorAll(s)];
@@ -188,47 +189,19 @@ for (let r = 34; r < 238; r += 14) {
   }
 }
 
-// geodesic hemisphere: frequency-2 icosphere cut at the equator, so the struts read as a real geodesic frame
-const habG = (() => {
-  const g = new THREE.IcosahedronGeometry(1, 2).toNonIndexed(), p = g.attributes.position, keep = [];
-  for (let i = 0; i < p.count; i += 3) { const cy = (p.getY(i) + p.getY(i + 1) + p.getY(i + 2)) / 3; if (cy > -0.05) for (let k = 0; k < 3; k++) keep.push(p.getX(i + k), Math.max(0, p.getY(i + k)), p.getZ(i + k)); }
-  const o = new THREE.BufferGeometry(); o.setAttribute('position', new THREE.Float32BufferAttribute(keep, 3)); o.computeVertexNormals(); return o;
-})();
-// dome skin: pale panels with ~30% glass facets; glass reads dark by day and glows warm at night
 const winU = { night: { value: 0 } };
-const habMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5, metalness: 0.25, flatShading: true });
-habMat.onBeforeCompile = sh => {
-  sh.uniforms.night = winU.night;
-  sh.vertexShader = 'varying vec3 vLP; varying float vSeed;\n' + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
-    vLP=position; vSeed=instanceMatrix[3].x*0.13+instanceMatrix[3].z*0.71;`);
-  sh.fragmentShader = 'uniform float night; varying vec3 vLP; varying float vSeed;\nfloat wh(vec3 p){return fract(sin(dot(p,vec3(41.3,289.1,97.7)))*43758.5);}\n' + sh.fragmentShader
-    .replace('#include <color_fragment>', `#include <color_fragment>
-    float glass=step(0.68,wh(floor(vLP*3.2)+vSeed))*step(0.08,vLP.y);
-    float lit=step(0.35,wh(floor(vLP*3.2)+vSeed+7.));
-    diffuseColor.rgb*=mix(1.,0.28,glass);`)
-    .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
-    totalEmissiveRadiance+=vec3(1.,0.62,0.3)*glass*lit*night*(0.7+fract(vSeed)*0.6);`);
-};
-// fab sheds keep the box window shader
-const bldMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7, metalness: 0.2, flatShading: true });
-bldMat.onBeforeCompile = sh => {
-  sh.uniforms.night = winU.night;
-  sh.vertexShader = 'varying vec3 vIP; varying vec3 vWN;\n' + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
-    vIP=(instanceMatrix*vec4(position,1.)).xyz; vWN=normalize(mat3(instanceMatrix)*normal);`);
-  sh.fragmentShader = 'uniform float night; varying vec3 vIP; varying vec3 vWN;\n' + sh.fragmentShader
-    .replace('#include <color_fragment>', `#include <color_fragment>
-    float u=dot(vIP.xz,normalize(vec2(-vWN.z,vWN.x)+1e-4)); float band=step(0.5,fract(u/2.))*step(0.9,vIP.y)*step(vIP.y,1.5)*(1.-step(0.5,abs(vWN.y)));`)
-    .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
-    totalEmissiveRadiance+=vec3(1.,0.7,0.4)*band*night*0.8;`);
-};
-const boxG = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
-const shell = new THREE.InstancedMesh(habG, habMat, habs.length);
-const frame = new THREE.InstancedMesh(habG, new THREE.MeshBasicMaterial({ color: 0xf0a35a, wireframe: true, transparent: true, opacity: 0.5 }), habs.length);
-const ringPad = new THREE.InstancedMesh(new THREE.CylinderGeometry(1.12, 1.18, 0.5, 28).translate(0, 0.25, 0), new THREE.MeshStandardMaterial({ color: 0x8c7e70, roughness: 0.9 }), habs.length);
-const sheds = new THREE.InstancedMesh(boxG, bldMat, fabs.length);
+// habitat.js: real geodesic struts, mirror/bronze glass panels with a Mars sky env map, airlocks, antennas, vaulted hangars, big domes with interiors
+const marsEnv = createMarsEnv({ THREE, renderer });
+const HAB = createHabitatAssets({ THREE, renderer, envMap: marsEnv, frameDetail: 'low' });
+const shell = new THREE.InstancedMesh(HAB.habShellGeo, HAB.habShellMat, habs.length); shell.customDepthMaterial = HAB.habShellDepthMat;
+const habGlass = new THREE.InstancedMesh(HAB.habGlassGeo, HAB.habGlassMat, habs.length); habGlass.receiveShadow = true; // same matrices as shell (glass/opaque split is hashed from position)
+const frame = new THREE.InstancedMesh(HAB.habFrameGeo, HAB.habFrameMat, habs.length); frame.customDepthMaterial = HAB.habFrameDepthMat; frame.castShadow = frame.receiveShadow = true;
+const ringPad = new THREE.InstancedMesh(HAB.ringPadGeo, HAB.ringPadMat, habs.length);
+const skirt = new THREE.InstancedMesh(HAB.skirtGeo, HAB.skirtMat, habs.length);
+const sheds = new THREE.InstancedMesh(HAB.shedGeo, HAB.shedMat, fabs.length); sheds.customDepthMaterial = HAB.shedDepthMat;
 habs.forEach((l, i) => shell.setColorAt(i, new THREE.Color().setHSL(0.08, 0.06 + rnd() * 0.06, 0.72 + rnd() * 0.16)));
 fabs.forEach((l, i) => sheds.setColorAt(i, new THREE.Color().setHSL(0.07, 0.08, 0.55 + rnd() * 0.15)));
-colony.add(shell, frame, ringPad, sheds);
+colony.add(shell, habGlass, frame, ringPad, skirt, sheds);
 // shadows: shell/ringPad/sheds cast + receive. Their onBeforeCompile only touches colors/emissive/varyings (never vertex positions),
 // so three's stock instanced MeshDepthMaterial matches their silhouettes and no customDepthMaterial is needed. The wireframe frame must NOT cast
 // (a depth material ignores wireframe and would stamp a solid dome). Instances hidden with scale 0.0001 cast nothing visible.
@@ -268,22 +241,11 @@ const DOT = `varying vec3 vC; varying float vA; void main(){ float d=length(gl_P
 // domes: amber lattice rises first, then the glass skins over and glows warm from inside at night
 const domeG = new THREE.SphereGeometry(1, 32, 14, 0, Math.PI * 2, 0, Math.PI / 2);
 const domes = DOMES.map(([x, z, r, bt]) => {
-  const g = new THREE.Group(); g.position.set(x, 0, z); g.scale.setScalar(r);
-  const lattice = new THREE.Mesh(domeG, new THREE.MeshBasicMaterial({ color: 0xf0a35a, wireframe: true, transparent: true, opacity: 0.7 }));
-  const glass = new THREE.Mesh(domeG, new THREE.MeshStandardMaterial({ color: 0xcfe0ee, roughness: 0.12, metalness: 0.4, transparent: true, opacity: 0, depthWrite: false }));
-  const glow = new THREE.Mesh(domeG, new THREE.MeshBasicMaterial({ color: 0xff9a50, transparent: true, opacity: 0, side: THREE.BackSide, blending: THREE.AdditiveBlending, depthWrite: false }));
-  // big domes: the animated lattice mesh casts through a hashed-alpha depth material, so the shadow is a soft partial one
-  // (glass is mostly transparent) and it grows with the lattice scale. Opacity is raised once the glass skins over (see buildColony).
-  lattice.castShadow = true; lattice.customDepthMaterial = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, alphaHash: true, opacity: 0.2, side: THREE.DoubleSide });
-  glass.receiveShadow = true;
-  g.add(lattice, glass, glow); colony.add(g); return { g, lattice, glass, glow, bt };
+  const g = HAB.bigDome(); g.position.set(x, 0, z); g.scale.setScalar(r); colony.add(g);
+  return { g, lattice: g.getObjectByName('lattice'), glass: g.getObjectByName('glass'), glow: g.getObjectByName('glow'), bt };
 });
 // pressurized corridors: glass tubes that extrude out from the hub to each dome
-const tubeG = new THREE.CylinderGeometry(2.4, 2.4, 1, 14, 1, true).rotateZ(Math.PI / 2).translate(0.5, 0, 0);
-const tubeMat = new THREE.MeshStandardMaterial({ color: 0xd6e2ea, roughness: 0.15, metalness: 0.5, transparent: true, opacity: 0.6, emissive: 0xff9a50, emissiveIntensity: 0 });
-const ribMat = new THREE.MeshBasicMaterial({ color: 0xf0a35a, wireframe: true, transparent: true, opacity: 0.5 });
-const tubes = TUBES.map((a, i) => { const g = new THREE.Group(); g.position.set(Math.cos(a) * 19, 2.6, Math.sin(a) * 19); g.rotation.y = -a; g.add(new THREE.Mesh(tubeG, tubeMat), new THREE.Mesh(tubeG, ribMat)); colony.add(g); return { g, bt: 0.12 + i * 0.07 }; });
-
+const tubes = TUBES.map((a, i) => { const g = new THREE.Group(); g.position.set(Math.cos(a) * 19, 2.6, Math.sin(a) * 19); g.rotation.y = -a; const ribs = new THREE.Mesh(HAB.ribGeo, HAB.ribMat); ribs.castShadow = ribs.receiveShadow = true; g.add(new THREE.Mesh(HAB.tubeGeo, HAB.tubeMat), ribs); colony.add(g); return { g, bt: 0.12 + i * 0.07 }; });
 // solar farm: rows of tilted panels tiling in on the west flats
 const panels = [];
 for (let r = 262; r < 345; r += 4.2) for (let a = 0.25; a < 1.35; a += 3.2 / r) panels.push({ x: Math.cos(a) * r, z: Math.sin(a) * r, bt: 0.22 + (r - 262) / 83 * 0.22 + (a - 0.25) * 0.12 });
@@ -329,10 +291,10 @@ function buildColony(g, t) {
   // shadow camera: sit 600 units out along the sun, look at the colony centre; vertical half-extent = projected ground disc + tallest caster (cranes, domes)
   { const c = sunLight.shadow.camera, V = 390 * Math.max(colSun.y, 0.06) + 80; sunLight.target.position.copy(COL); sunLight.position.copy(COL).addScaledVector(colSun, 600);
     if (c.top !== V) { c.top = V; c.bottom = -V; c.updateProjectionMatrix(); } }
-  skyU.sunDir.value.copy(colSun); skyU.night.value = night; lightU.g.value = g; lightU.night.value = night; lightU.t.value = t; winU.night.value = night;
+  skyU.sunDir.value.copy(colSun); skyU.night.value = night; lightU.g.value = g; lightU.night.value = night; lightU.t.value = t; winU.night.value = night; HAB.night.value = night;
   scene.fog.color.copy(skyCol.copy(dayH).lerp(duskH, night)); scene.fog.near = 500; scene.fog.far = 4200; // haze out to the delta front ~2 km west
   sunLight.intensity = THREE.MathUtils.lerp(2.2, 0.1, night); ambient.intensity = THREE.MathUtils.lerp(0.5, 0.1, night); hemi.intensity = THREE.MathUtils.lerp(1.5, 0.12, night);
-  hemi.color.copy(skyCol); tubeMat.emissiveIntensity = night * 0.35;
+  hemi.color.copy(skyCol); HAB.tubeMat.emissiveIntensity = night * 0.35;
   // lander cycle: descend on a burn, sit, lift off; repeats a few times across the scroll
   const lc = (g * 5) % 1, flying = g > 0.3; let ly = 0, burn = 0;
   if (lc < 0.35) { ly = Math.pow(1 - lc / 0.35, 2) * 320; burn = 1; } else if (lc > 0.65) { ly = Math.pow((lc - 0.65) / 0.35, 2) * 360; burn = 1; }
@@ -344,20 +306,19 @@ function buildColony(g, t) {
     // pad pours, struts rise, panels skin up from the base
     const k0 = easeOut((g - l.bt) / 0.03), s = easeOut((g - l.bt - 0.02) / 0.06), f = easeOut((g - l.bt - 0.07) / 0.08);
     q4.setFromAxisAngle(yAx, l.rot);
-    mtx.compose(v3.set(l.x, 0, l.z), q4, k0 > 0 ? s3.set(l.r, k0, l.r) : HIDE); ringPad.setMatrixAt(i, mtx);
+    mtx.compose(v3.set(l.x, 0, l.z), q4, k0 > 0 ? s3.set(l.r, k0, l.r) : HIDE); ringPad.setMatrixAt(i, mtx); skirt.setMatrixAt(i, mtx);
     mtx.compose(v3.set(l.x, 0.45, l.z), q4, s > 0 ? s3.set(l.r * 1.015, l.r * l.ys * s * 1.015, l.r * 1.015) : HIDE); frame.setMatrixAt(i, mtx);
-    mtx.compose(v3.set(l.x, 0.45, l.z), q4, f > 0 ? s3.set(l.r, l.r * l.ys * f, l.r) : HIDE); shell.setMatrixAt(i, mtx);
+    mtx.compose(v3.set(l.x, 0.45, l.z), q4, f > 0 ? s3.set(l.r, l.r * l.ys * f, l.r) : HIDE); shell.setMatrixAt(i, mtx); habGlass.setMatrixAt(i, mtx);
   });
   fabs.forEach((l, i) => { const f = easeOut((g - l.bt - 0.04) / 0.07); q4.setFromAxisAngle(yAx, -l.rot); mtx.compose(v3.set(l.x, 0, l.z), q4, f > 0 ? s3.set(l.w, l.h * f, l.d) : HIDE); sheds.setMatrixAt(i, mtx); });
-  shell.instanceMatrix.needsUpdate = frame.instanceMatrix.needsUpdate = ringPad.instanceMatrix.needsUpdate = sheds.instanceMatrix.needsUpdate = true;
+  shell.instanceMatrix.needsUpdate = habGlass.instanceMatrix.needsUpdate = frame.instanceMatrix.needsUpdate = ringPad.instanceMatrix.needsUpdate = skirt.instanceMatrix.needsUpdate = sheds.instanceMatrix.needsUpdate = true;
   panels.forEach((p, i) => { const k = easeOut((g - p.bt) / 0.04); mtx.compose(v3.set(p.x, 0, p.z), qPanel, k > 0 ? s3.set(1, k, 1) : HIDE); panel.setMatrixAt(i, mtx); });
   panel.instanceMatrix.needsUpdate = true;
   roads.forEach(m => (m.material.opacity = sstep(g, m.userData.bt, m.userData.bt + 0.06) * (0.15 + 0.85 * night)));
   domes.forEach(d => {
     const s = easeOut((g - d.bt) / 0.1), gl = sstep(g, d.bt + 0.1, d.bt + 0.18);
-    d.lattice.scale.set(1, Math.max(0.001, s), 1); d.lattice.material.opacity = 0.75 * (1 - gl * 0.6);
+    d.lattice.scale.set(1, Math.max(0.001, s), 1);
     d.glass.material.opacity = gl * 0.28; d.glow.material.opacity = gl * night * 0.28;
-    d.lattice.customDepthMaterial.opacity = 0.18 + 0.32 * gl; // dome shadow darkens as the glass skins over
   });
   tubes.forEach(tb => { const k = easeOut((g - tb.bt) / 0.08); tb.g.scale.set(Math.max(0.001, k * 62), 1, 1); tb.g.visible = k > 0; });
   cranes.forEach(c => { const v = Math.min(easeOut((g - c.bt + 0.08) / 0.04), 1 - easeOut((g - c.bt - 0.2) / 0.04)); c.g.scale.set(1, Math.max(0.001, v), 1); c.g.visible = v > 0.01; });
