@@ -49,6 +49,17 @@ vec3 orthoNight(vec2 g, float w){
   return lamp*road*(smoothstep(r,0.,d)*1.6*.49/(r*r)+.05*smoothstep(10.,0.,d));
 }`;
 
+// micro relief from the photo itself: darker = lower (ruts, tracks, puddled cuts), plus fine clods, as a bump on the shading normal
+const BUMP = k => /* glsl */ `{
+  vec2 bp=vLoc.xz; float bw=max(length(fwidth(bp)),1e-3), fade=1.-smoothstep(.15,.9,bw);   // only where it can resolve
+  if(fade>0.){
+    float e=.18; vec2 ex=vec2(e,0.), ez=vec2(0.,e);
+    #define BH(q) (dot(ortho(toGeo(q)),vec3(.3,.5,.2))*.9*uOrthoOn+fb((q)*1.6)*.1+vn((q)*6.)*.025)
+    float gx=(BH(bp+ex)-BH(bp-ex))/(2.*e), gz=(BH(bp+ez)-BH(bp-ez))/(2.*e);
+    #undef BH
+    normal=normalize(normal+(viewMatrix*vec4(-gx,0.,-gz,0.)).xyz*${k}*fade);
+  } }`;
+
 export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU, orthoUrl }) {
   const group = new THREE.Group(); group.position.copy(ORIGIN); group.visible = false; scene.add(group);
   const U = { uG: { value: 0 }, uNight: { value: 0 }, uT: { value: 0 }, uWork: { value: 0 }, uSunL: { value: new THREE.Vector3(0, 1, 0) },
@@ -59,7 +70,7 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU, ortho
   { const d = new THREE.DataTexture(new Uint8Array([90, 80, 66, 255]), 1, 1); d.needsUpdate = true; U.tOrtho.value = d; }
   if (orthoUrl) { const l = new THREE.TextureLoader(); l.setCrossOrigin('anonymous'); l.load(orthoUrl, t => { t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; t.needsUpdate = true; U.tOrtho.value = t; U.uOrthoOn.value = 1; }); }
   let patchN = 0;
-  const patch = (mat, vHead, vBody, fHead, fColor, fRough, fEmit, normalFn) => {
+  const patch = (mat, vHead, vBody, fHead, fColor, fRough, fEmit, normalFn, fNormal) => {
     const key = 'tfsite' + patchN++; mat.customProgramCacheKey = () => key; // each patched material needs its own program
     mat.onBeforeCompile = sh => {
       Object.assign(sh.uniforms, U);
@@ -69,7 +80,8 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU, ortho
       sh.fragmentShader = 'uniform float uG,uNight,uT,uWork,uClear,uProg,uOrthoOn; uniform vec3 uSunL; uniform sampler2D tMap,tLights,tOrtho; uniform vec2 uLL,uRot; varying vec3 vLoc;\n' + GL + ORTHO + fHead + '\n' + sh.fragmentShader
         .replace('#include <color_fragment>', '#include <color_fragment>\n' + fColor)
         .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n' + fRough)
-        .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n' + fEmit);
+        .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n' + fEmit)
+        .replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\n' + (fNormal || ''));
     };
     return mat;
   };
@@ -256,7 +268,7 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU, ortho
     '', '', GROUND + '\nvec3 gA; float gR; vec3 gE;',
     'if(abs(vLoc.x)<74.8&&abs(vLoc.z)<54.8) discard; // the lot mesh owns this patch (the pit goes below the ground plane)\n  float gw=max(length(fwidth(vLoc.xz)),1e-3); groundShade(vLoc.xz,gw,gA,gR,gE);\n  { vec2 gq=toGeo(vLoc.xz); float ow=orthoW(gq); if(ow>0.){ gA=mix(gA,ortho(gq),ow); gR=mix(gR,.95,ow); gE=mix(gE,orthoNight(gq,gw)*uNight,ow*(1.-smoothstep(1.,3.,gw))); } }\n  diffuseColor.rgb=gA;',
     'roughnessFactor=gR;',
-    'totalEmissiveRadiance+=gE;');
+    'totalEmissiveRadiance+=gE;', null, BUMP(0.35));
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), groundMat);
   ground.position.y = -0.06; ground.receiveShadow = true; ground.frustumCulled = false; group.add(ground);
 
@@ -271,6 +283,10 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU, ortho
     // haul ramp up the east side
     float rx=clamp((p.x-30.)/22.,0.,1.), rm=(1.-smoothstep(4.5,7.,abs(p.y)))*step(29.,p.x)*step(p.x,52.);
     h=min(h,-${D}.*(1.-rx)*rm*smoothstep(.55,.9,uDig)*(1.-uBack));
+    // ground topography outside the dig: gentle swales, a few windrows from grading, all easing to 0 at the lot edge
+    float edge=(1.-smoothstep(62.,74.,abs(p.x)))*(1.-smoothstep(42.,54.,abs(p.y)));
+    float topo=(fb(p*.022+3.)-.47)*1.6+(vn(p*.11)-.5)*.35+smoothstep(.55,1.,sin(p.y*.42+fb(p*.05)*4.))*.22;
+    h+=topo*edge*(1.-m*f);
     // spoil pile
     float r=length((p-vec2(-52.,-38.))*vec2(1.,1.3));
     h+=uPile*7.*exp(-r*r/160.)*(.8+.4*vn(p*.15));
@@ -313,14 +329,14 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU, ortho
     }
     // pools of work light at night
     vec2 LT[4]; LT[0]=vec2(-60.,-42.); LT[1]=vec2(60.,-42.); LT[2]=vec2(-60.,42.); LT[3]=vec2(20.,30.);
-    for(int i=0;i<4;i++){ float d=length(p-LT[i]); E+=col*vec3(1.,.93,.8)*1.1*exp(-d*d/700.)*uWork; }
+    for(int i=0;i<4;i++){ float d=length(p-LT[i]); E+=col*vec3(1.,.93,.8)*.25*exp(-d*d/700.)*uWork; }
     lA=col; lR=rough; lE=E;
     diffuseColor.rgb=lA;`, 'roughnessFactor=lR;', 'totalEmissiveRadiance+=lE;',
     /* glsl */ `vec3 objectNormal; { float e=.6; vec2 p=position.xz;
       objectNormal=normalize(vec3(-(pitH(p+vec2(e,0.))-pitH(p-vec2(e,0.)))/(2.*e),1.,-(pitH(p+vec2(0.,e))-pitH(p-vec2(0.,e)))/(2.*e))); }
     #ifdef USE_TANGENT
       vec3 objectTangent = vec3( tangent.xyz );
-    #endif`);
+    #endif`, BUMP(0.9));
   const lot = new THREE.Mesh(new THREE.PlaneGeometry(150, 110, 150, 110).rotateX(-Math.PI / 2), lotMat);
   lot.receiveShadow = true; group.add(lot);
 
@@ -387,8 +403,8 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU, ortho
     sunLight.color.setRGB(1, 0.93 - low * 0.25, 0.85 - low * 0.45); sunLight.intensity = 3.2 * sstep(sinE, -0.02, 0.1);
     sunLight.position.copy(ORIGIN).addScaledVector(sunL.y > 0 ? sunL : tv.set(sunL.x, 0.05, sunL.z).normalize(), 400); sunLight.target.position.copy(ORIGIN);
     hemi.color.copy(skyC.setRGB(0.42, 0.58, 1.0).lerp(gndC.setRGB(0.06, 0.07, 0.12), night)); hemi.groundColor.setRGB(0.42 * day + 0.02, 0.34 * day + 0.02, 0.24 * day + 0.03);
-    hemi.intensity = 0.25 + 1.3 * day;
-    workLights.forEach(l => (l.intensity = 60 * U.uWork.value)); towers.forEach(h => (h.visible = U.uWork.value > 0.05));
+    hemi.intensity = 0.6 + 0.95 * day; // a little moonlight so the photo neighbourhood never goes fully black
+    workLights.forEach(l => (l.intensity = 140 * U.uWork.value)); towers.forEach(h => (h.visible = U.uWork.value > 0.05));
     U.uClear.value = sstep(prog, 0.0, 0.07);
     U.uDig.value = sstep(prog, 0.07, 0.36); U.uPile.value = sstep(prog, 0.08, 0.24) * (1 - sstep(prog, 0.3, 0.46)) * 0.9 + 0.1 * sstep(prog, 0.3, 0.46);
     U.uBack.value = sstep(prog, 0.8, 0.93);
