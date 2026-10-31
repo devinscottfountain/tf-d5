@@ -491,9 +491,10 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU, ortho
       void main(){
         vec2 p=vL.xz*.0011+vec2(vL.y*.0007,uT*.004);
         float c=fb(p)*.65+fb(p*3.1+7.)*.35;
-        float cov=smoothstep(.42,.66,c), thick=smoothstep(.5,.85,c);
-        vec3 col=mix(vec3(.05,.055,.07),vec3(.02,.022,.03),thick)+vec3(1.,.58,.24)*.06*(1.-thick);
-        float a=cov*.42*uFade*smoothstep(80.,600.,vD);   // fade the slab right at the lens so it never pops
+        float cov=smoothstep(.36,.62,c), thick=smoothstep(.5,.85,c);
+        // moonlit grey tops, thinner edges glowing sodium-orange from the city underneath
+        vec3 col=mix(vec3(.11,.12,.15),vec3(.06,.065,.08),thick)+vec3(1.,.58,.24)*.22*(1.-thick)*cov;
+        float a=cov*.62*uFade*smoothstep(80.,600.,vD);   // fade the slab right at the lens so it never pops
         gl_FragColor=vec4(col*a,a); }` });
   cloudMat.blending = THREE.CustomBlending; cloudMat.blendSrc = THREE.OneFactor; cloudMat.blendDst = THREE.OneMinusSrcAlphaFactor;
   const clouds = [1500, 1750, 2000, 2250, 2500, 2800].map(h => { const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), cloudMat); m.position.y = h; m.frustumCulled = false; m.renderOrder = 3; group.add(m); return m; });
