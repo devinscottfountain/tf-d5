@@ -251,7 +251,8 @@ export function createHabitatAssets({ THREE, renderer, envMap = null, frameDetai
       float pr = fract(vSel.z * 23.7 + vIh * 3.3), edge = min(min(vBary.x, vBary.y), vBary.z), mull = 1. - smoothstep(0.03, 0.07, edge);
       diffuseColor.rgb = mix(mix(vec3(0.30, 0.34, 0.39), vec3(0.42, 0.33, 0.24), step(0.62, pr)), vec3(0.2, 0.19, 0.18), mull);`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
-      roughnessFactor = mix(roughnessFactor + 0.05 * pr, 0.55, mull);`)
+      roughnessFactor = mix(roughnessFactor + 0.05 * pr, 0.55, mull);
+      roughnessFactor = max(roughnessFactor, 0.05 + 0.25 * smoothstep(40., 300., length(vViewPosition))); // distance floor: far facets stop sparkling`)
       .replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>
       metalnessFactor = mix(metalnessFactor, 0.4, mull);`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
@@ -262,14 +263,26 @@ export function createHabitatAssets({ THREE, renderer, envMap = null, frameDetai
   habGlassMat.userData.night = night;
 
   const habFrameMat = patch(new THREE.MeshStandardMaterial({ color: 0xc2b9ad, roughness: 0.38, metalness: 0.55, envMap, envMapIntensity: 0.7 }), 'frame', sh => {
-    sh.vertexShader = `attribute float kind; varying float vKind;\n` + HASH + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+    sh.vertexShader = `attribute float kind; varying float vKind; varying float vHs;\n` + HASH + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
       float ih = habInstHash();
       transformed *= kind > 1.5 && kind < 3.5 ? habHasAnt(ih) : (kind > 4.5 ? habHasVest(ih) : 1.);
-      vKind = kind;`);
-    sh.fragmentShader = `uniform float night; varying float vKind;\n` + sh.fragmentShader
+      vKind = kind;
+      #ifdef USE_INSTANCING
+        vHs = length(instanceMatrix[0].xyz);
+      #else
+        vHs = length(modelMatrix[0].xyz);
+      #endif`);
+    sh.fragmentShader = `uniform float night; varying float vKind; varying float vHs;\n` + sh.fragmentShader
       .replace('#include <color_fragment>', `#include <color_fragment>
       float lamp = step(2.5, vKind) * (1. - step(3.5, vKind)) + step(4.5, vKind);
-      diffuseColor.rgb *= vKind > 0.5 && vKind < 1.5 ? 0.62 : (vKind > 3.5 && vKind < 4.5 ? 0.5 : 1.);`)
+      diffuseColor.rgb *= vKind > 0.5 && vKind < 1.5 ? 0.62 : (vKind > 3.5 && vKind < 4.5 ? 0.5 : 1.);
+      // struts/hubs narrower than a pixel: blend toward the shell's colour and finish so they stop shimmering
+      float thin = (1. - clamp(0.034 * vHs / max(length(fwidth(vViewPosition)), 1e-5), 0., 1.)) * step(vKind, 1.5);
+      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.62, 0.58, 0.54), thin * 0.7);`)
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+      roughnessFactor = mix(roughnessFactor, 0.6, thin);`)
+      .replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>
+      metalnessFactor = mix(metalnessFactor, 0.1, thin);`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
       totalEmissiveRadiance += (vKind < 4. ? vec3(1., 0.15, 0.08) : vec3(1., 0.8, 0.55)) * lamp * (0.4 + 4. * night);`)
       .replace('#include <lights_fragment_maps>', ENV_NIGHT);

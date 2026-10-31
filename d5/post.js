@@ -107,9 +107,10 @@ export function createPost({ THREE, renderer, scene, cam }) {
           if(lp>cap){ v*=cap/lp; lp=cap; }
           if(lp<0.6){ gl_FragColor=vec4(c0.rgb,1.); return; }     // sub-pixel: pass through
           float j=ign(gl_FragCoord.xy);
+          float n=clamp(ceil(lp*.5),12.,32.);                     // taps grow with blur length (~2 px apart) so long swells stay smooth
           vec3 acc=vec3(0.);
-          for(int i=0;i<12;i++){ float tt=(float(i)+j)/12.-.5; acc+=texture2D(tColor,vUv+v*tt).rgb; }
-          gl_FragColor=vec4(acc/12.,1.); }`);
+          for(int i=0;i<32;i++){ if(float(i)>=n) break; float tt=(float(i)+j)/n-.5; acc+=texture2D(tColor,vUv+v*tt).rgb; }
+          gl_FragColor=vec4(acc/n,1.); }`);
       this.mCopy = mat({ tColor: { value: null } }, `uniform sampler2D tColor; varying vec2 vUv; void main(){ gl_FragColor=vec4(texture2D(tColor,vUv).rgb,1.); }`);
 
       // b. trails: out = mix(current, reprojected history, w). History alpha holds log2(view distance) of the frame that wrote it,
@@ -250,9 +251,21 @@ export function createPost({ THREE, renderer, scene, cam }) {
   composer.addPass(mbPass);
 
   // 3. DOF + bloom, parameters unchanged from d5.current.js
+  //    DOF reads the scene pass's own depth texture instead of re-rendering the scene with a depth override
+  //    (that doubled the draw cost and missed vertex displacement on the terrain and habs).
   const dof = new BokehPass(scene, cam, { focus: 30, aperture: 0.0001, maxblur: 0.002 });
+  dof.materialBokeh.defines.DEPTH_PACKING = 0; dof.materialBokeh.needsUpdate = true; // raw depth texture, not RGBA-packed
+  dof.renderTargetDepth.dispose();
+  dof.render = function (r, write, read) {
+    const u = this.uniforms;
+    u.tColor.value = mbPass.enabled ? read.texture : scenePass.rt.texture; // FX pass off: scene colour is still in the private RT
+    u.tDepth.value = scenePass.rt.depthTexture; u.nearClip.value = cam.near; u.farClip.value = cam.far;
+    r.setRenderTarget(this.renderToScreen ? null : write); this.fsQuad.render(r);
+  };
+  dof.setSize = function (w, h) { this.uniforms.aspect.value = w / h; };
   composer.addPass(dof);
-  const bloom = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.8, 0.5, 0.72);
+  // composer.addPass/setSize hand every pass drawing-buffer pixels, so bloom has always run at device size; keep that look
+  const bloom = new UnrealBloomPass(new THREE.Vector2(W, H), 0.8, 0.5, 0.72);
   composer.addPass(bloom);
 
   // 4. auto exposure + tone map, entirely on the GPU (no readback, no stall).
@@ -346,7 +359,7 @@ export function createPost({ THREE, renderer, scene, cam }) {
 
   // 6. lens: identical to d5.current.js
   const lens = new ShaderPass({
-    uniforms: { tDiffuse: { value: null }, ca: { value: 0.012 }, time: { value: 0 }, grain: { value: 0.045 }, res: { value: new THREE.Vector2(size.x, size.y) } },
+    uniforms: { tDiffuse: { value: null }, ca: { value: 0.012 }, time: { value: 0 }, grain: { value: 0.045 }, res: { value: new THREE.Vector2(W, H) } }, // grain cells = drawing-buffer pixels
     vertexShader: `varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
     fragmentShader: `uniform sampler2D tDiffuse; uniform float ca; uniform float time; uniform float grain; uniform vec2 res; varying vec2 vUv;
     void main(){
@@ -363,11 +376,12 @@ export function createPost({ THREE, renderer, scene, cam }) {
 
   // ---------------------------------------------------------------- per-frame state (no allocations)
   const curVP = new THREE.Matrix4(), prevVP = new THREE.Matrix4(), invRel = new THREE.Matrix4(), toCam = new THREE.Matrix4(), _t = new THREE.Matrix4(), _o = new THREE.Vector3(), lastPos = new THREE.Vector3(), lastQuat = new THREE.Quaternion();
-  let have = false, lastDt = 1 / 60, resetNext = false;
+  let have = false, lastDt = 1 / 60, resetNext = false, bufW = W;
 
   function setSize(w, h) {
     renderer.setSize(w, h); cam.aspect = w / h; cam.updateProjectionMatrix();
-    composer.setSize(w, h); lens.uniforms.res.value.set(w, h); resetNext = true;
+    const p = renderer.getPixelRatio(); bufW = Math.max(1, Math.floor(w * p));
+    composer.setSize(w, h); lens.uniforms.res.value.set(bufW, Math.max(1, Math.floor(h * p))); resetNext = true;
   }
 
   function update({ dt = 1 / 60, t = 0, ca, focus, aperture, maxblur } = {}) {
@@ -403,7 +417,9 @@ export function createPost({ THREE, renderer, scene, cam }) {
     mbPass.blur = on;
     const fx = on || trails.enabled || ao.enabled;   // depth target + FX pass only when something needs them
     motion.active = on; trails.active = trails.enabled; ao.active = ao.enabled;
-    mbPass.enabled = fx; scenePass.useRT = fx;
+    // DOF taps reach 0.4 * maxblur of the width; under half a pixel the pass is invisible, so skip it
+    const dofOn = 0.4 * dof.uniforms.maxblur.value * bufW >= 0.5;
+    mbPass.enabled = fx; dof.enabled = dofOn; scenePass.useRT = fx || dofOn;
     prevVP.copy(curVP); lastPos.copy(cam.position); lastQuat.copy(cam.quaternion); have = true; resetNext = false;
   }
 

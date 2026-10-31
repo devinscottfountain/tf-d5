@@ -17,7 +17,7 @@ renderer.setSize(innerWidth, innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
 renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.shadowMap.autoUpdate = false; // shadows render only when the loop sets shadowMap.needsUpdate (colony segment); zero cost in space
+renderer.shadowMap.autoUpdate = false; // shadows render only when the loop sets shadowMap.needsUpdate (see the shadow policy in the loop); zero cost in space
 host.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x010103);
@@ -63,7 +63,7 @@ const hemi = new THREE.HemisphereLight(0xffc896, 0x5a2a14, 1.4); scene.add(hemi)
 // squashes the ground disc along the light's up axis; buildColony() resizes the vertical extent with the sun elevation every frame.
 // castShadow stays true all the time so lit materials never recompile when the colony toggles; the map itself only renders when the loop requests it.
 sunLight.castShadow = true;
-{ const sh = sunLight.shadow, c = sh.camera; sh.mapSize.set(4096, 2048); sh.bias = -0.0005; sh.normalBias = 0.35; sh.radius = 2; c.left = -390; c.right = 390; c.near = 60; c.far = 1300; }
+{ const sh = sunLight.shadow, c = sh.camera; sh.mapSize.set(4096, 2048); sh.bias = -0.0005; sh.normalBias = 0.35; c.left = -390; c.right = 390; c.near = 60; c.far = 1300; }
 scene.fog = new THREE.Fog(0x000000, 1e8, 1e9); // parked far away outside the colony so nothing recompiles
 const ambient = scene.children.find(o => o.isAmbientLight);
 const rnd = (() => { let a = 7; return () => ((a = (a * 16807) % 2147483647) / 2147483647); })(); // seeded so the city is identical every load
@@ -83,17 +83,18 @@ const MARS_DATA = window.D5_MARS || {
   hiBump: 'https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae61db8dea8f77cde215b51_jezero-hirise-bump-1600m.jpg',
   ctxBump: 'https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae61db9dea8f77cde215b79_jezero-ctx-bump-12km.jpg'
 };
-const terrU = { tDtm: { value: null }, tHi: { value: null }, tCtx: { value: null }, uOn: { value: new THREE.Vector3(0, 0, 0) }, tMars: planets.mars.material.uniforms.tMap };
+const terrU = { tDtm: { value: null }, tHi: { value: null }, tCtx: { value: null }, uOn: { value: new THREE.Vector3(0, 0, 0) }, uHB0: { value: 0 }, tMars: planets.mars.material.uniforms.tMap };
 {
   const px = (r, g, b) => { const d = new THREE.DataTexture(new Uint8Array([r, g, b, 255]), 1, 1); d.needsUpdate = true; return d; };
   terrU.tDtm.value = px(128, 0, 0); terrU.tHi.value = px(128, 128, 128); terrU.tCtx.value = px(128, 128, 128);
   const ld = new THREE.TextureLoader(); ld.setCrossOrigin('anonymous');
-  ld.load(MARS_DATA.dtm, t => { t.colorSpace = THREE.NoColorSpace; t.magFilter = t.minFilter = THREE.NearestFilter; t.generateMipmaps = false; t.flipY = true; terrU.tDtm.value = t; terrU.uOn.value.x = 1; });
-  ld.load(MARS_DATA.hiBump, t => { t.colorSpace = THREE.NoColorSpace; t.anisotropy = 8; terrU.tHi.value = t; terrU.uOn.value.y = 1; });
-  ld.load(MARS_DATA.ctxBump, t => { t.colorSpace = THREE.NoColorSpace; t.anisotropy = 8; terrU.tCtx.value = t; terrU.uOn.value.z = 1; });
+  ld.load(MARS_DATA.dtm, t => { t.colorSpace = THREE.NoColorSpace; t.magFilter = t.minFilter = THREE.NearestFilter; t.generateMipmaps = false; t.flipY = true; terrU.tDtm.value = t; terrU.uHB0.value = readHB0(t); terrU.uOn.value.x = 1; });
+  const aniso = renderer.capabilities.getMaxAnisotropy();
+  ld.load(MARS_DATA.hiBump, t => { t.colorSpace = THREE.NoColorSpace; t.anisotropy = aniso; terrU.tHi.value = t; terrU.uOn.value.y = 1; });
+  ld.load(MARS_DATA.ctxBump, t => { t.colorSpace = THREE.NoColorSpace; t.anisotropy = aniso; terrU.tCtx.value = t; terrU.uOn.value.z = 1; });
 }
 const TERR_GL = /* glsl */ `
-uniform sampler2D tDtm, tHi, tCtx, tMars; uniform vec3 uOn;
+uniform sampler2D tDtm, tHi, tCtx, tMars; uniform vec3 uOn; uniform float uHB0; // uHB0 = hB(vec2(0.)), read back once after the DTM loads
 // 16-bit heights live in R (hi byte) and G (lo byte); filter by hand so the bytes never blend across a carry
 float dtmTap(vec2 uv, float side){ vec2 t=vec2(uv.x*.5+side*.5, uv.y); vec4 c=texture2D(tDtm,t); return (c.r*255.*256.+c.g*255.)/65535.; }
 float dtmBil(vec2 uv, float side){ vec2 p=uv*512.-.5, f=fract(p), i=floor(p);
@@ -103,10 +104,25 @@ float hA(vec2 p){ return -2621.547+62.5074*dtmBil(vec2(p.x/1600.+.5,.5-p.y/1600.
 float hB(vec2 p){ return -2664.712+352.3924*dtmBil(vec2(p.x/12000.+.5,.5-p.y/12000.),1.); } // CTX DTM
 float terrH(vec2 p){
   float b=hB(p), a=hA(p), wa=1.-smoothstep(560.,780.,max(abs(p.x),abs(p.y)));
-  float h=mix(b,a,wa)-hB(vec2(0.));
+  float h=mix(b,a,wa)-uHB0;
   float d=length(p);
   return uOn.x*h*smoothstep(330.,620.,d);           // the city's graded pad eases back into the real ground
 }`;
+// hB(vec2(0.)) once, on the CPU, from the 4 DTM texels the shader's dtmBil blends at uv (.5,.5) on the CTX half (f = .5 there).
+// The texels are read back from the GPU texture byte-exact, so this matches the shader without decoding the PNG twice.
+function readHB0(tex) {
+  const rt = new THREE.WebGLRenderTarget(4, 1, { depthBuffer: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false });
+  const m = new THREE.ShaderMaterial({ uniforms: { tDtm: { value: tex } }, toneMapped: false, depthTest: false, depthWrite: false,
+    vertexShader: 'void main(){ gl_Position=vec4(position.xy,0.,1.); }',
+    fragmentShader: `uniform sampler2D tDtm; void main(){ float k=floor(gl_FragCoord.x); vec2 o=vec2(mod(k,2.),floor(k*.5));
+      vec2 uv=(vec2(255.5)+o)/512.; gl_FragColor=texture2D(tDtm,vec2(uv.x*.5+.5,uv.y)); }` });
+  const q = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), m), sc = new THREE.Scene(); q.frustumCulled = false; sc.add(q);
+  const px = new Uint8Array(16), prev = renderer.getRenderTarget();
+  renderer.setRenderTarget(rt); renderer.render(sc, cam); renderer.readRenderTargetPixels(rt, 0, 0, 4, 1, px); renderer.setRenderTarget(prev);
+  rt.dispose(); m.dispose(); q.geometry.dispose();
+  const h = k => (px[k * 4] * 256 + px[k * 4 + 1]) / 65535, v = ((h(0) + h(1)) / 2 + (h(2) + h(3)) / 2) / 2;
+  return -2664.712 + 352.3924 * v;
+}
 {
   const g = new THREE.PlaneGeometry(9000, 9000, 420, 420); g.rotateX(-Math.PI / 2);
   const mat = new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0 });
@@ -125,13 +141,15 @@ float terrH(vec2 p){
       float bumpL(vec2 p){ float a=uOn.y*(1.-smoothstep(640.,790.,max(abs(p.x),abs(p.y)))), b=uOn.z*(1.-smoothstep(5000.,5900.,max(abs(p.x),abs(p.y))));
         float hb=texture2D(tCtx,vec2(p.x/12000.+.5,.5-p.y/12000.)).r, ha=texture2D(tHi,vec2(p.x/1600.+.5,.5-p.y/1600.)).r;
         return mix(.5,mix(hb,ha,a),max(a,b)); }
+      // fbm with each octave faded to its mean once it nears a pixel (fw = base-octave cycles per pixel): no far shimmer
+      float fbmBL(vec3 p, float fw){ float v=0.,a=.5; for(int i=0;i<5;i++){ float k=1.-smoothstep(.3,.6,fw); v+=a*(k>0.? mix(.5,n3(p),k) : .5); p*=2.03; fw*=2.03; a*=.5; } return v; }
       vec3 tA; float tR;
     ` + sh.fragmentShader
       .replace('#include <color_fragment>', `#include <color_fragment>
         { vec2 p=vTP.xz; float d=length(p);
           // colour: the colour map's own hue for Jezero (sampled wide so it's a tint, not pixels), then regolith variety on top
           vec3 hue=textureLod(tMars,vec2((77.46+180.)/360.,(18.45+90.)/180.),5.).rgb;
-          float n1=fbm(vec3(p*.004,1.)), n2=fbm(vec3(p*.03,7.)), n3=fbm(vec3(p*.35,3.));
+          float n1=fbm(vec3(p*.004,1.)), n2=fbm(vec3(p*.03,7.)), n3=fbmBL(vec3(p*.35,3.),max(length(fwidth(p)),1e-3)*.35);
           vec3 fines=vec3(.62,.38,.22), rust=vec3(.45,.21,.11), sand=vec3(.16,.11,.09), bed=vec3(.7,.55,.42);
           vec3 c=mix(fines,rust,smoothstep(.35,.7,n1));
           c=mix(c,sand,smoothstep(.62,.8,n2)*.75);                        // dark basaltic sand drifts
@@ -146,8 +164,9 @@ float terrH(vec2 p){
           float gx=(bumpL(p+vec2(e,0.))-bumpL(p-vec2(e,0.)))/(2.*e), gz=(bumpL(p+vec2(0.,e))-bumpL(p-vec2(0.,e)))/(2.*e);
           float k=mix(9.,2.5,smoothstep(1.,6.,w));                          // metres of relief per unit brightness, gentler when far
           // pebbles + wind ripples up close
-          float r=sin(dot(p,vec2(.9,.43))*2.6+fbm(vec3(p*.2,2.))*6.)*.5+.5, fade=1.-smoothstep(.15,.8,w);
-          gx+=fade*(fbm(vec3(p*3.,5.))-.5)*.6+fade*r*.08; gz+=fade*(fbm(vec3(p*3.+9.,5.))-.5)*.6;
+          float fade=1.-smoothstep(.15,.8,w);
+          if(fade>.001){ float r=sin(dot(p,vec2(.9,.43))*2.6+fbm(vec3(p*.2,2.))*6.)*.5+.5;
+            gx+=fade*(fbm(vec3(p*3.,5.))-.5)*.6+fade*r*.08; gz+=fade*(fbm(vec3(p*3.+9.,5.))-.5)*.6; }
           normal=normalize(normal+(viewMatrix*vec4(-gx*k*.1,0.,-gz*k*.1,0.)).xyz); }`);
   };
   const terrain = new THREE.Mesh(g, mat);
@@ -195,16 +214,22 @@ const marsEnv = createMarsEnv({ THREE, renderer });
 const HAB = createHabitatAssets({ THREE, renderer, envMap: marsEnv, frameDetail: 'low' });
 const shell = new THREE.InstancedMesh(HAB.habShellGeo, HAB.habShellMat, habs.length); shell.customDepthMaterial = HAB.habShellDepthMat;
 const habGlass = new THREE.InstancedMesh(HAB.habGlassGeo, HAB.habGlassMat, habs.length); habGlass.receiveShadow = true; // same matrices as shell (glass/opaque split is hashed from position)
-const frame = new THREE.InstancedMesh(HAB.habFrameGeo, HAB.habFrameMat, habs.length); frame.customDepthMaterial = HAB.habFrameDepthMat; frame.castShadow = frame.receiveShadow = true;
+const frame = new THREE.InstancedMesh(HAB.habFrameGeo, HAB.habFrameMat, habs.length); frame.receiveShadow = true; frame.castShadow = false; // the shell silhouette already casts the dome
 const ringPad = new THREE.InstancedMesh(HAB.ringPadGeo, HAB.ringPadMat, habs.length);
 const skirt = new THREE.InstancedMesh(HAB.skirtGeo, HAB.skirtMat, habs.length);
 const sheds = new THREE.InstancedMesh(HAB.shedGeo, HAB.shedMat, fabs.length); sheds.customDepthMaterial = HAB.shedDepthMat;
-habs.forEach((l, i) => shell.setColorAt(i, new THREE.Color().setHSL(0.08, 0.06 + rnd() * 0.06, 0.72 + rnd() * 0.16)));
-fabs.forEach((l, i) => sheds.setColorAt(i, new THREE.Color().setHSL(0.07, 0.08, 0.55 + rnd() * 0.15)));
+// colours drawn in the original order (same rnd() stream), then instances are laid out by build threshold so each frame
+// draws only the started prefix (mesh.count) instead of paying vertex work for hidden ones. habs/fabs keep their order for everything else.
+habs.forEach(l => (l.col = new THREE.Color().setHSL(0.08, 0.06 + rnd() * 0.06, 0.72 + rnd() * 0.16)));
+fabs.forEach(l => (l.col = new THREE.Color().setHSL(0.07, 0.08, 0.55 + rnd() * 0.15)));
+const byBt = (a, b) => a.bt - b.bt, habI = [...habs].sort(byBt), fabI = [...fabs].sort(byBt); // stable sort
+habI.forEach((l, i) => shell.setColorAt(i, l.col)); fabI.forEach((l, i) => sheds.setColorAt(i, l.col));
+// instances outside .count are never drawn, so give each mesh a fixed bound instead of one computed from whatever prefix exists first
+const bnd = r => new THREE.Sphere(new THREE.Vector3(0, 10, 0), r);
+[shell, habGlass, frame, ringPad, skirt, sheds].forEach(m => (m.boundingSphere = bnd(270)));
 colony.add(shell, habGlass, frame, ringPad, skirt, sheds);
-// shadows: shell/ringPad/sheds cast + receive. Their onBeforeCompile only touches colors/emissive/varyings (never vertex positions),
-// so three's stock instanced MeshDepthMaterial matches their silhouettes and no customDepthMaterial is needed. The wireframe frame must NOT cast
-// (a depth material ignores wireframe and would stamp a solid dome). Instances hidden with scale 0.0001 cast nothing visible.
+// shadows: shell/ringPad/sheds cast + receive; shell and sheds use customDepthMaterials that match their per-instance vertex toggles.
+// The frame does not cast (the shell silhouette covers it). Instances past .count are not drawn and cast nothing.
 shell.castShadow = shell.receiveShadow = ringPad.castShadow = ringPad.receiveShadow = sheds.castShadow = sheds.receiveShadow = true;
 
 // streetlights crawl outward along every road; red beacons blink on the crowns of the big domes
@@ -249,8 +274,9 @@ const tubes = TUBES.map((a, i) => { const g = new THREE.Group(); g.position.set(
 // solar farm: rows of tilted panels tiling in on the west flats
 const panels = [];
 for (let r = 262; r < 345; r += 4.2) for (let a = 0.25; a < 1.35; a += 3.2 / r) panels.push({ x: Math.cos(a) * r, z: Math.sin(a) * r, bt: 0.22 + (r - 262) / 83 * 0.22 + (a - 0.25) * 0.12 });
+panels.sort(byBt); // nothing else depends on panel order
 const panel = new THREE.InstancedMesh(new THREE.BoxGeometry(3, 0.1, 2.2).translate(0, 1.2, 0), new THREE.MeshStandardMaterial({ color: 0x16243c, metalness: 0.85, roughness: 0.22, emissive: 0x050a14 }), panels.length);
-panel.castShadow = panel.receiveShadow = true; colony.add(panel);
+panel.castShadow = panel.receiveShadow = true; panel.boundingSphere = bnd(360); colony.add(panel);
 
 // landing pad + a lander that keeps touching down and lifting off through the timelapse
 const PAD = new THREE.Vector3(Math.cos(-0.55) * 300, 0, Math.sin(-0.55) * 300);
@@ -284,7 +310,9 @@ const cranes = craneLots.filter((l, i) => i % Math.max(1, Math.floor(craneLots.l
 let lastG = -1;
 const mtx = new THREE.Matrix4(), q4 = new THREE.Quaternion(), yAx = new THREE.Vector3(0, 1, 0), v3 = new THREE.Vector3(), s3 = new THREE.Vector3(), q0 = new THREE.Quaternion();
 const colSun = new THREE.Vector3(), skyCol = new THREE.Color(), dayH = new THREE.Color(0.78, 0.54, 0.36), duskH = new THREE.Color(0.2, 0.14, 0.13);
-const HIDE = new THREE.Vector3(0.0001, 0.0001, 0.0001), qPanel = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 0.5)); // panels tilt toward the low western sun
+const qPanel = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 0.5)); // panels tilt toward the low western sun
+const started = (list, g) => { let n = 0; while (n < list.length && list[n].bt < g) n++; return n; }; // easeOut(x) > 0 exactly when bt < g
+// returns true when the build state (and so the shadow casters and sun) changed this frame
 function buildColony(g, t) {
   const night = sstep(g, 0.35, 0.95), el = THREE.MathUtils.lerp(0.34, -0.05, sstep(g, 0.05, 1));
   colSun.set(-Math.cos(el), Math.sin(el), -Math.cos(el) * 0.22).normalize();
@@ -301,19 +329,26 @@ function buildColony(g, t) {
   lander.visible = plume.visible = flying; lander.position.set(PAD.x, ly + 0.3, PAD.z);
   plume.position.set(PAD.x, ly - 2, PAD.z); plume.scale.setScalar(burn * (18 + Math.sin(t * 40) * 2)); plume.material.opacity = burn * (0.6 + 0.4 * (1 - Math.min(1, ly / 60)));
   cranes.forEach(c => { c.jib.rotation.y = c.ph + g * 46 + t * 0.15; });
-  if (Math.abs(g - lastG) < 1e-4) return; lastG = g;
-  habs.forEach((l, i) => {
+  if (Math.abs(g - lastG) < 1e-4) return false; lastG = g;
+  // lists are sorted by bt, so the started instances are a prefix: draw count = how many have begun each stage
+  const nPad = started(habI, g), nFrame = started(habI, g - 0.02), nShell = started(habI, g - 0.07);
+  for (let i = 0; i < nPad; i++) {
+    const l = habI[i];
     // pad pours, struts rise, panels skin up from the base
     const k0 = easeOut((g - l.bt) / 0.03), s = easeOut((g - l.bt - 0.02) / 0.06), f = easeOut((g - l.bt - 0.07) / 0.08);
     q4.setFromAxisAngle(yAx, l.rot);
-    mtx.compose(v3.set(l.x, 0, l.z), q4, k0 > 0 ? s3.set(l.r, k0, l.r) : HIDE); ringPad.setMatrixAt(i, mtx); skirt.setMatrixAt(i, mtx);
-    mtx.compose(v3.set(l.x, 0.45, l.z), q4, s > 0 ? s3.set(l.r * 1.015, l.r * l.ys * s * 1.015, l.r * 1.015) : HIDE); frame.setMatrixAt(i, mtx);
-    mtx.compose(v3.set(l.x, 0.45, l.z), q4, f > 0 ? s3.set(l.r, l.r * l.ys * f, l.r) : HIDE); shell.setMatrixAt(i, mtx); habGlass.setMatrixAt(i, mtx);
-  });
-  fabs.forEach((l, i) => { const f = easeOut((g - l.bt - 0.04) / 0.07); q4.setFromAxisAngle(yAx, -l.rot); mtx.compose(v3.set(l.x, 0, l.z), q4, f > 0 ? s3.set(l.w, l.h * f, l.d) : HIDE); sheds.setMatrixAt(i, mtx); });
+    mtx.compose(v3.set(l.x, 0, l.z), q4, s3.set(l.r, k0, l.r)); ringPad.setMatrixAt(i, mtx); skirt.setMatrixAt(i, mtx);
+    if (i < nFrame) { mtx.compose(v3.set(l.x, 0.45, l.z), q4, s3.set(l.r * 1.015, l.r * l.ys * s * 1.015, l.r * 1.015)); frame.setMatrixAt(i, mtx); }
+    if (i < nShell) { mtx.compose(v3.set(l.x, 0.45, l.z), q4, s3.set(l.r, l.r * l.ys * f, l.r)); shell.setMatrixAt(i, mtx); habGlass.setMatrixAt(i, mtx); }
+  }
+  ringPad.count = skirt.count = nPad; frame.count = nFrame; shell.count = habGlass.count = nShell;
+  const nShed = started(fabI, g - 0.04);
+  for (let i = 0; i < nShed; i++) { const l = fabI[i], f = easeOut((g - l.bt - 0.04) / 0.07); q4.setFromAxisAngle(yAx, -l.rot); mtx.compose(v3.set(l.x, 0, l.z), q4, s3.set(l.w, l.h * f, l.d)); sheds.setMatrixAt(i, mtx); }
+  sheds.count = nShed;
   shell.instanceMatrix.needsUpdate = habGlass.instanceMatrix.needsUpdate = frame.instanceMatrix.needsUpdate = ringPad.instanceMatrix.needsUpdate = skirt.instanceMatrix.needsUpdate = sheds.instanceMatrix.needsUpdate = true;
-  panels.forEach((p, i) => { const k = easeOut((g - p.bt) / 0.04); mtx.compose(v3.set(p.x, 0, p.z), qPanel, k > 0 ? s3.set(1, k, 1) : HIDE); panel.setMatrixAt(i, mtx); });
-  panel.instanceMatrix.needsUpdate = true;
+  const nPanel = started(panels, g);
+  for (let i = 0; i < nPanel; i++) { const p = panels[i], k = easeOut((g - p.bt) / 0.04); mtx.compose(v3.set(p.x, 0, p.z), qPanel, s3.set(1, k, 1)); panel.setMatrixAt(i, mtx); }
+  panel.count = nPanel; panel.instanceMatrix.needsUpdate = true;
   roads.forEach(m => (m.material.opacity = sstep(g, m.userData.bt, m.userData.bt + 0.06) * (0.15 + 0.85 * night)));
   domes.forEach(d => {
     const s = easeOut((g - d.bt) / 0.1), gl = sstep(g, d.bt + 0.1, d.bt + 0.18);
@@ -322,6 +357,7 @@ function buildColony(g, t) {
   });
   tubes.forEach(tb => { const k = easeOut((g - tb.bt) / 0.08); tb.g.scale.set(Math.max(0.001, k * 62), 1, 1); tb.g.visible = k > 0; });
   cranes.forEach(c => { const v = Math.min(easeOut((g - c.bt + 0.08) / 0.04), 1 - easeOut((g - c.bt - 0.2) / 0.04)); c.g.scale.set(1, Math.max(0.001, v), 1); c.g.visible = v > 0.01; });
+  return true;
 }
 const cPos = new THREE.CatmullRomCurve3([[150, 430, 170], [175, 240, 130], [195, 115, 45], [175, 36, -55]].map(p => new THREE.Vector3(...p).add(COL)), false, 'centripetal');
 const cLook = new THREE.CatmullRomCurve3([[0, 0, 0], [0, 0, 0], [-20, 8, -8], [-210, 28, -40]].map(p => new THREE.Vector3(...p).add(COL)), false, 'centripetal');
@@ -355,7 +391,7 @@ const dust = new THREE.Group(); scene.add(dust);
   const lines = new THREE.LineSegments(lg, dustMat), heads = new THREE.Points(pg, dustMat);
   lines.frustumCulled = heads.frustumCulled = false; dust.add(lines, heads);
 }
-const lastPos = new THREE.Vector3(), camVel = new THREE.Vector3(), velTmp = new THREE.Vector3(); let hasLast = false;
+const lastPos = new THREE.Vector3(), camVel = new THREE.Vector3(), velTmp = new THREE.Vector3(), shutterV = new THREE.Vector3(); let hasLast = false;
 
 // ---------- opening frame in space: Earth's night side, sun about to crest the limb ----------
 const upP = new THREE.Vector3(0, 1, 0).addScaledVector(toSun, -toSun.y).normalize();
@@ -450,7 +486,8 @@ const sat = new THREE.Group(); scene.add(sat);
   const cv = document.createElement('canvas'); cv.width = 256; cv.height = 128; const x = cv.getContext('2d');
   x.fillStyle = '#0b1a33'; x.fillRect(0, 0, 256, 128); x.strokeStyle = '#3a5a8c'; x.lineWidth = 2;
   for (let i = 0; i <= 256; i += 16) { x.beginPath(); x.moveTo(i, 0); x.lineTo(i, 128); x.stroke(); } for (let j = 0; j <= 128; j += 16) { x.beginPath(); x.moveTo(0, j); x.lineTo(256, j); x.stroke(); }
-  const cells = new THREE.MeshStandardMaterial({ map: new THREE.CanvasTexture(cv), metalness: 0.5, roughness: 0.4, color: 0xb8c4d8 });
+  const cellTex = new THREE.CanvasTexture(cv); cellTex.colorSpace = THREE.SRGBColorSpace; // canvas colours are sRGB
+  const cells = new THREE.MeshStandardMaterial({ map: cellTex, metalness: 0.5, roughness: 0.4, color: 0xb8c4d8 });
   // crumpled MLI: jitter a subdivided box so the gold foil breaks up the highlights
   const bus = new THREE.BoxGeometry(0.7, 0.9, 0.7, 4, 5, 4); { const p = bus.attributes.position; for (let i = 0; i < p.count; i++) p.setXYZ(i, p.getX(i) * (1 + (Math.random() - 0.5) * 0.05), p.getY(i), p.getZ(i) * (1 + (Math.random() - 0.5) * 0.05)); bus.computeVertexNormals(); }
   sat.add(new THREE.Mesh(bus, foil));
@@ -517,12 +554,20 @@ const COLOR_SPACE_SUN = new THREE.Color(0xfff1dc);
 let lastMode = '', lastCover = 0, introEndT = -1, visible = true; document.addEventListener('visibilitychange', () => (visible = !document.hidden));
 const setClip = (n, f) => { if (cam.near !== n || cam.far !== f) { cam.near = n; cam.far = f; cam.updateProjectionMatrix(); } };
 const fmtH = h => { const hh = Math.floor(h), mm = Math.floor((h - hh) * 60); return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0'); };
+// DOM writes only on change (style writes invalidate style even when the value is the same)
+const css = (el, k, v) => { const c = el._d5 || (el._d5 = {}); if (c[k] !== v) { c[k] = v; el.style[k] = v; } };
+const txt = (el, v) => { if (el._d5t !== v) { el._d5t = v; el.textContent = v; } };
+const q3 = v => Math.round(v * 1000); // opacity compare at the precision the old toFixed(3) wrote
+// per-frame argument objects, reused (callees destructure them)
+const siteArg = { g: 0, t: 0 }, planetArg = { t: 0, intro: 1, camPos: pos, spin: 0, hole: AUSn }, postArg = { dt: 0, t: 0, focus: 0, aperture: 0, maxblur: 0, ca: 0 };
+const craneOn = c => c.g.visible;
+let siteDist = 0, lastAu = -1, shadowFrame = 0, forceShadow = true, veilSet = false;
 renderer.setAnimationLoop(() => {
   if (!visible) return;
   const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
   // the plain page below covers the canvas; once it does, stop drawing
   const cover = after ? clamp01(1 - after.getBoundingClientRect().top / innerHeight) : 0;
-  host.style.opacity = (1 - 0.6 * cover).toFixed(3); if (cover > 0 || lastCover > 0) fadeEls.forEach(el => (el.style.opacity = (1 - cover).toFixed(3))); lastCover = cover;
+  css(host, 'opacity', (1 - 0.6 * cover).toFixed(3)); if (cover > 0 || lastCover > 0) { const o = (1 - cover).toFixed(3); for (const el of fadeEls) css(el, 'opacity', o); } lastCover = cover;
   if (cover >= 0.999) return;
   { const W = 3.6; smV += (W * W * (prog - sm) - 2 * W * smV) * dt; sm += smV * dt; } // critically damped scroll: flicks ramp up and settle, never snap
   ms.x += (mouse.x - ms.x) * dt * 2; ms.y += (mouse.y - ms.y) * dt * 2;
@@ -547,9 +592,9 @@ renderer.setAnimationLoop(() => {
     tmp.copy(siteT).addScaledVector(siteDir, dist); tmp.x += ms.x * 3 * (1 - up); tmp.z += ms.y * 2 * (1 - up);
     pos.copy(tmp).add(SITE0); look.copy(siteT).add(SITE0);
     camUp.set(-Math.sin(a), 0, -Math.cos(a));                   // screen-up = north, so the hand-off to the globe keeps its heading
-    fov = 38; focus = dist;
+    fov = 38; focus = dist; siteDist = dist;
     setClip(Math.max(0.3, dist * 0.004), dist * 8 + 3000);
-    siteInfo = site.update({ g, t });
+    siteArg.g = g; siteArg.t = t; siteInfo = site.update(siteArg);
     const cloudFade = sstep(lam, Math.log(500), Math.log(1400)) * (1 - sstep(lam, Math.log(15e3), Math.log(70e3)));
     site.follow(tmp, dist, cloudFade, t); scene.fog.near = 1e8; scene.fog.far = 1e9;
     hemi.intensity *= 1 - sstep(lam, Math.log(3e3), Math.log(60e3)); // moonlight on the photos dies away so the ground meets the black night side of the globe
@@ -587,16 +632,21 @@ renderer.setAnimationLoop(() => {
     post.motion.cutDist = mode === 'site' || mode === 'globe' ? 1e12 : 400;
     post.trails.enabled = inSite; post.ao.enabled = inSite; // long-exposure smears on the moving machines + contact shadows, only on the job site // the pull out is one long zoom: keep the blur on through it
     if ((lastMode === 'site' && mode === 'globe') || lastMode === '') post.resetMotion();
-    lastMode = mode;
+    lastMode = mode; forceShadow = true; // never show a shadow map left over from another set
   }
   const sunDir = inCol ? colSun : toSun;
-  if (inCol) buildColony(clamp01((sm - CA) / (1 - CA)), t);
-  else if (!inSite) { scene.fog.near = 1e8; scene.fog.far = 1e9; sunLight.intensity = 2.4; ambient.intensity = 0.35; hemi.intensity = 0; }
-  if (inCol || inSite) renderer.shadowMap.needsUpdate = true;
+  const built = inCol && buildColony(clamp01((sm - CA) / (1 - CA)), t);
+  if (!inCol && !inSite) { scene.fog.near = 1e8; scene.fog.far = 1e9; sunLight.intensity = 2.4; ambient.intensity = 0.35; hemi.intensity = 0; }
+  // shadow policy (autoUpdate is off). Site: machines move every frame, so redraw every frame while the sun is up and the lot is
+  // close enough to resolve them. Colony: the build state and sun only change with g; between changes only the crane jibs move,
+  // slowly, so every 3rd frame is enough. Space/globe: nothing casts.
+  shadowFrame++;
+  if (inSite) { if (forceShadow || (sunLight.intensity > 0.01 && siteDist < 2500)) { renderer.shadowMap.needsUpdate = true; forceShadow = false; } }
+  else if (inCol) { if (forceShadow || built || (shadowFrame % 3 === 0 && cranes.some(craneOn))) { renderer.shadowMap.needsUpdate = true; forceShadow = false; } }
   else { sunLight.target.position.set(0, 0, 0); sunLight.position.copy(sunDir).multiplyScalar(100); }
   // the one cut left: a warm atmospheric-entry flash into Jezero
   const hIn = sstep(sm, CA - 0.022, CA) * (1 - sstep(sm, CA, CA + 0.026));
-  if (introDone) { veil.style.opacity = hIn.toFixed(3); veil.style.background = 'radial-gradient(circle at 50% 55%, #fff4e6 0%, #ffb27a 45%, #c8582a 100%)'; }
+  if (introDone) { if (!veilSet) { veilSet = true; veil.style.background = 'radial-gradient(circle at 50% 55%, #fff4e6 0%, #ffb27a 45%, #c8582a 100%)'; } css(veil, 'opacity', hIn.toFixed(3)); }
   // operator layer: only a faint handheld drift; no springs, no banking, no roll. The curves above are already smooth.
   const dist = pos.distanceTo(look);
   if (!introOn) pos.add(tmp.set(Math.sin(t * 0.21) * 0.6 + Math.sin(t * 0.53 + 1.3) * 0.25, Math.sin(t * 0.17 + 2.1) * 0.5 + Math.sin(t * 0.41) * 0.2, Math.sin(t * 0.13 + 4) * 0.4).multiplyScalar(dist * 0.002 * live));
@@ -606,13 +656,13 @@ renderer.setAnimationLoop(() => {
   // dust: smoothed camera velocity drives streak length (a short virtual shutter)
   if (hasLast && dt > 0) { velTmp.copy(pos).sub(lastPos).divideScalar(dt); if (velTmp.length() > 4000) velTmp.set(0, 0, 0); camVel.lerp(velTmp, Math.min(1, dt * 6)); }
   lastPos.copy(pos); hasLast = true;
-  const shutter = camVel.clone().multiplyScalar(DCFG.shutter).clampLength(0, BOX * DCFG.maxStreak);
+  const shutter = shutterV.copy(camVel).multiplyScalar(DCFG.shutter).clampLength(0, BOX * DCFG.maxStreak);
   dustU.cp.value.copy(pos); dustU.vel.value.copy(shutter); dustU.t.value = t; dustU.spd.value = Math.min(1, shutter.length() / 6);
   dust.visible = mode === 'space'; dustU.amt.value = 1 - hIn;
 
   // Earth holds Austin under the opening frame until the pull out lands, then spins on from there
   if (introOn) spinOff = SPIN_LAND - t * EARTH_SPIN;
-  planets.update({ t, intro: 1, camPos: pos, spin: spinOff, hole: AUSn });
+  planetArg.t = t; planetArg.spin = spinOff; planets.update(planetArg);
   if (sky) { sky.update(pos); sky.group.visible = !inCol && !inSite; }
 
   // sun + streak: off on the ground, cresting the limb as the pull out lands
@@ -634,23 +684,30 @@ renderer.setAnimationLoop(() => {
   let fd = focus;
   if (sat.visible) { const sd = pos.distanceTo(sat.position), inFront = tmp.copy(sat.position).sub(pos).normalize().dot(tmp2.copy(look).sub(pos).normalize()); if (sd < 14 && inFront > 0.55) fd = THREE.MathUtils.lerp(fd, sd, sstep(sd, 14, 6)); }
   const deep = inSite || mode === 'globe';
-  post.update({ dt, t, focus: fd, aperture: (deep ? 0.0004 : inCol ? 0.006 : fd < 12 ? 0.02 : 0.003) / fd, maxblur: deep ? 0.0008 : inCol ? 0.0042 : fd < 12 ? 0.005 : 0.0018, ca: 0.012 + hIn * 0.06 });
+  postArg.dt = dt; postArg.t = t; postArg.focus = fd; postArg.aperture = (deep ? 0.0004 : inCol ? 0.006 : fd < 12 ? 0.02 : 0.003) / fd;
+  postArg.maxblur = deep ? 0.0008 : inCol ? 0.0042 : fd < 12 ? 0.005 : 0.0018; postArg.ca = 0.012 + hIn * 0.06;
+  post.update(postArg); // post skips the DOF pass itself when its blur would be sub-pixel (the deep site/globe focus usually is)
 
   // overlays
-  ovs.forEach(o => { const v = win(sm, o.a, o.b) * (1 - cover); o.el.style.opacity = v.toFixed(3); o.el.style.visibility = v > 0.01 ? 'visible' : 'hidden'; o.el.style.transform = `translate3d(0,${(1 - win(sm, o.a, o.b)) * (sm < o.a ? 30 : -30)}px,0)`; });
+  for (const o of ovs) {
+    const w = win(sm, o.a, o.b), v = w * (1 - cover), vq = q3(v), ty = Math.round((1 - w) * (sm < o.a ? 30 : -30) * 100);
+    if (vq !== o.vq) { o.vq = vq; o.el.style.opacity = (vq / 1000).toFixed(3); css(o.el, 'visibility', v > 0.01 ? 'visible' : 'hidden'); }
+    if (ty !== o.ty) { o.ty = ty; o.el.style.transform = `translate3d(0,${ty / 100}px,0)`; }
+  }
   // HUD: on the lot it is a site clock, on the way up an altimeter, in space the zone + AU readout
   if (introOn) {
     if (zone !== -2) { zone = -2; gsap.to(loc, { duration: 0.8, scrambleText: { text: 'Austin · Texas', chars: 'upperCase', speed: 0.6 } }); }
-    if (inSite && s < TL && siteInfo) au.textContent = 'DAY ' + String(siteInfo.day).padStart(2, '0') + ' · ' + fmtH(siteInfo.hd);
-    else { const km = Math.exp(lam) / 1000; au.textContent = 'ALT ' + (km < 10 ? km.toFixed(1) : Math.round(km).toLocaleString('en-US')) + ' KM'; }
+    if (inSite && s < TL && siteInfo) { const k = siteInfo.day * 1440 + Math.floor(siteInfo.hd * 60); if (k !== lastAu) { lastAu = k; txt(au, 'DAY ' + String(siteInfo.day).padStart(2, '0') + ' · ' + fmtH(siteInfo.hd)); } }
+    else { const km = Math.exp(lam) / 1000, k = -1 - (km < 10 ? Math.round(km * 10) : Math.round(km) * 100); if (k !== lastAu) { lastAu = k; txt(au, 'ALT ' + (km < 10 ? km.toFixed(1) : Math.round(km).toLocaleString('en-US')) + ' KM'); } }
   } else {
-    let z = 0; ZONES.forEach((zz, i) => { if (sm >= zz[0]) z = i; });
+    let z = 0; for (let i = 0; i < ZONES.length; i++) if (sm >= ZONES[i][0]) z = i;
     if (z !== zone) { zone = z; gsap.to(loc, { duration: 0.8, scrambleText: { text: ZONES[z][1], chars: 'upperCase', speed: 0.6 } }); }
     const a = ZONES[z], b = ZONES[Math.min(z + 1, ZONES.length - 1)], span = (b[0] - a[0]) || 1, cg = clamp01((sm - CA) / (1 - CA));
     // on the surface the readout becomes a sol counter, so the timelapse reads as months of work
-    au.textContent = a[3] ? 'SOL ' + String(1 + Math.floor(cg * 667)).padStart(4, '0') : (a[2] + (b[2] - a[2]) * THREE.MathUtils.clamp((sm - a[0]) / span, 0, 1)).toFixed(2) + ' AU';
+    const auV = a[3] ? 1 + Math.floor(cg * 667) : Math.round((a[2] + (b[2] - a[2]) * THREE.MathUtils.clamp((sm - a[0]) / span, 0, 1)) * 100), k = a[3] ? 1e6 + auV : 2e6 + auV;
+    if (k !== lastAu) { lastAu = k; txt(au, a[3] ? 'SOL ' + String(auV).padStart(4, '0') : (auV / 100).toFixed(2) + ' AU'); }
   }
-  fill.style.transform = `scaleY(${sm})`;
+  { const f = Math.round(sm * 1e4); if (f !== fill._d5f) { fill._d5f = f; fill.style.transform = `scaleY(${f / 1e4})`; } }
   post.render();
 });
 
