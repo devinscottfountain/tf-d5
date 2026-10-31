@@ -366,9 +366,9 @@ const CA = 0.58; // the entry flash: everything after this is the Jezero timelap
 const SHOTS = [
   [0.00, C0, L0, 38],                                              // sunrise over the night side (where the opening lands)
   [0.11, [6, 9, 36], [0, 1.5, 0], 34],                             // pull back and up: the whole Earth, long lens
-  [0.20, [3, 15.5, 4], M3(MOON, [0, -14, 0]), 40],                 // skim over the north, Moon ahead
-  [0.30, M3(MOON, [-9, 3.5, 24]), M3(MOON, [1.5, 0, 0]), 44],      // Moon terminator
-  [0.37, M3(MOON, [-9, 2, -4]), MARS, 46],                     // slide past the lit limb, Mars dead ahead
+  [0.20, [-6.5, 12.5, 11], MOON, 30],                               // drop behind the curve of the Earth: the Moon rising over the limb, long lens
+  [0.30, M3(MOON, [-5, 5, 13]), M3(MOON, [0.5, 0, 0]), 44],        // close on the Moon's terminator
+  [0.37, M3(MOON, [2, 5.5, -7.5]), MARS, 48],                      // crest over its north limb, Mars dead ahead
   [0.47, M3(MARS, [15.5, 4, 36]), M3(MARS, [-1, 0, 0]), 36],         // arrive at Mars: the mission copy reads here
   [0.53, M3(MARS, [10, 2.7, 23]), MARS, 40],                         // slow push
   [CA, DIVE, MARS, 52]                                             // dive into the entry flash
@@ -436,10 +436,11 @@ const sat = new THREE.Group(); scene.add(sat);
 }
 const satBlink = new THREE.Sprite(new THREE.SpriteMaterial({ map: radialTex([[0, 'rgba(255,255,255,1)'], [1, 'rgba(0,0,0,0)']]), color: 0xff4030, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false }));
 satBlink.scale.setScalar(0.25); satBlink.position.set(0.36, 0.46, 0.36); sat.add(satBlink);
-const SATP = 0.245; // scroll point where it passes the lens
+const SATP = 0.405; // scroll point where it passes the lens: early in the Moon to Mars run
 const satA = new THREE.Vector3(), satB = new THREE.Vector3(), satL = new THREE.Vector3();
 spaceCam(SATP + 0.002, satA, satL); spaceCam(SATP - 0.002, satB, satL);
 const satT = satA.clone().sub(satB).normalize(), satR = new THREE.Vector3().crossVectors(satT, new THREE.Vector3(0, 1, 0)).normalize();
+const SATV = satA.distanceTo(satB) / 0.004 * 0.9; // it cruises the same way at 90% of the camera's speed, so we overtake it slowly
 spaceCam(SATP, satA, satL); const SAT0 = satA.clone().addScaledVector(satR, 2.8).add(new THREE.Vector3(0, -0.9, 0));
 
 // ---------- scroll + overlays ----------
@@ -511,7 +512,8 @@ renderer.setAnimationLoop(() => {
   camUp.set(0, 1, 0);
   if (inSite) {
     // satellite-ish oblique over the lot; drifts a few degrees during the timelapse, then rises and tips straight down for the pull out
-    const g = Math.min(1, s / TL), up = sstep(lam, LAM0, LAM0 + (LAMH - LAM0) * 0.55);
+    const g = s < TL ? (s / TL) * 0.86 : 0.86 + 0.14 * zPull, up = // the timelapse keeps running while the camera pulls away
+      sstep(lam, LAM0, LAM0 + (LAMH - LAM0) * 0.55);
     const a = THREE.MathUtils.lerp(window.__d5.siteYaw ?? (-0.06 + 0.12 * g), SITE_ROT, up), // ends on true north so the globe hand-off keeps its heading
       pitch = THREE.MathUtils.degToRad((window.__d5.sitePitch ?? 58) * (1 - up) + 90 * up) - 0.0001;
     const dist = s < TL ? lapseDist(g) : Math.exp(lam);
@@ -592,7 +594,7 @@ renderer.setAnimationLoop(() => {
 
   // satellite + focus: rack to the look target; deep focus everywhere except the colony
   const sp = sm - SATP; sat.visible = mode === 'space' && Math.abs(sp) < 0.06;
-  sat.position.copy(SAT0).addScaledVector(satT, sp * 420); sat.rotation.set(0.4 + t * 0.05, t * 0.12, 0.25); satBlink.material.opacity = step01(Math.sin(t * 5));
+  sat.position.copy(SAT0).addScaledVector(satT, sp * SATV); sat.rotation.set(0.4 + t * 0.05, t * 0.12, 0.25); satBlink.material.opacity = step01(Math.sin(t * 5));
   let fd = focus;
   if (sat.visible) { const sd = pos.distanceTo(sat.position), inFront = tmp.copy(sat.position).sub(pos).normalize().dot(tmp2.copy(look).sub(pos).normalize()); if (sd < 14 && inFront > 0.55) fd = THREE.MathUtils.lerp(fd, sd, sstep(sd, 14, 6)); }
   const deep = inSite || mode === 'globe';

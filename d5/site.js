@@ -428,8 +428,8 @@ export function createSite({ THREE, scene, sunLight, hemi, ORIGIN, earthU, ortho
 
   function update({ g, t }) {
     const hour = H0 + g * HSPAN, hd = ((hour % 24) + 24) % 24;
-    const prog = (workHrs(hour) - W0) / (W_END - W0), wt = workHrs(hour); // construction progress + machine clock both stop at night
-    const working = (hd > 7 && hd < 18) ? 1 : 0;
+    const prog = g, wt = g * 33; // round-the-clock job: progress and the machine clock never stop, night shifts run under the light towers
+    const working = 1;
     // sun: hour angle from solar noon (~13:00 CDT)
     const Ha = THREE.MathUtils.degToRad((hd - 13.1) * 15), sinE = Math.sin(LAT) * Math.sin(DEC) + Math.cos(LAT) * Math.cos(DEC) * Math.cos(Ha);
     const el = Math.asin(sinE), az = Math.atan2(-Math.sin(Ha), Math.tan(DEC) * Math.cos(LAT) - Math.sin(LAT) * Math.cos(Ha));
