@@ -47,7 +47,8 @@ function init() {
 
   // ---------- scroll lock while the loader is up ----------
   const lock = on => { document.documentElement.style.overflow = on ? 'hidden' : ''; const l = smooth(); if (l) on ? l.stop() : l.start(); };
-  const skipLoader = scrollY > 40 || !loaderEl;
+  // modules arriving after the 6 s CSS failsafe has started (or finished) must not bring the loader back
+  const skipLoader = scrollY > 40 || !loaderEl || performance.now() > 5900 || getComputedStyle(loaderEl).visibility === 'hidden';
   if (!skipLoader) lock(true);
 
   // ---------- hero: initial states, text split once fonts are in ----------
@@ -73,7 +74,7 @@ function init() {
 
   // ---------- 3D hero: built now, in parallel with the loader; the photo stays as poster until it is ready ----------
   // hero: the API once built; heroOn: the canvas is the visible hero; heroLive: the loader is leaving (rendering allowed)
-  let hero = null, heroOn = false, heroLive = skipLoader, heroRun = false, heroKey = '';
+  let hero = null, heroOn = false, heroLive = skipLoader, heroRun = false, heroKey = '', heroGone = false;
   const heroFade = { v: 0 }, heroHost = HERO3D ? document.createElement('div') : null;
   const heroReady = !HERO3D ? Promise.resolve(false) : (() => {
     heroHost.className = 'd6-hero-3d'; media.after(heroHost);
@@ -83,19 +84,29 @@ function init() {
       new Promise(r => setTimeout(r, 1800)),
     ]);
     return Promise.all([import('./hero3d.js'), fontsIn]).then(([m]) => {
+      if (heroGone) return false;
       measure(); stamp('heroBuild');
       hero = m.createHero({ THREE, host: heroHost, quality: QUALITY, still: sbImg.currentSrc || sbImg.src });
       D6.heroApi = hero;
       hero.setTarget(cardR, cardRad); heroKey = rectKey(); stamp('heroBuilt');
       if (sbVid?.classList.contains('is-on')) hero.setMedia(sbVid);
       return hero.ready;
-    }).then(() => { swapIn(); return true; }).catch(e => {
+    }).then(ok => { if (ok === false || heroGone) return false; swapIn(); return true; }).catch(e => {
       console.warn('d6 hero:', e);
       try { hero?.dispose(); } catch (_) { /* already gone */ }
       hero = null; heroHost.remove(); return false;
     });
   })();
   D6.heroReady = heroReady;
+  // free the hero's GPU context once Mars is on its way (it would coexist with solutions + D5); the poster path takes over
+  function releaseHero() {
+    if (heroGone || !HERO3D) return;
+    heroGone = true; stamp('heroRelease');
+    if (hero) { const r = hero.renderer; try { hero.stop(); hero.dispose(); r?.forceContextLoss?.(); } catch (_) { /* already gone */ } }
+    hero = null; heroOn = false; heroRun = false; D6.heroApi = null; D6.heroOn = false; D6.heroRun = false;
+    gsap.killTweensOf(heroFade); heroHost.remove();
+    css(media, 'visibility', 'visible'); css(shade, 'opacity', '1'); kbOn = null; // Ken Burns resumes with the stage
+  }
   function swapIn() {
     heroOn = true; D6.heroOn = true; stamp(heroLive ? 'heroSwapLate' : 'heroSwap');
     gsap.killTweensOf(heroFade);
@@ -108,7 +119,7 @@ function init() {
   const fontsGate = fontsP.then(splitHero);
   if (!skipLoader) {
     const ld = runLoader({
-      THREE, el: loaderEl, reduced: RM, maxMs: HERO3D ? 3500 : 2000, // holds for the hero's boot, capped at 3.5 s
+      THREE, el: loaderEl, reduced: RM, maxMs: HERO3D ? 2200 : 2000, // holds for the hero's boot, capped at 2.2 s (later: poster first, canvas crossfades in)
       onExit: tl => { stamp('loaderExit'); lock(false); heroLive = true; heroReveal(tl, RM ? 0.1 : 0.45); },
     });
     ld.gate(fontsGate); ld.gate(decodeP); ld.gate(heroReady);
@@ -119,11 +130,17 @@ function init() {
   // ---------- Ken Burns drift on the stills (the video slot replaces them when a source is set) ----------
   // the Series B drift runs on a proxy: with the 3D hero it is weighted in only after the card has taken over, so the
   // card matches the canvas exactly at the swap in both scroll directions
-  let kbHeroTw = null; const kbS = { scale: 1, xPercent: 0, yPercent: 0 };
+  let kbHeroTw = null, kbSbTw = null, kbOn = null; const kbS = { scale: 1, xPercent: 0, yPercent: 0 };
   if (!RM) {
     kbHeroTw = gsap.fromTo(kbHero, { scale: 1.0, xPercent: 0.6, yPercent: 0.3 }, { scale: 1.045, xPercent: -0.8, yPercent: -0.5, duration: 18, ease: 'sine.inOut', yoyo: true, repeat: -1 });
-    gsap.fromTo(kbS, { scale: 1.03, xPercent: -0.8, yPercent: 0 }, { scale: 1.09, xPercent: 0.8, yPercent: -0.8, duration: 14, ease: 'sine.inOut', yoyo: true, repeat: -1 });
+    kbSbTw = gsap.fromTo(kbS, { scale: 1.03, xPercent: -0.8, yPercent: 0 }, { scale: 1.09, xPercent: 0.8, yPercent: -0.8, duration: 14, ease: 'sine.inOut', yoyo: true, repeat: -1 });
   }
+  // both drifts pause while the stage is off screen (the hero one stays paused under the 3D canvas)
+  const kbFrame = vis => {
+    if (vis === kbOn) return; kbOn = vis;
+    if (kbSbTw) vis ? kbSbTw.resume() : kbSbTw.pause();
+    if (kbHeroTw) vis && !heroOn ? kbHeroTw.resume() : kbHeroTw.pause();
+  };
   const kbSbFrame = w => {
     const s = 1 + (kbS.scale - 1) * w, x = kbS.xPercent * w, y = kbS.yPercent * w;
     css(kbSb, 'transform', w <= 0 ? 'none' : `translate3d(${x.toFixed(3)}%,${y.toFixed(3)}%,0) scale(${s.toFixed(4)})`);
@@ -136,7 +153,9 @@ function init() {
       v.src = v.dataset.src;
       v.addEventListener('playing', () => { v.classList.add('is-on'); if (v === sbVid) hero?.setMedia(v); }, { once: true });
     }
-    if (!v.src) return; if (on && v.paused) v.play().catch(() => {}); else if (!on && !v.paused) v.pause();
+    if (!v.src) return;
+    if (on && v.paused && !v._d6busy && !v._d6blocked) { v._d6busy = true; v.play().then(() => { v._d6busy = false; }, () => { v._d6busy = false; v._d6blocked = true; }); } // autoplay refused: stay on the poster
+    else if (!on && !v.paused) v.pause();
   };
 
   // ---------- hero -> Series B ----------
@@ -196,7 +215,6 @@ function init() {
     const shift = (mob ? 0.15 : 0.32) * zA, tx = (W / 2 - px) * shift, ty = (H / 2 - py) * shift;
     css(media, 'transformOrigin', `${px.toFixed(1)}px ${py.toFixed(1)}px`);
     css(media, 'transform', `translate3d(${tx.toFixed(2)}px,${ty.toFixed(2)}px,0) scale(${s.toFixed(4)})`);
-    css(media, 'opacity', (1 - sstep(0.5, 0.8, p)).toFixed(3));
     css(dim, 'opacity', (0.5 * zA).toFixed(3));
     // copy fades and blurs out as we push in (frame 2)
     const f = clamp01(p / 0.42);
@@ -211,6 +229,7 @@ function init() {
       kbSbFrame(0);
       return;
     }
+    css(media, 'opacity', (1 - sstep(0.5, 0.8, p)).toFixed(3)); // after the RM branch: there gsap owns the fade
     // the monitor screen grows into the Series B card
     const sx = v => px + tx + s * (v - px), sy = v => py + ty + s * (v - py);
     const r = { x: lerp(sx(x0), cardR.x, zB), y: lerp(sy(y0), cardR.y, zB) };
@@ -260,7 +279,7 @@ function init() {
     e.preventDefault();
     const y = modeY(i), dist = Math.abs(y - scrollY), dur = Math.min(1.8, 0.6 + dist / 2500);
     clickLock = { mode: i, until: performance.now() + dur * 1000 + 150 };
-    setActive(i); solApi?.setMode?.(i);
+    setActive(i); // solFrame holds the clicked mode until the scroll lands on it (setMode's tween would be reset by the scroll inputs)
     const l = smooth(); l ? l.scrollTo(y, { duration: dur }) : scrollTo({ top: y, behavior: RM ? 'auto' : 'smooth' });
   }));
 
@@ -304,9 +323,8 @@ function init() {
   const loadMars = () => marsP || (marsP = (window.D5_CFG = Object.assign({ ahead: 1 }, window.D5_CFG, { mode: 'mars' }),
     import(new URL('../d5/main.js', import.meta.url).href).catch(e => console.warn('d6 mars:', e))));
   D6.loadMars = loadMars;
-  function marsFrame() {
-    const r = marsTrack.getBoundingClientRect();
-    if (!marsP && r.top < innerHeight * 2.5) loadMars();
+  function marsFrame(top) {
+    if (!marsP && top < innerHeight * 2.5) { loadMars(); releaseHero(); }
     const op = sstep(0, 0.25, marsST.progress); // D5 keeps its own canvas dark until the track is near; this only gates its HUD/overlays
     css(marsLayer, 'opacity', op.toFixed(3)); css(marsLayer, 'visibility', op > 0 ? 'visible' : 'hidden');
   }
@@ -315,11 +333,11 @@ function init() {
   let railGeo = null;
   const measureRail = () => {
     const L = railLine.offsetHeight, mY = railMars.offsetTop + railMars.offsetHeight / 2 - railLine.offsetTop;
-    railGeo = { L, mY, ind: railInd.offsetHeight, marsAt: marsTrack.getBoundingClientRect().top + scrollY };
+    railGeo = { L, mY, ind: railInd.offsetHeight, marsAt: marsTrack.getBoundingClientRect().top + scrollY, max: document.documentElement.scrollHeight - innerHeight };
   };
   function railFrame() {
     if (!railGeo) return;
-    const { L, mY, ind, marsAt } = railGeo, max = document.documentElement.scrollHeight - innerHeight, y = scrollY;
+    const { L, mY, ind, marsAt, max } = railGeo, y = scrollY;
     // past the Mars track top the Mars stretch follows D5's eased progress when it is running
     const mp = window.__d5?.mars?.p, after = mp != null ? clamp01(mp) : clamp01((y - marsAt) / Math.max(1, max - marsAt));
     const v = y < marsAt ? lerp(0, mY - ind - 14, clamp01(y / marsAt)) : lerp(mY + 14, L - ind, after);
@@ -351,12 +369,14 @@ function init() {
   measure(); measureRail();
   let lastP = -1;
   function frame() {
-    if (solRunning || !geo) measureSolGeo(); // reads before this frame's style writes
-    const p = heroST.progress, sr = stage.getBoundingClientRect();
+    // all layout reads first, then this frame's style writes (no forced layout mid-frame)
+    if (solRunning || !geo) measureSolGeo();
+    const p = heroST.progress, sr = stage.getBoundingClientRect(), marsTop = marsTrack.getBoundingClientRect().top;
     if (sr.bottom > 0) { heroFrame(p); lastP = p; }
     heroRunFrame(p, sr);
+    kbFrame(sr.bottom > 0 && sr.top < innerHeight);
     for (const v of vids) vidOn(v, v.classList.contains('d6-hero-video') ? !heroOn && sr.bottom > 0 && p < 0.8 : sr.bottom > 0 && p > 0.3);
-    solFrame(); marsFrame(); railFrame();
+    solFrame(); marsFrame(marsTop); railFrame();
   }
   gsap.ticker.add(frame);
   let rz = 0;

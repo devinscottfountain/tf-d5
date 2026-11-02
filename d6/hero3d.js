@@ -149,7 +149,7 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
   function setPR(v) { pr = v; renderer.setPixelRatio(pr); post.setSize(W, H); renderer.domElement.style.width = renderer.domElement.style.height = '100%'; }
 
   // ---------------------------------------------------------------- loop + api
-  let running = false, raf = 0;
+  let running = false, raf = 0, dead = false;
   const loop = now => { if (!running) return; raf = requestAnimationFrame(loop); frame(now); };
   function resize() {
     W = Math.max(1, host.clientWidth); H = Math.max(1, host.clientHeight);
@@ -160,8 +160,8 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
   post.setSize(W, H); canvas.style.width = canvas.style.height = '100%';
 
   const ready = (async () => {
-    await Promise.race([screens.stillReady, new Promise(r => setTimeout(r, 8000))]);
-    screens.still.needsUpdate = !!screens.still.image;
+    // the still is only seen from p ~0.68: no wait for it (its onload flags the texture, the next frame uploads it)
+    screens.stillReady.then(ok => { if (ok && !dead) solve(); }); // cover fit follows its real aspect
     pose(0, 0); outside.update(0); cab.update(0);
     try { if (renderer.compileAsync) { await renderer.compileAsync(scene, cam); await renderer.compileAsync(cab.scene, cab.cam); } } catch (e) { /* compile on first frame instead */ }
     cab.render(renderer);
@@ -183,7 +183,7 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
     resize,
     stats() { const i = renderer.info; return { calls: i.render.calls, triangles: i.render.triangles, pixelRatio: pr, frames, programs: i.programs?.length }; },
     dispose() {
-      running = false; cancelAnimationFrame(raf);
+      running = false; dead = true; cancelAnimationFrame(raf);
       room.dispose(); outside.dispose(); cab.dispose(); screens.dispose(); post.composer.dispose?.();
       renderer.dispose(); if (!cvIn) canvas.remove();
     }
