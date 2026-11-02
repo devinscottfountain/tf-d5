@@ -1,0 +1,34 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>D6 solutions test</title>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js"}}</script>
+<style>html,body{margin:0;background:#000;color:#fff;font:12px/1.4 "IBM Plex Mono",monospace}
+#host{position:fixed;inset:0}
+#ui{position:fixed;right:12px;top:12px;width:260px;background:rgba(20,20,20,.85);border:1px solid #333;padding:10px;z-index:5}
+#ui label{display:flex;justify-content:space-between;gap:8px;align-items:center;margin:4px 0}#ui input[type=range]{width:150px}
+#ui button{background:#151515;color:#fff;border:1px solid #555;padding:4px 8px;margin:2px;cursor:pointer;font:inherit}
+#tel{white-space:pre;margin-top:8px;color:#97ddfb}</style></head><body>
+<div id="host"></div>
+<div id="ui">
+<label>topo <input type="range" id="topo" min="0" max="1" step="0.001" value="1"></label>
+<label>morph <input type="range" id="morph" min="0" max="1" step="0.001" value="0"></label>
+<label>mode <input type="range" id="mode" min="0" max="2" step="1" value="0"></label>
+<label>modeT <input type="range" id="modeT" min="0" max="1" step="0.001" value="0.5"></label>
+<label>flatten <input type="range" id="flatten" min="0" max="1" step="0.001" value="0"></label>
+<div><button data-m="0">Plan</button><button data-m="1">Control</button><button data-m="2">Exec</button></div>
+<div id="tel"></div></div>
+<script type="module">
+import * as THREE from 'three';
+import { createSolutions } from '../solutions.js';
+const qs = new URLSearchParams(location.search);
+const sol = window.sol = createSolutions({ THREE, host: document.getElementById('host'), topoUrl: '../assets/topo.bin', quality: qs.get('q') || 'high' });
+const ids = ['topo', 'morph', 'mode', 'modeT', 'flatten'], el = Object.fromEntries(ids.map(i => [i, document.getElementById(i)]));
+for (const k of ids) if (qs.has(k)) el[k].value = qs.get(k);
+if (qs.has('noui')) document.getElementById('ui').style.display = 'none';
+const push = () => sol.setScene(Object.fromEntries(ids.map(k => [k, +el[k].value])));
+ids.forEach(k => el[k].addEventListener('input', push));
+document.querySelectorAll('[data-m]').forEach(b => b.addEventListener('click', () => sol.setMode(+b.dataset.m)));
+sol.onTelemetry(t => { document.getElementById('tel').textContent = JSON.stringify(t, null, 1); });
+push();
+// headless: step the sim manually so screenshots are deterministic
+window.step = (sec = 3, dt = 1 / 30) => { sol.renderNow(dt, Math.max(1, Math.round(sec / dt))); return true; };
+sol.ready.then(() => { window.READY = true; if (qs.has('manual')) { window.step(+(qs.get('warm') || 4)); } else sol.start(); });
+</script></body></html>

@@ -199,13 +199,13 @@ function init() {
 
   // ---------- Mars: D5 in mars mode, imported when its track is ~1.5 viewports away ----------
   let marsP = null;
-  const loadMars = () => marsP || (marsP = (window.D5_CFG = Object.assign({}, window.D5_CFG, { mode: 'mars' }),
+  const loadMars = () => marsP || (marsP = (window.D5_CFG = Object.assign({ ahead: 1 }, window.D5_CFG, { mode: 'mars' }),
     import(new URL('../d5/main.js', import.meta.url).href).catch(e => console.warn('d6 mars:', e))));
   D6.loadMars = loadMars;
   function marsFrame() {
     const r = marsTrack.getBoundingClientRect();
     if (!marsP && r.top < innerHeight * 2.5) loadMars();
-    const op = clamp01(marsST.progress);
+    const op = sstep(0, 0.25, marsST.progress); // D5 keeps its own canvas dark until the track is near; this only gates its HUD/overlays
     css(marsLayer, 'opacity', op.toFixed(3)); css(marsLayer, 'visibility', op > 0 ? 'visible' : 'hidden');
   }
 
@@ -218,7 +218,9 @@ function init() {
   function railFrame() {
     if (!railGeo) return;
     const { L, mY, ind, marsAt } = railGeo, max = document.documentElement.scrollHeight - innerHeight, y = scrollY;
-    const v = y < marsAt ? lerp(0, mY - ind - 14, clamp01(y / marsAt)) : lerp(mY + 14, L - ind, clamp01((y - marsAt) / Math.max(1, max - marsAt)));
+    // past the Mars track top the Mars stretch follows D5's eased progress when it is running
+    const mp = window.__d5?.mars?.p, after = mp != null ? clamp01(mp) : clamp01((y - marsAt) / Math.max(1, max - marsAt));
+    const v = y < marsAt ? lerp(0, mY - ind - 14, clamp01(y / marsAt)) : lerp(mY + 14, L - ind, after);
     css(railInd, 'transform', `translate3d(0,${v.toFixed(1)}px,0)`);
   }
   qa('.d6-rail-planet').forEach(a => a.addEventListener('click', e => {
