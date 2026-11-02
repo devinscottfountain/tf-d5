@@ -75,19 +75,20 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
   const U = {
     uMorph: { value: 0 }, uOff: { value: new THREE.Vector2() }, uMS: { value: MAP_SCALE }, uAmp: { value: 0 }, uLift: { value: 6 },
     uPlanZ: { value: 0 }, uGameZ: { value: 0 }, uS2: { value: 1 }, uS4: { value: 0 }, uSize: { value: 0.12 }, uPx: { value: 1000 },
-    uTopY: { value: 2 }, uAlpha: { value: 1 }, uFar: { value: 1e4 }, uCtrl: { value: 0 }, uHalf: { value: new THREE.Vector2(GW / 2, GD / 2) }, uPR: { value: 1 },
+    uTopY: { value: 2 }, uCamB: { value: 0 }, uAlpha: { value: 1 }, uFar: { value: 1e4 }, uCtrl: { value: 0 }, uHalf: { value: new THREE.Vector2(GW / 2, GD / 2) }, uPR: { value: 1 },
   };
   const pMat = new THREE.ShaderMaterial({
     uniforms: U, transparent: true, depthWrite: false,
     vertexShader: /* glsl */ `
       attribute vec2 aSrc; attribute vec4 aSeed; attribute float aCut; attribute vec2 aZone;
-      uniform float uMorph, uMS, uAmp, uLift, uPlanZ, uGameZ, uS2, uS4, uSize, uPx, uFar, uCtrl, uPR, uTopY;
+      uniform float uMorph, uMS, uAmp, uLift, uPlanZ, uGameZ, uS2, uS4, uSize, uPx, uFar, uCtrl, uPR, uTopY, uCamB;
       uniform vec2 uOff, uHalf;
       varying vec3 vCol; varying float vA;
       ${H_GLSL}
       ${MAPFADE}
       void main(){
-        float k = clamp((uMorph - aSeed.y*.5) / .5, 0., 1.); k = k*k*(3. - 2.*k);
+        float sw = (1. - clamp(aSrc.y / 1196., 0., 1.))*.55 + (1. - clamp(aSrc.x / 1775., 0., 1.))*.45;
+        float k = clamp((uMorph / .7 - (sw*.85 + aSeed.y*.15)*.6) / .4, 0., 1.); k = k*k*(3. - 2.*k);
         float h = hF(position.xz)*uAmp - aCut;
         vec3 g = vec3(position.x, h, position.z);
         vec3 s = vec3(uOff.x + aSrc.x*uMS, 0., uOff.y + aSrc.y*uMS);
@@ -106,7 +107,7 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
         gc = mix(gc, vec3(.62, .88, 1.), zt);
         gc = mix(gc, vec3(1.), clamp(aCut / 1.4, 0., 1.)*aZone.y);
         gc = mix(gc, cW, clamp(-aCut / 1.2, 0., 1.));
-        float vis = 1. - uS2*(1. - step(.5, aSeed.w)) - uS4*(1. - step(1.5, aSeed.w));
+        float vis = 1. - uS2*uCamB*(1. - step(.5, aSeed.w)) - uS4*(1. - step(1.5, aSeed.w));
         float edge = smoothstep(uHalf.x, uHalf.x - 7., abs(position.x))*smoothstep(uHalf.y, uHalf.y - 6., abs(position.z));
         float far = smoothstep(uFar, uFar*.55, -mv.z);
         float ny = gl_Position.y / gl_Position.w;
@@ -116,7 +117,7 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
         vA = mix(sa, ga, k) + sin(k*3.14159)*.45*smoothstep(0., .1, uMorph);
         float ps = uSize*(.75 + .5*aSeed.z)*(1. + zt*.25)*uPx / max(.1, -mv.z);
         ps = mix(max(ps, 1.2*uPR), ps, k);
-        if (ps < 1.3*uPR) { vA *= ps / (1.3*uPR); ps = 1.3*uPR; }
+        if (ps < 1.3*uPR) { vA *= mix(1., ps / (1.3*uPR), uCamB); ps = 1.3*uPR; }
         gl_PointSize = vA < .004 ? 0. : ps;
       }`,
     fragmentShader: /* glsl */ `
@@ -320,7 +321,7 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
     const Hd = 1600 * ch / cw;
     const mapYd = S.mapY != null ? S.mapY * 1600 / cw : lerp(Hd * 0.6, -470, sm(topo));
     U.uOff.value.set((MAP_X - 800) * MAP_SCALE, (mapYd - Hd / 2) * MAP_SCALE);
-    LU.uTopo.value = topo; LU.uLineA.value = 1 - sm(morph / 0.4);
+    LU.uTopo.value = topo; LU.uLineA.value = 1 - sm(morph / 0.3);
     if (lines) lines.visible = LU.uLineA.value > 0.003 && topo > 0.001;
 
     // points
@@ -341,7 +342,8 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
     cm.yaw += smx * 0.12 * wC + (effT - 0.5) * 0.08 * wP + (effT - 0.5) * 0.12 * wC;
     cm.pitch += -smy * 0.05 * wC;
     if (cw / ch < 1) cm.w *= Math.max(0.55, cw / ch);
-    blendC(cs, C_MAP, cm, easeIO(morph));
+    const camB = easeIO(clamp01((morph - 0.25) / 0.75)); U.uCamB.value = camB;
+    blendC(cs, C_MAP, cm, camB);
     camera.fov = cs.fov;
     const asp = cw / ch, dist = cs.w / (2 * Math.tan(cs.fov * DEG / 2) * asp);
     tgt.set(cs.tx, 0, cs.tz);
