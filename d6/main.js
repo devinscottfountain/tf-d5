@@ -21,7 +21,15 @@ const QUALITY = (() => {
   const coarse = matchMedia('(pointer: coarse)').matches;
   return (coarse && Math.min(screen.width, screen.height) < 820) || (navigator.hardwareConcurrency || 8) <= 2 ? 'low' : 'high';
 })();
-const D6 = (window.__d6 = { quality: QUALITY, reduced: RM });
+// three.js hero: desktop and tablets (quality follows the tier), poster photo on phones and with reduced motion.
+// ?hero=3d / ?hero=0 force it either way for QA.
+const HERO3D = (() => {
+  const o = new URLSearchParams(location.search).get('hero'); if (o === '3d') return true; if (o === '0') return false;
+  return !RM && !(matchMedia('(pointer: coarse)').matches && innerWidth < 820);
+})();
+const P_CARD = 0.85;   // hero progress at which the 3D screen has become the Series B card
+const D6 = (window.__d6 = { quality: QUALITY, reduced: RM, hero3d: HERO3D, t: {} });
+const stamp = k => (D6.t[k] = Math.round(performance.now())); // QA timeline
 
 if (page && gsap && ST) init();
 
@@ -29,6 +37,7 @@ function init() {
   const stage = q('.d6-stage'), intro = q('.d6-intro'), media = q('.d6-hero-media'), heroImg = q('.d6-hero-img');
   const kbHero = q('.d6-hero-media .d6-kb'), kbSb = q('.d6-sb .d6-kb');
   const sb = q('.d6-sb'), sbUi = q('.d6-sb-ui'), sbTarget = q('.d6-sb-target'), dim = q('.d6-hero-dim'), copy = q('.d6-hero-copy');
+  const shade = q('.d6-hero-shade'), sbImg = q('.d6-sb-img'), sbVid = q('.d6-sb-video');
   const mission = q('.d6-mission'), missionIn = q('.d6-mission-in'), sol = q('.d6-sol'), tabs = qa('.d6-tab'), hud = q('.d6-hud');
   const solStage = q('.d6-sol-stage'), tabsEl = q('.d6-tabs'), hudCards = [q('.d6-tele'), q('.d6-blade')];
   const solHost = q('.d6-sol-canvas'), marsLayer = q('.d6-mars-layer'), marsTrack = q('.d6-mars-track');
@@ -62,40 +71,118 @@ function init() {
     tl.to('.d6-lead', { opacity: 1, y: 0, duration: 1, ease: 'power3.out' }, at + 0.35);
   };
 
+  // ---------- 3D hero: built now, in parallel with the loader; the photo stays as poster until it is ready ----------
+  // hero: the API once built; heroOn: the canvas is the visible hero; heroLive: the loader is leaving (rendering allowed)
+  let hero = null, heroOn = false, heroLive = skipLoader, heroRun = false, heroKey = '';
+  const heroFade = { v: 0 }, heroHost = HERO3D ? document.createElement('div') : null;
+  const heroReady = !HERO3D ? Promise.resolve(false) : (() => {
+    heroHost.className = 'd6-hero-3d'; media.after(heroHost);
+    // screen UI text is drawn into canvases at construction: the fonts must be in first (capped)
+    const fontsIn = Promise.race([
+      Promise.all(['500 13px "IBM Plex Mono"', '500 13px Geist', '400 13px Geist'].map(f => document.fonts?.load(f).catch(() => {}))).then(() => document.fonts?.ready),
+      new Promise(r => setTimeout(r, 1800)),
+    ]);
+    return Promise.all([import('./hero3d.js'), fontsIn]).then(([m]) => {
+      measure(); stamp('heroBuild');
+      hero = m.createHero({ THREE, host: heroHost, quality: QUALITY, still: sbImg.currentSrc || sbImg.src });
+      D6.heroApi = hero;
+      hero.setTarget(cardR, cardRad); heroKey = rectKey(); stamp('heroBuilt');
+      if (sbVid?.classList.contains('is-on')) hero.setMedia(sbVid);
+      return hero.ready;
+    }).then(() => { swapIn(); return true; }).catch(e => {
+      console.warn('d6 hero:', e);
+      try { hero?.dispose(); } catch (_) { /* already gone */ }
+      hero = null; heroHost.remove(); return false;
+    });
+  })();
+  D6.heroReady = heroReady;
+  function swapIn() {
+    heroOn = true; D6.heroOn = true; stamp(heroLive ? 'heroSwapLate' : 'heroSwap');
+    gsap.killTweensOf(heroFade);
+    // behind the loader: instant; after it (late boot): crossfade over the poster
+    if (!heroLive) heroFade.v = 1; else gsap.to(heroFade, { v: 1, duration: 0.9, ease: 'power2.inOut' });
+    kbHeroTw?.pause();
+  }
+
   // ---------- loader ----------
   const fontsGate = fontsP.then(splitHero);
   if (!skipLoader) {
     const ld = runLoader({
-      THREE, el: loaderEl, reduced: RM,
-      onExit: tl => { lock(false); heroReveal(tl, RM ? 0.1 : 0.45); },
+      THREE, el: loaderEl, reduced: RM, maxMs: HERO3D ? 3500 : 2000, // holds for the hero's boot, capped at 3.5 s
+      onExit: tl => { stamp('loaderExit'); lock(false); heroLive = true; heroReveal(tl, RM ? 0.1 : 0.45); },
     });
-    ld.gate(fontsGate); ld.gate(decodeP);
+    ld.gate(fontsGate); ld.gate(decodeP); ld.gate(heroReady);
     D6.loader = ld.done;
     ld.done.then(afterLoader);
   } else { loaderEl?.remove(); fontsGate.then(() => { if (h1Split) { h1Split.revert(); h1Split = null; } }); afterLoader(); }
 
   // ---------- Ken Burns drift on the stills (the video slot replaces them when a source is set) ----------
+  // the Series B drift runs on a proxy: with the 3D hero it is weighted in only after the card has taken over, so the
+  // card matches the canvas exactly at the swap in both scroll directions
+  let kbHeroTw = null; const kbS = { scale: 1, xPercent: 0, yPercent: 0 };
   if (!RM) {
-    gsap.fromTo(kbHero, { scale: 1.0, xPercent: 0.6, yPercent: 0.3 }, { scale: 1.045, xPercent: -0.8, yPercent: -0.5, duration: 18, ease: 'sine.inOut', yoyo: true, repeat: -1 });
-    gsap.fromTo(kbSb, { scale: 1.03, xPercent: -0.8 }, { scale: 1.09, xPercent: 0.8, yPercent: -0.8, duration: 14, ease: 'sine.inOut', yoyo: true, repeat: -1 });
+    kbHeroTw = gsap.fromTo(kbHero, { scale: 1.0, xPercent: 0.6, yPercent: 0.3 }, { scale: 1.045, xPercent: -0.8, yPercent: -0.5, duration: 18, ease: 'sine.inOut', yoyo: true, repeat: -1 });
+    gsap.fromTo(kbS, { scale: 1.03, xPercent: -0.8, yPercent: 0 }, { scale: 1.09, xPercent: 0.8, yPercent: -0.8, duration: 14, ease: 'sine.inOut', yoyo: true, repeat: -1 });
   }
+  const kbSbFrame = w => {
+    const s = 1 + (kbS.scale - 1) * w, x = kbS.xPercent * w, y = kbS.yPercent * w;
+    css(kbSb, 'transform', w <= 0 ? 'none' : `translate3d(${x.toFixed(3)}%,${y.toFixed(3)}%,0) scale(${s.toFixed(4)})`);
+  };
   // videos: set data-src in Webflow (custom attribute) and the clip fades in over its poster once it plays
   const vids = qa('.d6-video').filter(v => v.dataset.src);
   const vidOn = (v, on) => {
-    if (on && !v.src) { v.src = v.dataset.src; v.addEventListener('playing', () => v.classList.add('is-on'), { once: true }); }
+    if (on && !v.src) {
+      if (HERO3D && v === sbVid) v.crossOrigin = 'anonymous'; // the hero samples the same video on its screen
+      v.src = v.dataset.src;
+      v.addEventListener('playing', () => { v.classList.add('is-on'); if (v === sbVid) hero?.setMedia(v); }, { once: true });
+    }
     if (!v.src) return; if (on && v.paused) v.play().catch(() => {}); else if (!on && !v.paused) v.pause();
   };
 
   // ---------- hero -> Series B ----------
   let cardR = { x: 0, y: 0, w: 1, h: 1 }, cardRad = 6;
-  const measure = () => {
+  const rectKey = () => [cardR.x, cardR.y, cardR.w, cardR.h, cardRad].map(v => v.toFixed(2)).join(',');
+  function measure() {
     const s = stage.getBoundingClientRect(), t = sbTarget.getBoundingClientRect();
     cardR = { x: t.left - s.left, y: t.top - s.top, w: t.width, h: t.height };
     cardRad = parseFloat(getComputedStyle(sb).borderTopLeftRadius) || 6;
-  };
+    // the hero solves its end pose so the screen corners land exactly on the card rect
+    if (hero) { const k = rectKey(); if (k !== heroKey) { heroKey = k; hero.setTarget(cardR, cardRad); } }
+  }
   const heroST = ST.create({ trigger: intro, start: 'top top', end: 'bottom bottom' });
   let rmCard = -1;
+  // 3D path: the canvas dollies into the centre monitor; the DOM card sits fixed on the card rect and takes over at hp ~1
+  function hero3dFrame(p) {
+    const hp = clamp01(p / P_CARD), f = clamp01(p / 0.42);
+    css(copy, 'opacity', (1 - f).toFixed(3));
+    css(copy, 'filter', f > 0.001 ? `blur(${(12 * f).toFixed(2)}px)` : 'none');
+    css(copy, 'visibility', f >= 1 ? 'hidden' : 'visible');
+    css(dim, 'opacity', '0');
+    css(shade, 'opacity', (1 - sstep(0.12, 0.6, hp)).toFixed(3)); // gone well before the hand-off (it would tint the canvas, not the card)
+    // canvas: intro push like the photo had, visible until the card has fully taken over
+    const fv = heroFade.v, k = heroIntro.k;
+    css(heroHost, 'opacity', fv.toFixed(3)); css(heroHost, 'visibility', fv > 0 && hp < 1 ? 'visible' : 'hidden');
+    css(heroHost, 'transform', k < 1 ? `scale(${(1 + 0.1 * (1 - k)).toFixed(4)})` : 'none');
+    css(media, 'visibility', fv >= 1 ? 'hidden' : 'visible');
+    hero.setProgress(hp);
+    css(sb, 'left', cardR.x.toFixed(2) + 'px'); css(sb, 'top', cardR.y.toFixed(2) + 'px');
+    css(sb, 'width', cardR.w.toFixed(2) + 'px'); css(sb, 'height', cardR.h.toFixed(2) + 'px');
+    css(sb, 'borderRadius', cardRad + 'px');
+    css(sb, 'opacity', hp >= 0.995 ? '1' : '0');
+    css(sbUi, 'opacity', sstep(P_CARD + 0.015, P_CARD + 0.1, p).toFixed(3));
+    kbSbFrame(RM ? 0 : sstep(P_CARD + 0.01, 1, p));
+  }
+  // run the renderer only while the stage is on screen, the loader is leaving and the canvas is the visible layer
+  function heroRunFrame(p, sr) {
+    if (!hero) return;
+    const want = heroOn && heroLive && sr.bottom > 0 && sr.top < innerHeight && p < P_CARD;
+    if (want && !heroRun) { heroRun = true; if (!D6.t.heroStart) stamp('heroStart'); hero.setProgress(clamp01(p / P_CARD)); hero.start(); hero.renderOnce(); }
+    else if (!want && heroRun) { heroRun = false; hero.stop(); }
+    D6.heroRun = heroRun;
+  }
+
   function heroFrame(p) {
+    if (heroOn) return hero3dFrame(p);
     const W = stage.clientWidth, H = stage.clientHeight, mob = mobile();
     const iw = heroImg.naturalWidth || 1920, ih = heroImg.naturalHeight || 1080;
     const c = Math.max(W / iw, H / ih), dw = iw * c, dh = ih * c, ox = (W - dw) / 2, oy = (H - dh) / 2;
@@ -121,6 +208,7 @@ function init() {
       const on = p > 0.45 ? 1 : 0;
       if (on !== rmCard) { rmCard = on; gsap.to([sb, sbUi], { opacity: on, duration: 0.45, overwrite: true }); gsap.to(media, { opacity: 1 - on, duration: 0.45 }); }
       css(sb, 'left', cardR.x + 'px'); css(sb, 'top', cardR.y + 'px'); css(sb, 'width', cardR.w + 'px'); css(sb, 'height', cardR.h + 'px');
+      kbSbFrame(0);
       return;
     }
     // the monitor screen grows into the Series B card
@@ -132,6 +220,7 @@ function init() {
     css(sb, 'borderRadius', (cardRad * zB).toFixed(2) + 'px');
     css(sb, 'opacity', sstep(0.36, 0.5, p).toFixed(3));
     css(sbUi, 'opacity', sstep(0.84, 0.95, p).toFixed(3));
+    kbSbFrame(RM ? 0 : 1);
   }
 
   // ---------- mission + solutions ----------
@@ -265,12 +354,16 @@ function init() {
     if (solRunning || !geo) measureSolGeo(); // reads before this frame's style writes
     const p = heroST.progress, sr = stage.getBoundingClientRect();
     if (sr.bottom > 0) { heroFrame(p); lastP = p; }
-    for (const v of vids) vidOn(v, v.classList.contains('d6-hero-video') ? sr.bottom > 0 && p < 0.8 : sr.bottom > 0 && p > 0.3);
+    heroRunFrame(p, sr);
+    for (const v of vids) vidOn(v, v.classList.contains('d6-hero-video') ? !heroOn && sr.bottom > 0 && p < 0.8 : sr.bottom > 0 && p > 0.3);
     solFrame(); marsFrame(); railFrame();
   }
   gsap.ticker.add(frame);
   let rz = 0;
-  addEventListener('resize', () => { cancelAnimationFrame(rz); rz = requestAnimationFrame(() => { measure(); measureRail(); solApi?.resize?.(); }); });
+  addEventListener('resize', () => { cancelAnimationFrame(rz); rz = requestAnimationFrame(() => {
+    if (hero) { hero.resize(); heroKey = ''; } measure(); measureRail(); solApi?.resize?.();
+  }); });
+  addEventListener('pointermove', e => { if (hero && heroRun && e.pointerType === 'mouse') hero.setPointer(e.clientX / innerWidth * 2 - 1, e.clientY / innerHeight * 2 - 1); }, { passive: true });
   ST.addEventListener('refresh', () => { measure(); measureRail(); });
   D6.hero = p => heroFrame(p); // QA hooks
   D6.st = { heroST, missionST, enterST, solST, outST, marsST };

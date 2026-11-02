@@ -76,7 +76,9 @@ export function runLoader({ THREE, el, reduced = false, minMs = 1200, maxMs = 20
   const done = new Promise(resolve => {
     // gate() promises are collected before the next microtask settles; give callers one tick to add them
     Promise.resolve().then(() => Promise.race([Promise.all([minP, ...gates]), maxP])).then(() => {
-      const out = gsap.timeline({ onComplete: () => { intro.kill(); mark?.dispose(); el.remove(); resolve(); } });
+      // the mark's WebGL context goes as soon as it has faded, so it never overlaps the hero renderer for long
+      const killMark = () => { if (mark) { mark.dispose(); mark = null; } };
+      const out = gsap.timeline({ onComplete: () => { intro.kill(); killMark(); el.remove(); resolve(); } });
       if (reduced) out.to(el, { opacity: 0, duration: 0.35 });
       else {
         out.to(label, { opacity: 0, duration: 0.2 }, 0)
@@ -86,7 +88,7 @@ export function runLoader({ THREE, el, reduced = false, minMs = 1200, maxMs = 20
           .to(ring, { scale: 1.6, rotate: 30, opacity: 0, duration: 0.8, ease: 'power3.in' }, 0.05)
           .to(mark ? host : flat, { scale: 0.4, opacity: 0, duration: 0.55, ease: 'power3.in' }, 0.25)
           .to(el, { opacity: 0, duration: 0.6, ease: 'power2.inOut' }, 0.5);
-        if (mark) out.to(mark.pivot.rotation, { y: Math.PI * 0.9, duration: 0.8, ease: 'power3.in' }, 0.05);
+        if (mark) out.to(mark.pivot.rotation, { y: Math.PI * 0.9, duration: 0.8, ease: 'power3.in' }, 0.05).call(killMark, null, 0.86);
       }
       onExit?.(out);
     });
