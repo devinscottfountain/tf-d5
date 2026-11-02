@@ -30,6 +30,7 @@ function init() {
   const kbHero = q('.d6-hero-media .d6-kb'), kbSb = q('.d6-sb .d6-kb');
   const sb = q('.d6-sb'), sbUi = q('.d6-sb-ui'), sbTarget = q('.d6-sb-target'), dim = q('.d6-hero-dim'), copy = q('.d6-hero-copy');
   const mission = q('.d6-mission'), missionIn = q('.d6-mission-in'), sol = q('.d6-sol'), tabs = qa('.d6-tab'), hud = q('.d6-hud');
+  const solStage = q('.d6-sol-stage'), tabsEl = q('.d6-tabs'), hudCards = [q('.d6-tele'), q('.d6-blade')];
   const solHost = q('.d6-sol-canvas'), marsLayer = q('.d6-mars-layer'), marsTrack = q('.d6-mars-track');
   const railLine = q('.d6-rail-line'), railInd = q('.d6-rail-ind'), railMars = q('.d6-rail-mars');
   const loaderEl = q('.d6-loader');
@@ -146,6 +147,7 @@ function init() {
     solApi = m.createSolutions({ THREE, host: solHost, topoUrl: new URL('./assets/topo.bin', import.meta.url).href, quality: QUALITY });
     D6.solutions = solApi;
     solApi.onTelemetry?.(onTele);
+    if (geo) solApi.setScene(geo);
     return solApi.ready;
   }).catch(e => console.warn('d6 solutions:', e)));
 
@@ -174,6 +176,16 @@ function init() {
   }));
 
   const scene = { topo: 0, morph: 0, mode: 0, modeT: 0, flatten: 0 }, last = {};
+  // framing inputs for the WebGL layer, in canvas px as they sit while the stage is pinned (stage and canvas share 0,0):
+  // bottom of the tab cards (the scene keeps its machines below it) and the control HUD cards (kept clear in control)
+  let geo = null, geoKey = '';
+  function measureSolGeo() {
+    const s = solStage.getBoundingClientRect(), t = tabsEl.getBoundingClientRect();
+    const rr = el => { const r = el && el.getBoundingClientRect(); return r && r.width > 1 ? { l: r.left - s.left, t: r.top - s.top, r: r.right - s.left, b: r.bottom - s.top } : null; };
+    const g = { groundTop: t.bottom - s.top, hud: hudCards.map(rr) };
+    const key = Math.round(g.groundTop) + '|' + g.hud.map(r => (r ? Math.round(r.l) + ',' + Math.round(r.t) + ',' + Math.round(r.r) : '')).join(';');
+    if (key !== geoKey) { geoKey = key; geo = g; if (solApi) solApi.setScene(g); D6.solGeo = g; }
+  }
   function solFrame() {
     const topo = clamp01(missionST.progress), morph = clamp01(enterST.progress), sp = solST.progress;
     let modeF = Math.min(sp * 3, 2.9999), mode = Math.floor(modeF), modeT = mode === 2 ? clamp01(sp * 3 - 2) : modeF - mode;
@@ -183,8 +195,9 @@ function init() {
     const on = mode === 1 && morph >= 0.999;
     if (on !== hudOn) { hudOn = on; hud.classList.toggle('is-on', on); }
     css(missionIn, 'opacity', (1 - 0.85 * morph).toFixed(3));
-    // the WebGL layer: in with the mission, out as the solutions pin releases
-    const op = Math.min(sstep(0, 0.35, topo), 1 - sstep(0, 1, outST.progress));
+    // the WebGL layer: in with the mission, out over the last ~0.1 viewport of the pin, so it has stopped by the time the
+    // pin releases (the Mars track starts right there and D5 begins rendering)
+    const op = Math.min(sstep(0, 0.35, topo), 1 - sstep(0.965, 0.997, sp));
     css(solHost, 'opacity', op.toFixed(3)); css(solHost, 'visibility', op > 0 ? 'visible' : 'hidden');
     if (op > 0 && !solStarting) loadSolutions();
     if (solApi) {
@@ -249,6 +262,7 @@ function init() {
   measure(); measureRail();
   let lastP = -1;
   function frame() {
+    if (solRunning || !geo) measureSolGeo(); // reads before this frame's style writes
     const p = heroST.progress, sr = stage.getBoundingClientRect();
     if (sr.bottom > 0) { heroFrame(p); lastP = p; }
     for (const v of vids) vidOn(v, v.classList.contains('d6-hero-video') ? sr.bottom > 0 && p < 0.8 : sr.bottom > 0 && p > 0.3);

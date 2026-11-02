@@ -433,6 +433,8 @@ export function createHabitatAssets({ THREE, renderer, envMap = null, frameDetai
         totalEmissiveRadiance += vec3(1., 0.58, 0.26) * night * 0.22 * (1. - mull) * (1.2 - vGY);`)
         .replace('#include <lights_fragment_maps>', ENV_NIGHT)
         .replace('#include <opaque_fragment>', `
+        // the sun glint on near-mirror glass overflows half float (inf), which bloom/DOF smear into a hard square: cap it
+        outgoingLight = min(outgoingLight, vec3(12.));
         float fr = pow(1. - clamp(abs(dot(normalize(vViewPosition), normal)), 0., 1.), 2.2);
         float lum = dot(outgoingLight, vec3(0.3, 0.59, 0.11));
         diffuseColor.a = ${remap ? `clamp(opacity / ${remap.toFixed(3)}, 0., 1.)` : 'opacity'} * clamp(max(max(mix(0.5, 1., fr), lum * 1.4), mull), 0., 1.);

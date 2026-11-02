@@ -51,7 +51,7 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
   const NX = Math.round(GW / SP) + 1, NZ = Math.round(GD / SP) + 1, N = NX * NZ;
   const X0 = -GW / 2, Z0 = -GD / 2;
   const gx = new Float32Array(N), gz = new Float32Array(N);
-  const gPos = new Float32Array(N * 3), aSrc = new Float32Array(N * 2), aSeed = new Float32Array(N * 4);
+  const gPos = new Float32Array(N * 3), aSrc = new Float32Array(N * 2), aSeed = new Float32Array(N * 4), aDep = new Float32Array(N);
   const aCut = new Float32Array(N), aZone = new Float32Array(N * 2);
   let seed = 7; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
   for (let i = 0; i < NX; i++) for (let j = 0; j < NZ; j++) {
@@ -65,35 +65,41 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
   pGeo.setAttribute('position', new THREE.BufferAttribute(gPos, 3));
   pGeo.setAttribute('aSrc', new THREE.BufferAttribute(aSrc, 2));
   pGeo.setAttribute('aSeed', new THREE.BufferAttribute(aSeed, 4));
+  pGeo.setAttribute('aDep', new THREE.BufferAttribute(aDep, 1));
   const cutAttr = new THREE.BufferAttribute(aCut, 1).setUsage(THREE.DynamicDrawUsage); pGeo.setAttribute('aCut', cutAttr);
   const zoneAttr = new THREE.BufferAttribute(aZone, 2).setUsage(THREE.DynamicDrawUsage); pGeo.setAttribute('aZone', zoneAttr);
   pGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e5);
   grid.cutAttr = cutAttr; grid.zoneAttr = zoneAttr;
 
+  // morph timeline (morph 0..1): contours break into dots in sequence (BRK), each dot holds, then slides onto the lattice
+  const BRK = 0.38, HOLD = 0.03, TRAV = 0.3, BRK_R = 0.62;
   const MAPFADE = /* glsl */ `
   float mapA(vec2 m){ float ax = clamp((m.x - 420.) / 1250., 0., 1.); float ay = smoothstep(0., 560., m.y); return ax * (.25 + .75*ax) * ay; }`;
   const U = {
     uMorph: { value: 0 }, uOff: { value: new THREE.Vector2() }, uMS: { value: MAP_SCALE }, uAmp: { value: 0 }, uLift: { value: 6 },
     uPlanZ: { value: 0 }, uGameZ: { value: 0 }, uS2: { value: 1 }, uS4: { value: 0 }, uSize: { value: 0.12 }, uPx: { value: 1000 },
-    uTopY: { value: 2 }, uCamB: { value: 0 }, uAlpha: { value: 1 }, uFar: { value: 1e4 }, uCtrl: { value: 0 }, uHalf: { value: new THREE.Vector2(GW / 2, GD / 2) }, uPR: { value: 1 },
+    uTopY: { value: 2 }, uFadeW: { value: 0.14 }, uCamB: { value: 0 }, uAlpha: { value: 1 }, uFar: { value: 1e4 }, uCtrl: { value: 0 }, uHalf: { value: new THREE.Vector2(GW / 2, GD / 2) }, uPR: { value: 1 },
   };
   const pMat = new THREE.ShaderMaterial({
     uniforms: U, transparent: true, depthWrite: false,
     vertexShader: /* glsl */ `
-      attribute vec2 aSrc; attribute vec4 aSeed; attribute float aCut; attribute vec2 aZone;
-      uniform float uMorph, uMS, uAmp, uLift, uPlanZ, uGameZ, uS2, uS4, uSize, uPx, uFar, uCtrl, uPR, uTopY, uCamB;
+      attribute vec2 aSrc; attribute vec4 aSeed; attribute float aCut; attribute vec2 aZone; attribute float aDep;
+      uniform float uMorph, uMS, uAmp, uLift, uPlanZ, uGameZ, uS2, uS4, uSize, uPx, uFar, uCtrl, uPR, uTopY, uFadeW, uCamB;
       uniform vec2 uOff, uHalf;
       varying vec3 vCol; varying float vA;
       ${H_GLSL}
       ${MAPFADE}
       void main(){
-        float sw = (1. - clamp(aSrc.y / 1196., 0., 1.))*.55 + (1. - clamp(aSrc.x / 1775., 0., 1.))*.45;
-        float k = clamp((uMorph / .7 - (sw*.85 + aSeed.y*.15)*.6) / .4, 0., 1.); k = k*k*(3. - 2.*k);
+        // this dot's spot on its contour is erased at tD; it pops, holds, then slides to its lattice point
+        float tD = aDep*${BRK.toFixed(3)} + aSeed.y*.012;
+        float pop = smoothstep(tD - .012, tD + .004, uMorph);
+        float k = clamp((uMorph - tD - ${HOLD.toFixed(3)}) / ${TRAV.toFixed(3)}, 0., 1.); k = k*k*(3. - 2.*k);
+        float trav = sin(k*3.14159);
         float h = hF(position.xz)*uAmp - aCut;
         vec3 g = vec3(position.x, h, position.z);
         vec3 s = vec3(uOff.x + aSrc.x*uMS, 0., uOff.y + aSrc.y*uMS);
         vec3 p = mix(s, g, k);
-        p.y += sin(k*3.14159)*uLift*(.3 + aSeed.z);
+        p.y += trav*uLift*(.3 + aSeed.z);
         vec4 mv = modelViewMatrix*vec4(p, 1.);
         gl_Position = projectionMatrix*mv;
         // grid colour: cyan to white in plan, height ramp in control
@@ -111,12 +117,18 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
         float edge = smoothstep(uHalf.x, uHalf.x - 7., abs(position.x))*smoothstep(uHalf.y, uHalf.y - 6., abs(position.z));
         float far = smoothstep(uFar, uFar*.55, -mv.z);
         float ny = gl_Position.y / gl_Position.w;
-        float ga = smoothstep(uTopY + .14, uTopY - .04, ny)*(.45 + .55*aSeed.x)*clamp(vis, 0., 1.)*edge*far*(1. + zt*.6);
-        float sa = mapA(aSrc)*.9*smoothstep(0., .05, uMorph);
-        vCol = mix(vec3(1.), gc, k);
-        vA = mix(sa, ga, k) + sin(k*3.14159)*.45*smoothstep(0., .1, uMorph);
+        float ga = smoothstep(uTopY, uTopY - uFadeW, ny)*(.45 + .55*aSeed.x)*clamp(vis, 0., 1.)*edge*far*(1. + zt*.6);
+        // on the contour: bright as it breaks off, a touch dimmer while it holds
+        float sa = (.2 + .8*mapA(aSrc))*pop*(1. + .5*(1. - smoothstep(0., ${HOLD.toFixed(3)}, uMorph - tD)));
+        vCol = mix(mix(vec3(1.), vec3(.8, .95, 1.), trav), gc, k*k);
+        vA = mix(sa, ga, k) + trav*.6*(.5 + .5*aSeed.x);
+        // only the major lattice dots (every 4th) make the trip visibly, so the grid reads as it forms;
+        // the rest fade as they leave and come back as the camera dives in
+        float major = step(1.5, aSeed.w);
+        vA *= mix(max(max(1. - smoothstep(0., .3, k), .12), smoothstep(.45, .9, uCamB)), 1. + trav*.8 + k*(1. - uCamB)*.7, major);
         float ps = uSize*(.75 + .5*aSeed.z)*(1. + zt*.25)*uPx / max(.1, -mv.z);
-        ps = mix(max(ps, 1.2*uPR), ps, k);
+        ps = mix(max(ps, 1.5*uPR), ps, k)*(1. + (.45 + .6*major)*trav);
+        ps = max(ps, major*(1. - uCamB)*smoothstep(0., .2, k)*2.2*uPR); // the forming lattice reads from the map view
         if (ps < 1.3*uPR) { vA *= mix(1., ps / (1.3*uPR), uCamB); ps = 1.3*uPR; }
         gl_PointSize = vA < .004 ? 0. : ps;
       }`,
@@ -133,7 +145,7 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
   scene.add(points);
 
   // ------------------------------------------------------------------ topo contour lines (built when the data loads)
-  const LU = { uTopo: { value: 0 }, uOff: U.uOff, uMS: U.uMS, uLineA: { value: 1 } };
+  const LU = { uTopo: { value: 0 }, uOff: U.uOff, uMS: U.uMS, uLineA: { value: 1 }, uBreak: { value: 0 } };
   const lMat = new THREE.ShaderMaterial({
     uniforms: LU, transparent: true, depthWrite: false, depthTest: false,
     vertexShader: /* glsl */ `
@@ -142,13 +154,17 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
       void main(){ vAl = position.z; vD = aD; vM = position.xy;
         gl_Position = projectionMatrix*modelViewMatrix*vec4(uOff.x + position.x*uMS, 0., uOff.y + position.y*uMS, 1.); }`,
     fragmentShader: /* glsl */ `
-      uniform float uTopo, uLineA; varying float vAl, vD; varying vec2 vM;
+      uniform float uTopo, uLineA, uBreak; varying float vAl, vD; varying vec2 vM;
       ${MAPFADE}
       void main(){
         float pr = clamp((uTopo*1.08 - vD*.55) / .45, 0., 1.);
         if (vAl > pr) discard;
+        // break: the line is eaten from its start, in the order its dots leave
+        float br = clamp((uBreak - vD*${BRK_R.toFixed(3)}) / ${(1 - BRK_R).toFixed(3)}, 0., 1.);
+        if (uBreak > 0. && vAl < br + .002) discard;
         float head = (1. - step(1., pr))*smoothstep(pr - .04, pr, vAl);
-        float a = (mapA(vM)*.62 + head*.35)*uLineA;
+        float edge = uBreak > 0. ? (1. - step(1., br))*(1. - smoothstep(br, br + .05, vAl)) : 0.;
+        float a = (mapA(vM)*.62 + head*.35 + edge*.4)*uLineA;
         if (a < .003) discard;
         gl_FragColor = vec4(1., 1., 1., a);
       }`,
@@ -195,14 +211,101 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
   const game = createGame({ THREE, scene, canvas, camera, exc: gameExc, grid, hField, MSCALE, zoneLineMat, zoneFillMat, handleMat });
 
   // ------------------------------------------------------------------ camera states
-  // tx, tz: look target; w: visible width (world) at the target; pitch, yaw (rad); fov; oy: NDC y of the target
-  const C_MAP = { tx: 0, tz: 0, w: 160, pitch: 89.9 * DEG, yaw: 0, fov: 12, oy: 0 };
-  const C_PLAN = { tx: 0, tz: 3, w: 90, pitch: 66 * DEG, yaw: 0, fov: 30, oy: -0.32 };
-  const C_CTRL = { tx: 0, tz: 0, w: 60, pitch: 27 * DEG, yaw: -0.42, fov: 32, oy: -0.45 };
-  const C_EXEC = { tx: -2.1, tz: 3.9, w: 44, pitch: 35 * DEG, yaw: 0.62, fov: 30, oy: -0.38 };
-  const cs = { tx: 0, tz: 0, w: 0, pitch: 0, yaw: 0, fov: 0, oy: 0 }, cm = { ...cs };
+  // tx, tz: look target; w: visible width (world) at the target; pitch, yaw (rad); fov; ox, oy: NDC offset of the target.
+  // Mode states are base poses: w, ox, oy are refitted so the content sits in the band below the page's tabs.
+  const C_MAP = { tx: 0, tz: 0, w: 160, pitch: 89.9 * DEG, yaw: 0, fov: 12, ox: 0, oy: 0 };
+  const C_PLAN = { tx: 0, tz: 3, w: 90, pitch: 66 * DEG, yaw: 0, fov: 30, ox: 0, oy: -0.32 };
+  const C_CTRL = { tx: 0, tz: 0, w: 60, pitch: 27 * DEG, yaw: -0.42, fov: 32, ox: 0, oy: -0.45 };
+  const C_EXEC = { tx: -2.1, tz: 3.9, w: 44, pitch: 35 * DEG, yaw: 0.62, fov: 30, ox: 0, oy: -0.38 };
+  const cs = { tx: 0, tz: 0, w: 0, pitch: 0, yaw: 0, fov: 0, ox: 0, oy: 0 }, cm = { ...cs };
   const blendC = (o, a, b, t) => { for (const k in o) o[k] = lerp(a[k], b[k], t); return o; };
   const tgt = new THREE.Vector3();
+  function aim(cam, c, ty = 0) {
+    const asp = cw / ch, dist = c.w / (2 * Math.tan(c.fov * DEG / 2) * asp);
+    cam.fov = c.fov; cam.aspect = asp;
+    tgt.set(c.tx, ty, c.tz);
+    cam.position.set(tgt.x + dist * Math.cos(c.pitch) * Math.sin(c.yaw), ty + dist * Math.sin(c.pitch), tgt.z + dist * Math.cos(c.pitch) * Math.cos(c.yaw));
+    cam.near = Math.max(0.5, dist * 0.05); cam.far = dist * 6 + 400;
+    cam.updateProjectionMatrix();
+    cam.projectionMatrix.elements[8] = -c.ox; cam.projectionMatrix.elements[9] = -c.oy; cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
+    cam.lookAt(tgt); cam.updateMatrixWorld();
+    return dist;
+  }
+
+  // ------------------------------------------------------------------ adaptive framing
+  // The page passes groundTop (px from the canvas top to the bottom of its tab cards) and the HUD card rects.
+  // Each mode's key points (machine boxes, zones) are fitted into the band below groundTop; control also keeps
+  // clear of the HUD cards. Fits are recomputed on change and eased in.
+  const FR = { gt: null, hud: [], key: '', snap: true };
+  const fitCam = new THREE.PerspectiveCamera(30, 1, 0.5, 4000), fv = new THREE.Vector3(), bx = new THREE.Box3();
+  const F = { plan: { ...C_PLAN }, ctrl: { ...C_CTRL }, exec: { ...C_EXEC } }, Fg = { plan: null, ctrl: null, exec: null };
+  const KP = { plan: [], ctrl: [], exec: [] };
+  if (window.__d6) window.__d6.fits = Fg; // QA: current fitted states
+  // world corners of a machine's box at a pose (box measured once at the origin, then rotated about y)
+  function boxPts(m, arm, x, z, yaw, out) {
+    const r = m.root; r.position.set(0, 0, 0); r.rotation.set(0, 0, 0); if (arm) m.setArm(arm[0], arm[1], arm[2], arm[3] || 0);
+    r.updateMatrixWorld(true); bx.setFromObject(r, true);
+    const c = Math.cos(yaw), s = Math.sin(yaw);
+    for (const X of [bx.min.x, bx.max.x]) for (const Y of [bx.min.y, bx.max.y]) for (const Z of [bx.min.z, bx.max.z])
+      out.push(new THREE.Vector3(x + X * c + Z * s, Y, z - X * s + Z * c));
+  }
+  const rect = (out, x0, x1, z0, z1, y = 0) => { for (const X of [x0, x1]) for (const Z of [z0, z1]) out.push(new THREE.Vector3(X, y, Z)); };
+  // yaws: alternative headings (first = the designed one); a turned view wins only if it frames clearly larger
+  function fitOne(base, pts, bands, yaws = [base.yaw]) {
+    let best = null;
+    for (const yaw of yaws) for (const b of bands) {
+      const c = { ...base, yaw, ox: 0, oy: 0 }; let x0, x1, y0, y1;
+      const meas = () => { x0 = y0 = 1e9; x1 = y1 = -1e9; aim(fitCam, c); for (const p of pts) { fv.copy(p).project(fitCam); x0 = Math.min(x0, fv.x); x1 = Math.max(x1, fv.x); y0 = Math.min(y0, fv.y); y1 = Math.max(y1, fv.y); } };
+      for (let it = 0; it < 6; it++) {
+        meas();
+        const k = Math.max((y1 - y0) / Math.max(0.05, b.y1 - b.y0), (x1 - x0) / Math.max(0.05, b.x1 - b.x0));
+        c.w = Math.min(base.w * 4, Math.max(base.w * b.minW, c.w * k));
+      }
+      meas();
+      c.ox = (b.x0 + b.x1) / 2 - (x0 + x1) / 2; c.oy = (b.y0 + b.y1) / 2 - (y0 + y1) / 2;
+      c.score = c.w * (yaw === base.yaw ? 1 : 1.12);
+      if (!best || c.score < best.score) best = c;
+    }
+    return best;
+  }
+  function refit() {
+    if (FR.gt == null || !KP.plan.length) return;
+    const nx = px => (px / cw) * 2 - 1, ny = px => 1 - (px / ch) * 2;
+    const mt = Math.max(16, ch * 0.035), mb = Math.max(14, ch * 0.035), mx = Math.max(16, cw * 0.05);
+    const top = ny(FR.gt + mt), bot = ny(ch - mb);
+    const full = { x0: nx(mx), x1: nx(cw - mx), y0: bot, y1: top, minW: 0.8 };
+    Fg.plan = fitOne(C_PLAN, KP.plan, [full], [C_PLAN.yaw, 0.3, 0.6]);
+    Fg.exec = fitOne(C_EXEC, KP.exec, [full], [C_EXEC.yaw, 0.4]);
+    // control: either between the HUD cards, or above them
+    const bands = [full];
+    const hud = FR.hud.filter(r => r && r.r - r.l > 2 && r.b - r.t > 2);
+    if (hud.length) {
+      const m = Math.max(12, cw * 0.012);
+      let l = mx, r = cw - mx, hTop = ch;
+      for (const h of hud) { if ((h.l + h.r) / 2 < cw / 2) l = Math.max(l, h.r + m); else r = Math.min(r, h.l - m); hTop = Math.min(hTop, h.t - m); }
+      bands.length = 0;
+      if (r - l > cw * 0.25) bands.push({ ...full, x0: nx(l), x1: nx(r) });
+      if (hTop - (FR.gt + mt) > ch * 0.15) bands.push({ ...full, y0: ny(hTop) });
+      if (!bands.length) bands.push(full);
+    }
+    Fg.ctrl = fitOne(C_CTRL, KP.ctrl, bands);
+    if (FR.snap) { Object.assign(F.plan, Fg.plan); Object.assign(F.ctrl, Fg.ctrl); Object.assign(F.exec, Fg.exec); FR.snap = false; }
+  }
+  function easeFits(dt) {
+    const k = 1 - Math.exp(-dt * 5);
+    for (const n of ['plan', 'ctrl', 'exec']) { const g = Fg[n]; if (!g) continue; const f = F[n]; f.w += (g.w - f.w) * k; f.ox += (g.ox - f.ox) * k; f.oy += (g.oy - f.oy) * k; f.yaw += (g.yaw - f.yaw) * k; }
+  }
+
+  // framing key points: plan + exec in world space, control relative to the game's focus (machine sits 5 back, 1 right)
+  for (const P of PLAN) { boxPts(P.m, P.arm, P.x, P.z, P.yaw, KP.plan); for (const [x, z] of P.zone) KP.plan.push(new THREE.Vector3(x, 0, z)); }
+  for (const E of EXEC) boxPts(E.m, E.arm, E.x, E.z, E.yaw, KP.exec);
+  boxPts(gameExc, [0.55, -1.5, -0.6, 0], -5, 1, 0.35, KP.ctrl); rect(KP.ctrl, -8, 9, -6, 6);
+
+  function refitMaybe() {
+    if (FR.gt == null) return;
+    const key = cw + 'x' + ch + '|' + Math.round(FR.gt / 2) + '|' + FR.hud.map(r => r ? [r.l, r.t, r.r, r.b].map(v => Math.round(v / 2)).join(',') : '').join(';');
+    if (key !== FR.key) { FR.key = key; refit(); }
+  }
 
   // ------------------------------------------------------------------ inputs
   const S = { topo: 0, morph: 0, mode: 0, modeT: 0, flatten: 0, mapY: null };
@@ -221,7 +324,7 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
     renderer.setSize(cw, ch, false); camera.aspect = cw / ch;
     U.uPR.value = renderer.getPixelRatio();
     handleMat.size = 7 * renderer.getPixelRatio();
-    dirty = true;
+    dirty = true; FR.key = ''; FR.snap = true; refitMaybe();
   }
   let dirty = true, onScreen = true, running = false, raf = 0, last = 0, t = 0;
   const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(resize) : null; if (ro) ro.observe(host); else window.addEventListener('resize', resize);
@@ -240,11 +343,13 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
     let segs = 0; for (let i = 0; i < n; i++) segs += Math.max(0, lens[i] - 1);
     const lp = new Float32Array(segs * 6), ld = new Float32Array(segs * 2);
     let s = 0, b = 0, totLen = 0;
+    const plD = new Float32Array(n), plL = new Float32Array(n);
     for (let i = 0; i < n; i++) {
       const L = lens[i]; if (L < 2) { b += L; continue; }
       let len = 0, cx = 0, cy = 0; for (let k = 1; k < L; k++) len += Math.hypot(px[b + k] - px[b + k - 1], py[b + k] - py[b + k - 1]);
       for (let k = 0; k < L; k++) { cx += px[b + k]; cy += py[b + k]; } cx /= L; cy /= L; totLen += len;
       const d = clamp01(0.45 * rnd() + 0.42 * (1 - cx / MAP_W) + 0.13 * (cy / MAP_H) + (len < 120 ? 0.1 : 0));
+      plD[i] = d; plL[i] = len;
       let acc = 0;
       for (let k = 1; k < L; k++) {
         const a = b + k - 1, c = b + k, sl = Math.hypot(px[c] - px[a], py[c] - py[a]);
@@ -261,18 +366,22 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
     lines = new THREE.LineSegments(lg, lMat); lines.frustumCulled = false; lines.renderOrder = 0; scene.add(lines);
 
     // sample N points evenly along the contours, then pair them with grid points band by band (left maps to left)
-    const sx = new Float32Array(N), sy = new Float32Array(N), step = totLen / N;
+    // sd: when the dot leaves (break clock), matching the line erase order: contour delay, then arc position
+    const sx = new Float32Array(N), sy = new Float32Array(N), sd = new Float32Array(N), step = totLen / N;
     let si = 0, carry = 0; b = 0;
     for (let i = 0; i < n && si < N; i++) {
-      const L = lens[i];
+      const L = lens[i]; let arc = 0;
       for (let k = 1; k < L && si < N; k++) {
         const a = b + k - 1, c = b + k, sl = Math.hypot(px[c] - px[a], py[c] - py[a]);
-        let u = carry; while (u < sl && si < N) { const f = u / sl; sx[si] = px[a] + (px[c] - px[a]) * f; sy[si] = py[a] + (py[c] - py[a]) * f; si++; u += step; }
-        carry = u - sl;
+        let u = carry; while (u < sl && si < N) {
+          const f = u / sl; sx[si] = px[a] + (px[c] - px[a]) * f; sy[si] = py[a] + (py[c] - py[a]) * f;
+          sd[si] = plD[i] * BRK_R + (plL[i] > 0 ? clamp01((arc + u) / plL[i]) : 0) * (1 - BRK_R); si++; u += step;
+        }
+        carry = u - sl; arc += sl;
       }
       b += L;
     }
-    for (; si < N; si++) { const r = (rnd() * total) | 0; sx[si] = px[r]; sy[si] = py[r]; }
+    for (; si < N; si++) { const r = (rnd() * total) | 0; sx[si] = px[r]; sy[si] = py[r]; sd[si] = rnd(); }
     const ord = new Uint32Array(N); for (let i = 0; i < N; i++) ord[i] = i;
     const sorted = Array.from(ord).sort((p, q) => sx[p] - sx[q]);
     const BAND = 8; let used = 0;
@@ -280,9 +389,9 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
       const c1 = Math.min(NX, c0 + BAND), cnt = (c1 - c0) * NZ;
       const src = sorted.slice(used, used + cnt).sort((p, q) => sy[p] - sy[q]); used += cnt;
       const dst = []; for (let j = 0; j < NZ; j++) for (let i = c0; i < c1; i++) dst.push(i * NZ + j);
-      for (let k = 0; k < cnt; k++) { const g = dst[k], q = src[k]; aSrc[g * 2] = sx[q]; aSrc[g * 2 + 1] = sy[q]; }
+      for (let k = 0; k < cnt; k++) { const g = dst[k], q = src[k]; aSrc[g * 2] = sx[q]; aSrc[g * 2 + 1] = sy[q]; aDep[g] = sd[q]; }
     }
-    pGeo.attributes.aSrc.needsUpdate = true;
+    pGeo.attributes.aSrc.needsUpdate = true; pGeo.attributes.aDep.needsUpdate = true;
     points.visible = true; dirty = true;
   })();
 
@@ -321,7 +430,7 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
     const Hd = 1600 * ch / cw;
     const mapYd = S.mapY != null ? S.mapY * 1600 / cw : lerp(Hd * 0.6, -470, sm(topo));
     U.uOff.value.set((MAP_X - 800) * MAP_SCALE, (mapYd - Hd / 2) * MAP_SCALE);
-    LU.uTopo.value = topo; LU.uLineA.value = 1 - sm(morph / 0.3);
+    LU.uTopo.value = topo; LU.uBreak.value = morph / BRK; LU.uLineA.value = 1 - sm((morph - BRK) / 0.08);
     if (lines) lines.visible = LU.uLineA.value > 0.003 && topo > 0.001;
 
     // points
@@ -331,28 +440,29 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
     U.uSize.value = lerp(lerp(0.17, 0.11, toCtrl), 0.2, toExec);
     U.uFar.value = lerp(1e4, lerp(150, 120, toExec), toCtrl);
     U.uLift.value = 5;
-    U.uTopY.value = mF <= 1 ? lerp(0.3, 0.42, sm(mF)) : lerp(0.42, 0.24, sm(mF - 1));
+    // dot field fades out above the tab cards once the grid has landed (control lets the waves reach up to them)
+    if (FR.gt != null) {
+      const gN = 1 - (FR.gt / ch) * 2, fw = lerp(0.16, 0.09, wC);
+      U.uTopY.value = lerp(1.5, gN - 0.01, sm((morph - 0.7) / 0.3)); U.uFadeW.value = fw;
+    } else { U.uTopY.value = (mF <= 1 ? lerp(0.3, 0.42, sm(mF)) : lerp(0.42, 0.24, sm(mF - 1))) + 0.14; U.uFadeW.value = 0.18; }
     points.visible = morph > 0.001 && !!lines;
 
     // camera
-    if (mF <= 1) blendC(cm, C_PLAN, C_CTRL, sm(mF)); else blendC(cm, C_CTRL, C_EXEC, sm(mF - 1));
+    easeFits(dt);
+    if (mF <= 1) blendC(cm, F.plan, F.ctrl, sm(mF)); else blendC(cm, F.ctrl, F.exec, sm(mF - 1));
     // control target follows the game, drift with the pointer
     const hold = game.drawing ? 0 : 1; // no drift while a zone is being placed
     smx += (mx * hold - smx) * (1 - Math.exp(-dt * 3)); smy += (my * hold - smy) * (1 - Math.exp(-dt * 3));
     cm.tx += (game.focus.x - C_CTRL.tx) * wC; cm.tz += (game.focus.z - C_CTRL.tz) * wC;
     cm.yaw += smx * 0.12 * wC + (effT - 0.5) * 0.08 * wP + (effT - 0.5) * 0.12 * wC;
     cm.pitch += -smy * 0.05 * wC;
-    if (cw / ch < 1) cm.w *= Math.max(0.55, cw / ch);
-    const camB = easeIO(clamp01((morph - 0.25) / 0.75)); U.uCamB.value = camB;
+    if (FR.gt == null && cw / ch < 1) cm.w *= Math.max(0.55, cw / ch);
+    // the dive starts late and gently so the dots are seen leaving the contours from above first
+    const cb = clamp01((morph - 0.4) / 0.6), camB = cb < 0.5 ? 8 * cb ** 4 : 1 - Math.pow(-2 * cb + 2, 4) / 2; U.uCamB.value = camB;
     blendC(cs, C_MAP, cm, camB);
-    camera.fov = cs.fov;
-    const asp = cw / ch, dist = cs.w / (2 * Math.tan(cs.fov * DEG / 2) * asp);
-    tgt.set(cs.tx, 0, cs.tz);
-    camera.position.set(tgt.x + dist * Math.cos(cs.pitch) * Math.sin(cs.yaw), dist * Math.sin(cs.pitch), tgt.z + dist * Math.cos(cs.pitch) * Math.cos(cs.yaw));
-    camera.near = Math.max(0.5, dist * 0.05); camera.far = dist * 6 + 400;
-    camera.updateProjectionMatrix();
-    camera.projectionMatrix.elements[9] = -cs.oy; camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
-    camera.lookAt(tgt); camera.updateMatrixWorld();
+    // control: aim at the terrain under the focus so the machine keeps its place in the band
+    const dist = aim(camera, cs, hField(cs.tx, cs.tz) * amp * wC * camB);
+    U.uFar.value *= Math.max(1, dist / 80); // tall viewports frame from further back: keep the terrain
     U.uPx.value = ch * renderer.getPixelRatio() / (2 * Math.tan(cs.fov * DEG / 2));
 
     // plan machines + zones
@@ -404,6 +514,7 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
       const changed = (o.topo != null && !near(o.topo, S.topo)) || (o.morph != null && !near(o.morph, S.morph)) || (o.mode != null && o.mode !== S.mode) || (o.modeT != null && !near(o.modeT, S.modeT)) || (o.flatten != null && !near(o.flatten, S.flatten));
       if (o.topo != null) S.topo = o.topo; if (o.morph != null) S.morph = o.morph; if (o.mode != null) S.mode = o.mode | 0;
       if (o.modeT != null) S.modeT = o.modeT; if (o.flatten != null) S.flatten = o.flatten; if ('mapY' in o) S.mapY = o.mapY;
+      if (o.groundTop != null || o.hud) { if (FR.gt == null) FR.snap = true; if (o.groundTop != null) FR.gt = o.groundTop; if (o.hud) FR.hud = o.hud; refitMaybe(); }
       if (changed && ov) ov = null;
     },
     setMode(i) { i = Math.max(0, Math.min(2, i | 0)); ov = { mode: i, t0: t, fromT: i === Math.round(mF) ? effT : 0, fromF: effFlat }; },
