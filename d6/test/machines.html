@@ -1,0 +1,20 @@
+<!doctype html><html><head><meta charset="utf-8"><title>D6 machines</title>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js"}}</script>
+<style>html,body{margin:0;background:#000;height:100%}#c{width:100vw;height:100vh;display:block}</style></head><body><canvas id="c"></canvas>
+<script type="module">
+import * as THREE from 'three';
+import { createMachineKit } from '../sol-machines.js';
+const qs = new URLSearchParams(location.search), view = qs.get('view') || 'iso';
+const r = new THREE.WebGLRenderer({ canvas: c, antialias: true }); r.setSize(innerWidth, innerHeight, false);
+const sc = new THREE.Scene(), cam = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.1, 500);
+const kit = createMachineKit(THREE);
+const ms = [kit.excavator(), kit.backhoe(), kit.roller()];
+const only = qs.get('m'); ms.forEach((m, i) => { m.root.position.set(only !== null ? 0 : -9 + i * 9, 0, 0); m.root.visible = only === null || +only === i; sc.add(m.root); });
+ms[0].setArm(0.55, -1.5, -0.6, 0);
+if (view === 'top') { cam.position.set(0, 60, 0.01); cam.lookAt(0, 0, 0); }
+else if (view === 'side') { cam.position.set(0, 3, 40); cam.lookAt(0, 2, 0); }
+else { const az = +(qs.get('az') || 0.7), d = +(qs.get('d') || 22); cam.position.set(Math.cos(az) * d, d * 0.55, Math.sin(az) * d); cam.lookAt(1, 1.5, 0); }
+r.render(sc, cam);
+let n = 0; sc.traverse(o => { if (o.isLineSegments) n += o.geometry.attributes.position.count; });
+document.title = 'lineverts ' + n; window.DONE = true;
+</script></body></html>
