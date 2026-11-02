@@ -12,12 +12,12 @@ import { sstep } from './hero-glsl.js';
 
 export const SERIES_B = 'https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae8ed33c51d167d8d66b21b_d6-seriesb.webp';
 
-const FOV0 = 40, FOV1 = 30;                         // lens at p=0 and at the hand-off
-const POS0 = [0.04, 1.62, 2.65], LOOK0 = [0, 1.36, -3];
+const FOV0 = 36, FOV1 = 30;                         // lens at p=0 and at the hand-off
+const POS0 = [0, 1.64, 2.7], LOOK0 = [0, 1.58, -3];
 const STILL_IN = [0.68, 0.86];                      // cab feed -> Series B still, on the 3D screen
 const HAND_IN = [0.9, 0.985];                       // tone-mapped screen -> exact sRGB still (hand-off pass)
 
-export function createHero({ THREE, host, quality = 'high', still = SERIES_B, canvas: cvIn } = {}) {
+export function createHero({ THREE, host, quality = 'high', still = SERIES_B, canvas: cvIn, fadeOutside = true } = {}) {
   const HIGH = quality !== 'low';
   const V3 = THREE.Vector3, Q = THREE.Quaternion;
   const canvas = cvIn || document.createElement('canvas');
@@ -56,15 +56,15 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
   lens.material.needsUpdate = true;
   // hand-off: inside the projected screen rect, blend to the still exactly as the browser draws it (sRGB, object-fit cover, rounded)
   const hand = new ShaderPass({
-    uniforms: { tDiffuse: { value: null }, tStill: { value: screens.still }, amt: { value: 0 }, rect: { value: new THREE.Vector4(0, 0, 1, 1) }, res: { value: new THREE.Vector2(1, 1) }, rad: { value: 0 }, cover: { value: new THREE.Vector4(1, 1, 0, 0) } },
+    uniforms: { tDiffuse: { value: null }, tStill: { value: screens.still }, amt: { value: 0 }, rect: { value: new THREE.Vector4(0, 0, 1, 1) }, res: { value: new THREE.Vector2(1, 1) }, rad: { value: 0 }, outFade: { value: 0 }, cover: { value: new THREE.Vector4(1, 1, 0, 0) } },
     vertexShader: `varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
-    fragmentShader: `uniform sampler2D tDiffuse, tStill; uniform float amt, rad; uniform vec4 rect, cover; uniform vec2 res; varying vec2 vUv;
+    fragmentShader: `uniform sampler2D tDiffuse, tStill; uniform float amt, rad, outFade; uniform vec4 rect, cover; uniform vec2 res; varying vec2 vUv;
       void main(){ vec4 c=texture2D(tDiffuse,vUv); if(amt<=0.){ gl_FragColor=c; return; }
         vec2 p=vUv*res, a=rect.xy*res, b=rect.zw*res, h=(b-a)*.5, q=abs(p-(a+b)*.5)-h+rad;
         float d=length(max(q,0.))+min(max(q.x,q.y),0.)-rad, inside=clamp(.5-d,0.,1.);
         vec2 r=(vUv-rect.xy)/(rect.zw-rect.xy); r.y=1.-r.y;                       // DOM orientation (y down)
-        vec3 s=texture2D(tStill, vec2(r.x*cover.x+cover.z, 1.-(r.y*cover.y+cover.w))).rgb;
-        gl_FragColor=vec4(mix(c.rgb,s,amt*inside),1.); }`
+        vec3 s=texture2D(tStill, vec2(r.x*cover.x+cover.z, 1.-(r.y*cover.y+cover.w)), -1.).rgb;   // bias: stay on the sharp mip like the browser
+        gl_FragColor=vec4(mix(c.rgb*(1.-outFade*(1.-inside)),s,amt*inside),1.); }`
   });
   hand.material.toneMapped = false;
   post.composer.addPass(hand);
@@ -106,7 +106,8 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
     eu.set(k * (0.0016 * Math.sin(t * 0.53) + 0.0009 * Math.sin(t * 1.31 + 2) - sy * 0.012), k * (0.0022 * Math.sin(t * 0.37 + 1) + 0.0008 * Math.sin(t * 1.7) - sx * 0.02), k * 0.0007 * Math.sin(t * 0.61));
     cam.quaternion.multiply(dq.setFromEuler(eu));
     cam.position.x += k * (sx * 0.07 + 0.004 * Math.sin(t * 0.41)); cam.position.y += k * (sy * 0.035 + 0.003 * Math.sin(t * 0.67 + 1));
-    cam.fov = FOV0 + (FOV1 - FOV0) * s; cam.aspect = W / H; cam.updateProjectionMatrix();
+    const a = W / H, f0 = a >= 1.2 ? FOV0 : Math.min(62, Math.max(FOV0, 2 * Math.atan(0.3 / a) * 180 / Math.PI)); // portrait: keep the desk in frame
+    cam.fov = f0 + (FOV1 - f0) * s; cam.aspect = W / H; cam.updateProjectionMatrix();
     const sq = 1 + (squeeze - 1) * s; if (sq !== 1) { cam.projectionMatrix.elements[0] *= sq; cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert(); }
     cam.updateMatrixWorld();
     return s;
@@ -122,6 +123,7 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
   let lastT = 0, cabAcc = 0, frames = 0, ftAcc = 0, ftN = 0;
   function frame(now) {
     const t = now / 1000, dt = lastT ? Math.min(0.1, t - lastT) : 1 / 60; lastT = t; time += dt;
+    renderer.info.reset();
     const p = prog, s = pose(p, time);
     outside.update(time); screens.time.value = time;
     // centre feed: cab view until the still takes over, rendered at 30 Hz on low
@@ -137,9 +139,8 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
     room.setGlow(1 - 0.3 * near);
     post.update({ dt, t: time, focus, aperture: HIGH ? (0.00012 + 0.0008 * near) * (1 - sstep(0.85, 1, p)) : 0, maxblur: HIGH ? (0.003 + 0.007 * near) * (1 - sstep(0.88, 1, p)) : 0, ca: 0.012 * (1 - s) });
     // hand-off pass follows the projected screen
-    const hu = hand.uniforms, ha = sstep(HAND_IN[0], HAND_IN[1], p); hu.amt.value = ha;
+    const hu = hand.uniforms, ha = sstep(HAND_IN[0], HAND_IN[1], p); hu.amt.value = ha; hu.outFade.value = fadeOutside ? sstep(HAND_IN[0], 1, p) : 0;
     if (ha > 0) { const r = p >= 1 ? target : screenRect(); hu.rect.value.set(r.x / W, 1 - (r.y + r.h) / H, (r.x + r.w) / W, 1 - r.y / H); hu.res.value.set(W * pr, H * pr); hu.rad.value = targetRad * pr * sstep(HAND_IN[0], 1, p); }
-    renderer.info.reset();
     post.render();
     // adaptive resolution (high only): sustained slow frames drop the pixel ratio a notch
     if (HIGH && running) { ftAcc += dt; ftN++; if (ftN >= 90) { const avg = ftAcc / ftN; ftAcc = ftN = 0; if (avg > 1 / 45 && pr > 1) setPR(Math.max(1, pr - 0.25)); } }

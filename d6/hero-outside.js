@@ -21,10 +21,10 @@ export function buildOutside({ THREE, scene, high }) {
   const bump = (x, z, cx, cz, rx, rz, h) => { const d = ((x - cx) / rx) ** 2 + ((z - cz) / rz) ** 2; return h * Math.exp(-d * 2.2); };
   const hgt = (x, z) => {
     let y = (fbm(x * 0.04, z * 0.04) - 0.5) * 0.8;
-    y += bump(x, z, -22, -64, 26, 5, 2.4) + bump(x, z, -48, -60, 16, 6, 3.0) + bump(x, z, 2, -70, 18, 4, 1.6);   // long berm behind the pad
-    y += bump(x, z, 22, -48, 6, 5, 2.2) + bump(x, z, 28, -54, 5, 4, 1.5) + bump(x, z, -34, -40, 7, 5, 1.4);       // spoil piles
-    y -= bump(x, z, 4, -36, 10, 6, 1.2);                                                                           // the dig
-    y += bump(x, z, 30, -32, 12, 4, 0.9) + bump(x, z, -14, -28, 10, 3, 0.7);                                      // foreground windrows
+    y += bump(x, z, -22, -76, 26, 5, 2.4) + bump(x, z, -50, -72, 16, 6, 3.0) + bump(x, z, 4, -82, 18, 4, 1.6);   // long berm behind the pad
+    y += bump(x, z, 26, -60, 6, 5, 2.4) + bump(x, z, 32, -66, 5, 4, 1.6) + bump(x, z, -36, -50, 7, 5, 1.4);       // spoil piles
+    y -= bump(x, z, 2, -48, 10, 6, 1.2);                                                                           // the dig
+    y += bump(x, z, 30, -40, 12, 4, 0.9) + bump(x, z, -14, -36, 10, 3, 0.7);                                      // foreground windrows
     const far = Math.max(0, -z - 90); y += far * 0.06 + (fbm(x * 0.012 + 3, z * 0.012) - 0.4) * far * 0.12;        // land rises toward the hills
     return y * (0.85 + 0.3 * fbm(x * 0.2, z * 0.2, 2));
   };
@@ -41,10 +41,15 @@ export function buildOutside({ THREE, scene, high }) {
         vec3 dirt=mix(vec3(.26,.19,.14), vec3(.4,.31,.23), n1);
         dirt*=.78+.3*n2+.12*(n3-.5);
         dirt=mix(dirt, vec3(.14,.11,.09), smoothstep(.55,.85,fbm2(vW.xz*.06+3.))*.6);   // wet / dark patches
-        diffuseColor.rgb=dirt; float bh=n2*.35+n3*.1+tr*.08*smoothstep(-20.,-60.,vW.z);`)
+        diffuseColor.rgb=dirt;
+        float wash=smoothstep(-34.,-50.,vW.z)*smoothstep(-110.,-70.,vW.z)*smoothstep(95.,30.,abs(vW.x))*(.55+.6*fbm2(vW.xz*.05+9.));
+        float bh=n2*.35+n3*.1+tr*.08*smoothstep(-20.,-60.,vW.z);`)
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
         { vec3 sp=-vViewPosition, sx=dFdx(sp), sy=dFdy(sp), r1=cross(sy,normal), r2=cross(normal,sx); float det=dot(sx,r1);
-          vec2 dh=vec2(dFdx(bh),dFdy(bh)); normal=normalize(abs(det)*normal-sign(det)*(dh.x*r1+dh.y*r2)); }`);
+          vec2 dh=vec2(dFdx(bh),dFdy(bh)); normal=normalize(abs(det)*normal-sign(det)*(dh.x*r1+dh.y*r2)); }`)
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        { vec3 wn=inverseTransformDirection(normal, viewMatrix); float face=clamp(.35+wn.z*1.6+wn.y*.25,0.,1.); // dirt facing the building
+          totalEmissiveRadiance+=diffuseColor.rgb*vec3(1.,.72,.45)*wash*face*.55; }`);
   };
   tm.customProgramCacheKey = () => 'd6hero-terrain';
   const terrain = new THREE.Mesh(tg, tm); terrain.receiveShadow = true; group.add(terrain);
@@ -54,7 +59,7 @@ export function buildOutside({ THREE, scene, high }) {
     const n = 220, f = makeNoise(seed), P = [], I = [];
     for (let i = 0; i <= n; i++) {
       const a = a0 + (a1 - a0) * i / n, x = Math.sin(a) * R, z = -Math.cos(a) * R;
-      const h = base + amp * (f(i * 0.035, seed) * 1.2 + 0.25 * f(i * 0.2, 7)) + amp * 0.9 * Math.exp(-((a + 0.55) / 0.22) ** 2);
+      const h = base + amp * (f(i * 0.035, seed) * 1.2 + 0.25 * f(i * 0.2, 7)) + amp * 0.9 * Math.exp(-(((a + 0.55) / 0.22) ** 2));
       P.push(x, -40, z, x, G0 + h * 0.55, z, x, G0 + h, z);
       if (i < n) { const k = i * 3; I.push(k, k + 3, k + 1, k + 1, k + 3, k + 4, k + 1, k + 4, k + 2, k + 2, k + 4, k + 5); }
     }
@@ -65,18 +70,18 @@ export function buildOutside({ THREE, scene, high }) {
   ridge(900, -1.25, 1.25, 30, 55, 9, 0x141822);
 
   // sky dome: blue hour, near black overhead, a few stars
-  const skyU = { cHor: { value: new THREE.Color(0.05, 0.16, 0.42) }, cMid: { value: new THREE.Color(0.012, 0.035, 0.12) }, cTop: { value: new THREE.Color(0.002, 0.003, 0.008) }, time: { value: 0 } };
+  const skyU = { cHor: { value: new THREE.Color(0.05, 0.16, 0.44) }, cMid: { value: new THREE.Color(0.01, 0.03, 0.1) }, cTop: { value: new THREE.Color(0.001, 0.0015, 0.004) }, time: { value: 0 } };
   const sky = new THREE.Mesh(new THREE.SphereGeometry(1600, 48, 24), new THREE.ShaderMaterial({
     side: THREE.BackSide, depthWrite: false, fog: false, uniforms: skyU,
     vertexShader: `varying vec3 vD; void main(){ vD=normalize(position); vec4 p=projectionMatrix*modelViewMatrix*vec4(position,1.); gl_Position=p.xyww; }`,
     fragmentShader: `${NOISE} uniform vec3 cHor, cMid, cTop; uniform float time; varying vec3 vD;
       void main(){ float e=vD.y, az=atan(vD.x,-vD.z);
-        vec3 c=mix(cHor, cMid, smoothstep(.0,.16,e)); c=mix(c, cTop, smoothstep(.12,.42,e));
+        vec3 c=mix(cHor, cMid, smoothstep(.0,.12,e)); c=mix(c, cTop, smoothstep(.08,.3,e));
         c*=1.+.25*exp(-pow(az+.15,2.)*1.5)*smoothstep(.25,0.,e);                   // last light, a touch left of centre
         c+=vec3(.06,.04,.03)*exp(-max(e,0.)*40.)*.4;                                 // sodium haze on the horizon
-        vec2 sc=vec2(az*90.,e*90.); vec2 id=floor(sc); float s=hh21(id);
-        float st=step(.985,s)*smoothstep(.35,.0,length(fract(sc)-.5))*smoothstep(.08,.3,e)*(.6+.4*sin(time*2.+s*90.));
-        c+=vec3(.5,.55,.7)*st*.25;
+        vec2 sc=vec2(az*260.,e*260.); vec2 id=floor(sc); float s=hh21(id);
+        float st=step(.992,s)*smoothstep(.22,.0,length(fract(sc)-.5))*smoothstep(.08,.3,e)*(.6+.4*sin(time*2.+s*90.));
+        c+=vec3(.5,.55,.7)*st*.12;
         gl_FragColor=vec4(c,1.); }`
   }));
   sky.renderOrder = -1; sky.frustumCulled = false; group.add(sky);
@@ -93,42 +98,52 @@ export function buildOutside({ THREE, scene, high }) {
   for (const k of ['paint', 'metal', 'glass']) { MAT[k].envMap = night; }
   MAT.paint.envMapIntensity = 0.5; MAT.metal.envMapIntensity = 0.9; MAT.glass.envMapIntensity = 1.4;
   MAT.glow.color.setRGB(4, 4, 4);
+  for (const k of ['paint', 'rough', 'metal']) { // night read: mostly silhouettes, the CAT yellow only hinted
+    const m = MAT[k], prev = m.onBeforeCompile;
+    m.onBeforeCompile = (sh, r) => { prev(sh, r); sh.fragmentShader = sh.fragmentShader.replace('#include <roughnessmap_fragment>',
+      'diffuseColor.rgb = mix(vec3(dot(diffuseColor.rgb, vec3(.3,.59,.11))), diffuseColor.rgb, .14) * .34;\n#include <roughnessmap_fragment>'); };
+    m.customProgramCacheKey = () => 'd6night-' + k;
+  }
   const place = (o, x, z, ry) => { o.position.set(x, G0 + hgt(x, z) - 0.05, z); o.rotation.y = ry; group.add(o); return o; };
-  const exA = yard.exA, exB = yard.exB, dozer = yard.dozer;
-  place(exA.g, 13, -40, Math.PI * 0.92);
-  place(dozer, -9, -47, 0.35);
+  const exA = yard.exA, dozer = yard.dozer;
+  place(exA.g, 12, -50, Math.PI * 0.95); exA.g.scale.setScalar(1.55);
+  place(dozer, -8, -54, 0.3); dozer.scale.setScalar(1.2);
   const keep = [exA.g, dozer];
-  if (high) { place(exB.g, -36, -88, 0.9); place(yard.trucks[0].g, 30, -78, -2.3); keep.push(exB.g, yard.trucks[0].g); }
+  if (high) { place(yard.trucks[0].g, -24, -70, -2.6); keep.push(yard.trucks[0].g); }
   // light towers: the head meshes' parents are the tower groups
-  const towerSpots = high ? [[-20, -33, -0.6], [36, -58, 2.6], [-52, -80, 0.4]] : [[-20, -33, -0.6], [36, -58, 2.6]];
+  const towerSpots = [[-17, -44, -0.6], [30, -76, 2.6]];
+  yard.towers[0].material.color.setRGB(1.4, 1.3, 1.15);
   const towers = towerSpots.map(([x, z, ry], i) => { const t = yard.towers[i].parent; place(t, x, z, ry); keep.push(t); return t; });
   scratch.traverse(o => { if (o.isMesh && !keep.some(k => isIn(o, k))) o.geometry.dispose(); });
-  group.traverse(o => { if (o.isMesh && o !== terrain) { o.castShadow = high; o.receiveShadow = high; } });
+  group.traverse(o => { if (o.isMesh) o.castShadow = o.receiveShadow = false; });
+  for (const k of keep) k.traverse(o => { if (o.isMesh) { o.castShadow = high && !o.isInstancedMesh; o.receiveShadow = high; } });
+  terrain.receiveShadow = high;
   function isIn(o, root) { for (let p = o; p; p = p.parent) if (p === root) return true; return false; }
 
   // lights: blue-hour sky fill, a cool rim from behind the site, warm work lights from the tower heads
-  const hemi = new THREE.HemisphereLight(0x2a3f6e, 0x1a120c, 0.55); group.add(hemi);
-  const moon = new THREE.DirectionalLight(0x6f8cd0, 0.55); moon.position.set(-60, 45, -160); moon.target.position.set(0, 0, -40); group.add(moon, moon.target);
+  const hemi = new THREE.HemisphereLight(0x223660, 0x140e09, 0.2); group.add(hemi);
+  const moon = new THREE.DirectionalLight(0x6f8cd0, 0.45); moon.position.set(-60, 45, -160); moon.target.position.set(0, 0, -40); group.add(moon, moon.target);
   const spots = towers.map((t, i) => {
-    const s = new THREE.SpotLight(0xffd6a0, [2600, 2200, 1800][i], 0, [0.62, 0.55, 0.5][i], 0.65, 2);
+    const s = new THREE.SpotLight(0xffcf98, [1000, 1000][i], 0, [0.85, 0.75][i], 0.95, 2);
     const head = new THREE.Vector3(-0.45, 9.6, 0).applyMatrix4(t.matrix.compose(t.position, t.quaternion, t.scale));
-    s.position.copy(head); s.target.position.copy([new THREE.Vector3(2, G0, -44), new THREE.Vector3(12, G0, -46), new THREE.Vector3(-34, G0, -82)][i]);
-    if (i === 0 && high) { s.castShadow = true; s.shadow.mapSize.set(1024, 1024); s.shadow.camera.near = 2; s.shadow.camera.far = 80; s.shadow.bias = -0.0008; s.shadow.normalBias = 0.04; s.shadow.radius = 3; }
+    s.position.copy(head); s.target.position.copy([new THREE.Vector3(2, G0, -44), new THREE.Vector3(14, G0, -56), new THREE.Vector3(-36, G0, -90)][i]);
+    if (i === 0 && high) { s.castShadow = true; s.shadow.mapSize.set(1024, 1024); s.shadow.camera.near = 2; s.shadow.camera.far = 110; s.shadow.bias = -0.0008; s.shadow.normalBias = 0.04; s.shadow.radius = 3; }
     group.add(s, s.target); return s;
   });
+
 
   // idle animation: the excavator works slowly, the dozer creeps
   const exPose = (e, t, k) => {
     const c = t * 0.42 * k;
     e.up.rotation.y = 0.35 * Math.sin(c * 0.5) - 0.1;
-    e.boom.rotation.z = 0.62 + 0.12 * Math.sin(c);
-    e.stick.rotation.z = -1.55 - 0.25 * Math.sin(c + 0.8);
-    e.bucket.rotation.z = -0.8 - 0.35 * Math.sin(c + 1.6);
+    e.boom.rotation.z = 0.78 + 0.1 * Math.sin(c);
+    e.stick.rotation.z = -2.2 - 0.18 * Math.sin(c + 0.8);
+    e.bucket.rotation.z = -0.7 - 0.35 * Math.sin(c + 1.6);
   };
   const dz0 = dozer.position.clone();
   function update(t) {
     skyU.time.value = t;
-    exPose(exA, t, 1); if (high) exPose(exB, t + 9, 0.8);
+    exPose(exA, t, 1);
     const s = Math.sin(t * 0.13); dozer.position.set(dz0.x + s * 2.4 * Math.cos(0.35), dz0.y, dz0.z - s * 2.4 * Math.sin(0.35));
   }
   update(0);
