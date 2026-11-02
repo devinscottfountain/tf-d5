@@ -333,7 +333,9 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
 
   // ------------------------------------------------------------------ data
   const ready = (async () => {
-    const buf = await (await fetch(topoUrl)).arrayBuffer();
+    const res = await fetch(topoUrl);
+    if (!res.ok) throw new Error('topo ' + res.status);
+    const buf = await res.arrayBuffer();
     const dv = new DataView(buf), n = dv.getUint32(0, true);
     const lens = new Uint32Array(n); let o = 4, total = 0;
     for (let i = 0; i < n; i++) { lens[i] = dv.getUint32(o, true); o += 4; total += lens[i]; }
