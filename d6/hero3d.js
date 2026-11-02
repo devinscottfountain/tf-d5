@@ -329,7 +329,7 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
       const fn = inst.applyHeroTextures ? inst.applyHeroTextures.bind(inst) : mod.applyHeroTextures;
       try { fn?.(texApi, inst); } catch (e) { console.warn('d6 hero textures:', e); }
     }
-    const g = texApi.get?.('glass_smudge'), m = g && (g.roughnessMap || g.map || g.aoMap);
+    const g = texApi.get?.('glass_smudge'), m = g && (g.roughnessMap || g.dirtMap || g.map);
     if (m && m !== glassTex) { glassTex = m; m.wrapS = m.wrapT = THREE.RepeatWrapping; m.needsUpdate = true; glassU.tSmudge.value = m; glassU.hasSm.value = 1; }
     renderer.compileAsync?.(scene, cam).catch(() => {});
   }
