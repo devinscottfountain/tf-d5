@@ -1,0 +1,50 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>D6 hero 3D test</title>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<style>html,body{margin:0;background:#000;color:#fff;font:12px/1.4 "IBM Plex Mono",monospace;overflow:hidden}
+#host{position:fixed;inset:0}
+#ui{position:fixed;left:12px;bottom:12px;width:320px;background:rgba(15,15,15,.85);border:1px solid #333;padding:10px;z-index:5}
+#ui input[type=range]{width:100%}
+#card{position:absolute;display:none;border-radius:8px;overflow:hidden;z-index:3;outline:1px solid rgba(255,0,0,.0)}
+#card img{width:100%;height:100%;object-fit:cover;display:block}
+#tgt{position:absolute;border:1px dashed rgba(255,60,60,.8);pointer-events:none;z-index:4;display:none}
+body.noui #ui{display:none}</style></head><body>
+<div id="host"><div id="card"><img id="cimg" alt=""></div><div id="tgt"></div></div>
+<div id="ui">
+  <div>p <span id="pv">0</span></div><input id="p" type="range" min="0" max="1" step="0.001" value="0">
+  <label><input id="showT" type="checkbox"> target rect</label> <label><input id="showC" type="checkbox"> DOM card at p=1</label>
+  <div id="info"></div>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { createHero, SERIES_B } from '../hero3d.js';
+const qs = new URLSearchParams(location.search);
+const host = document.getElementById('host');
+if (qs.has('noui')) document.body.classList.add('noui');
+const hero = createHero({ THREE, host, quality: qs.get('q') || 'high', still: qs.get('still') || SERIES_B });
+window.HERO = hero;
+const card = document.getElementById('card'), tgt = document.getElementById('tgt'), info = document.getElementById('info');
+document.getElementById('cimg').src = qs.get('still') || SERIES_B; document.getElementById('cimg').crossOrigin = 'anonymous';
+const rect = () => { const k = innerWidth / 1600; return { x: 40 * k, y: 132 * k, w: 1520 * k, h: 839 * k }; };
+const place = (el, r) => Object.assign(el.style, { left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px' });
+let P = +(qs.get('p') || 0);
+function apply() {
+  hero.setProgress(P); document.getElementById('pv').textContent = P.toFixed(3);
+  const r = rect(); place(tgt, r); place(card, r);
+  tgt.style.display = document.getElementById('showT').checked ? 'block' : 'none';
+  card.style.display = document.getElementById('showC').checked && P >= 0.999 ? 'block' : 'none';
+}
+document.getElementById('p').value = P;
+document.getElementById('p').oninput = e => { P = +e.target.value; apply(); };
+document.getElementById('showT').onchange = document.getElementById('showC').onchange = apply;
+addEventListener('resize', () => { hero.resize(); hero.setTarget(rect(), 8); apply(); });
+addEventListener('pointermove', e => hero.setPointer(e.clientX / innerWidth * 2 - 1, e.clientY / innerHeight * 2 - 1));
+addEventListener('wheel', e => { P = Math.min(1, Math.max(0, P + e.deltaY * 0.0006)); document.getElementById('p').value = P; apply(); });
+hero.setTarget(rect(), 8); apply();
+window.setP = p => { P = p; document.getElementById('p').value = p; apply(); };
+const t0 = performance.now();
+hero.ready.then(() => {
+  window.READY_MS = performance.now() - t0;
+  if (!qs.has('still-frame')) hero.start(); window.DONE = true;
+  setInterval(() => { const s = hero.stats(), r = hero.screenRect(); info.textContent = `calls ${s.calls} tris ${s.triangles} pr ${s.pixelRatio} | screen ${r.x.toFixed(1)},${r.y.toFixed(1)} ${r.w.toFixed(1)}x${r.h.toFixed(1)}`; }, 500);
+});
+</script></body></html>
