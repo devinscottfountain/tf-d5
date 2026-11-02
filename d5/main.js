@@ -8,7 +8,10 @@ import { createHabitatAssets, createMarsEnv } from './habitat.js';
 const ASSETS = new URL('./assets', import.meta.url).href; // textures + star catalog live next to this file
 
 const q = (s, r = document) => r.querySelector(s), qa = (s, r = document) => [...r.querySelectorAll(s)];
-const host = q('.d5-canvas');
+// Mars mode (D6): set window.D5_CFG = { mode: 'mars' } before import. Only the Mars approach + Jezero build, driven by .d5-track
+// wherever it sits on the page; no Austin site, Earth, Moon, intro, veil or scroll lock. Everything else is the default D5 path.
+const CFG = window.D5_CFG || {}, MM = CFG.mode === 'mars', AHEAD = CFG.ahead ?? 1; // AHEAD: viewports before the track to wake up
+const host = q('.d5-canvas') || (MM ? document.body.appendChild(Object.assign(document.createElement('div'), { className: 'd5-canvas' })) : null);
 
 // ---------- renderer + bloom (the Expanse look is mostly glow against black) ----------
 const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
@@ -32,6 +35,7 @@ renderer.toneMappingExposure = 1.05;
 renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.shadowMap.autoUpdate = false; // shadows render only when the loop sets shadowMap.needsUpdate (see the shadow policy in the loop); zero cost in space
 host.appendChild(renderer.domElement);
+if (MM) { host.style.opacity = '0'; host.style.visibility = 'hidden'; } // shown only while the track is on screen
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x010103);
 const cam = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.1, 9000);
@@ -57,13 +61,15 @@ const SPREAD = { moon: 1.7, mars: 1.9 };
 const MOON0 = new THREE.Vector3(26, 6, -42), MARS0 = new THREE.Vector3(-36, -4, -300);
 const EARTH = new THREE.Vector3(0, 0, 0), MOON = MOON0.clone().multiplyScalar(SPREAD.moon), MARS = MARS0.clone().multiplyScalar(SPREAD.mars);
 // Earth/Moon/Mars: user color maps + NASA night lights, clouds w/ shadows, ocean glint, relief, single-scatter atmospheres
-const planets = createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS, assetBase: ASSETS });
+const planets = createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS, assetBase: ASSETS,
+  ...(MM ? { skip: ['d5-earth.webp', 'earth_spec.webp', 'earth_normal.webp', 'earth_lights.webp', 'earth_clouds.webp', 'd5-moon.webp', 'moon_normal.webp'] } : {}) });
 const { earth, moon, mars } = planets;
+if (MM) { scene.remove(planets.earth, planets.clouds, planets.earthAtmo, planets.moon); planets.loadDeferred(); } // Mars maps now, Earth/Moon never
 planets.moon.material.uniforms.uRelief.value = 0.35; planets.mars.material.uniforms.uRelief.value = 0.4; // relief is synthesized, keep it a whisper so the real maps lead
 
 // sky: real HYG star catalog (12.5k stars, true colors) + Gaia Milky Way, drawn at infinity
 let sky = null;
-createSky({ THREE, scene, assetBase: ASSETS, milkyWayIntensity: 0.14 }).then(s => { sky = s; inWorld('space', () => compileIn(s.group)); }).catch(() => {}); // compile now, not on its first frame
+createSky({ THREE, scene, assetBase: ASSETS, milkyWayIntensity: 0.14 }).then(s => { sky = s; if (!MM || mmWarm) inWorld('space', () => compileIn(s.group)); }).catch(() => {}); // compile now, not on its first frame (Mars mode: precompile picks it up unless it is already running)
 
 const sunLight = new THREE.DirectionalLight(0xfff1dc, 2.4); sunLight.position.copy(toSun).multiplyScalar(100); scene.add(sunLight, sunLight.target, new THREE.AmbientLight(0x223044, 0.35));
 
@@ -467,8 +473,17 @@ function pchip(xs, ys, m0, mN) {
 // Each shot is [scroll, position, look target, lens]. Position rides a centripetal spline; scroll maps to distance
 // along it through a monotone curve, so it slows near each planet (the copy reads) and runs between them without
 // ever stopping. The look direction is its own monotone curve over the same scroll, so turns are gentle and never reverse.
-const CA = 0.58; // the entry flash: everything after this is the Jezero timelapse
-const SHOTS = [
+const CA = MM ? 0.4 : 0.58; // the entry flash: everything after this is the Jezero timelapse
+const SHOTS = (MM ? [
+  // Mars mode: already under way in black space, Mars small among the stars; arcs in onto the D5 arrival framing, then the same dive.
+  // Negative scroll is the fade-in while the track rises into view (progress clamps at MM_P0), so the camera is moving from the first frame.
+  [-0.15, M3(MARS, [92, 26, 132]), MARS, 28],
+  [0.00, M3(MARS, [70, 20, 100]), MARS, 30],                         // far Mars with stars: text behind the planet reads here
+  [0.14, M3(MARS, [30, 8, 66]), M3(MARS, [-0.5, 0, 0]), 33],
+  [0.26, M3(MARS, [15.5, 4, 36]), M3(MARS, [-1, 0, 0]), 36],         // D5 arrival framing
+  [0.34, M3(MARS, [10, 2.7, 23]), MARS, 40],                         // slow push
+  [CA, DIVE, MARS, 52]                                               // dive into the entry flash
+] : [
   [0.00, C0, L0, 38],                                              // sunrise over the night side (where the opening lands)
   [0.11, [6, 9, 36], [0, 1.5, 0], 34],                             // pull back and up: the whole Earth, long lens
   [0.20, [-6.5, 12.5, 11], MOON, 30],                               // drop behind the curve of the Earth: the Moon rising over the limb, long lens
@@ -477,11 +492,11 @@ const SHOTS = [
   [0.47, M3(MARS, [15.5, 4, 36]), M3(MARS, [-1, 0, 0]), 36],         // arrive at Mars: the mission copy reads here
   [0.53, M3(MARS, [10, 2.7, 23]), MARS, 40],                         // slow push
   [CA, DIVE, MARS, 52]                                             // dive into the entry flash
-].map(([p, pos, look, fov]) => ({ p, pos: V(pos), look: V(look), fov }));
+]).map(([p, pos, look, fov]) => ({ p, pos: V(pos), look: V(look), fov }));
 const posC = new THREE.CatmullRomCurve3(SHOTS.map(k => k.pos), false, 'centripetal'); posC.arcLengthDivisions = 4000;
 const NK = SHOTS.length, PX = SHOTS.map(k => k.p), arcLens = posC.getLengths();
 const arcAt = t => { const f = t * (arcLens.length - 1), i = Math.floor(f); return i >= arcLens.length - 1 ? arcLens[arcLens.length - 1] : arcLens[i] + (arcLens[i + 1] - arcLens[i]) * (f - i); };
-const arcP = pchip(PX, SHOTS.map((k, i) => arcAt(i / (NK - 1))), 0.6, 2.2); // ease off the opening frame; accelerate into the dive
+const arcP = pchip(PX, SHOTS.map((k, i) => arcAt(i / (NK - 1))), MM ? 1 : 0.6, 2.2); // ease off the opening frame; accelerate into the dive
 // look: each shot names a subject. Between two shots the camera aims at both from where it is right now and slerps
 // from one to the other, so a held subject stays locked in frame however fast the camera moves, and subject changes
 // are one smooth pan. The pan rate rides a monotone curve over the shot index, so it never pauses on a key.
@@ -501,7 +516,7 @@ window.__d5.path = p => { const a = new THREE.Vector3(), b = new THREE.Vector3()
 
 // ---------- the opening: Austin lot timelapse, then a powers-of-ten pull out to the shot above ----------
 const SITE0 = new THREE.Vector3(0, 40000, 0);
-const site = createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN: SITE0, earthU: earth.material.uniforms, orthoUrl: window.D5_ORTHO || ['https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae5f95dd2740562ba491292_austin-site-ortho.jpg', 'https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae5ffb0de480245132a293d_austin-ortho-8km.jpg', 'https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae5ffb1acea8bf85e7e3734_austin-ortho-80km.jpg'] }); // TxGIO StratMap 2019 (800 m, 8 km) + NAIP 2022 (80 km), public domain, hosted in Webflow assets
+const site = MM ? null : createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN: SITE0, earthU: earth.material.uniforms, orthoUrl: window.D5_ORTHO || ['https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae5f95dd2740562ba491292_austin-site-ortho.jpg', 'https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae5ffb0de480245132a293d_austin-ortho-8km.jpg', 'https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae5ffb1acea8bf85e7e3734_austin-ortho-80km.jpg'] }); // TxGIO StratMap 2019 (800 m, 8 km) + NAIP 2022 (80 km), public domain, hosted in Webflow assets
 const EARTH_SPIN = 0.012, U_PER_M = 10 / 6371000; // Earth radius is 10 units
 const latR = THREE.MathUtils.degToRad(AUSTIN.lat), lonU = (AUSTIN.lon + 180) / 360;
 const austinLocal = new THREE.Vector3(-Math.cos(2 * Math.PI * lonU) * Math.cos(latR), Math.sin(latR), Math.sin(2 * Math.PI * lonU) * Math.cos(latR));
@@ -554,24 +569,25 @@ let prog = 0, sm = 0, smV = 0;
 window.__d5.seek = p => { sm = p; smV = 0; }; // QA hook: jump the eased scroll straight to a progress value
 window.__d5.intro = intro;
 const track = q('.d5-track'), after = q('.d5-after');
-ScrollTrigger.create({ trigger: track, start: 'top top', end: 'bottom bottom', onUpdate: s => (prog = s.progress) });
+if (!MM) ScrollTrigger.create({ trigger: track, start: 'top top', end: 'bottom bottom', onUpdate: s => (prog = s.progress) }); // Mars mode reads the track rect in the loop
 // each overlay owns a scroll window [a, b]; it rises in, holds, then drifts out. Sections in the plain page below are left alone.
-const ovs = qa('[data-w]').filter(el => !el.closest('.d5-after')).map(el => { const [a, b] = el.dataset.w.split(',').map(Number); return { el, a, b }; });
+// Mars mode: only d5-* classed [data-w] elements (the host page may use data-w elsewhere), windows straight from the markup.
+const ovs = qa('[data-w]').filter(el => !el.closest('.d5-after') && (!MM || [...el.classList].some(c => c.startsWith('d5')))).map(el => { const [a, b] = el.dataset.w.split(',').map(Number); return { el, a, b }; });
 const WIN = { 'd5-hero': [-1, 0.06], 'd5-mission': [0.43, 0.55], 'd5-belt': [0.8, 9] };
-ovs.forEach(o => { const w = WIN[o.el.classList[0]]; if (w) [o.a, o.b] = w; });
+if (!MM) ovs.forEach(o => { const w = WIN[o.el.classList[0]]; if (w) [o.a, o.b] = w; });
 const win = (p, a, b, f = 0.035) => Math.min(THREE.MathUtils.smoothstep(p, a - f, a + f), 1 - THREE.MathUtils.smoothstep(p, b - f, b + f));
-const ZONES = [[0, 'Sol · Earth', 1.0], [0.22, 'Earth · Luna', 1.003], [0.38, 'Sol · Mars', 1.52], [CA, 'Mars · Jezero Base', 1.52, 1]];
+const ZONES = MM ? [[0, 'Sol · Mars', 1.52], [CA, 'Mars · Jezero Base', 1.52, 1]] : [[0, 'Sol · Earth', 1.0], [0.22, 'Earth · Luna', 1.003], [0.38, 'Sol · Mars', 1.52], [CA, 'Mars · Jezero Base', 1.52, 1]];
 const veil = q('.d5-veil'), loc = q('.d5-loc'), au = q('.d5-au'), fill = q('.d5-rail-fill'), fadeEls = qa('.d5-hud, .d5-rail');
 let zone = -1;
 
 // ---------- load: veil lifts on the lot, the timelapse runs, the camera pulls off to orbit, then the title tracks in ----------
-const h1 = new SplitText('.d5-h1', { type: 'chars,words' });
+const h1 = MM ? null : new SplitText('.d5-h1', { type: 'chars,words' });
 const LAPSE = 3.0, PULL = 2.9;
 let introDone = false, introOver = false;
 const lockScroll = on => { document.documentElement.style.overflow = on ? 'hidden' : ''; if (window.lenis) on ? lenis.stop() : lenis.start(); };
 const endIntro = () => { if (introOver) return; introOver = true; lockScroll(false); post.resetMotion(); planets.loadDeferred(); scheduleColony(); };
-const tl = gsap.timeline({ paused: true, defaults: { ease: 'power3.out' }, onComplete: endIntro }); window.__d5.tl = tl;
-tl.to('.d5-veil', { opacity: 0, duration: 1.6, ease: 'power2.inOut', onComplete: () => (introDone = true) }, 0)
+const tl = MM ? null : gsap.timeline({ paused: true, defaults: { ease: 'power3.out' }, onComplete: endIntro }); window.__d5.tl = tl;
+if (tl) tl.to('.d5-veil', { opacity: 0, duration: 1.6, ease: 'power2.inOut', onComplete: () => (introDone = true) }, 0)
   .to(intro, { s: TL, duration: LAPSE, ease: 'none' }, 0.2)
   .to(intro, { s: 1, duration: PULL, ease: 'none' }, 0.2 + LAPSE)
   .from(h1.chars, { opacity: 0, filter: 'blur(14px)', x: (i, el, arr) => (i - arr.length / 2) * 6, duration: 2.2, stagger: { each: 0.035, from: 'center' } }, 0.2 + LAPSE + PULL - 0.8)
@@ -579,7 +595,8 @@ tl.to('.d5-veil', { opacity: 0, duration: 1.6, ease: 'power2.inOut', onComplete:
   .from('.d5-kicker, .d5-lead, .d5-btn', { opacity: 0, y: 16, stagger: 0.15, duration: 1.2 }, 0.2 + LAPSE + PULL + 0.4)
   .from('.d5-nav > *, .d5-hud, .d5-rail', { opacity: 0, duration: 1.4, stagger: 0.1 }, 0.8);
 // arriving mid-page (reload, back button) skips straight to orbit
-const skip = scrollY > 40;
+const skip = MM || scrollY > 40; // Mars mode has no opening at all
+if (MM) { intro.s = 1; introOver = introDone = true; if (veil) veil.style.opacity = '0'; }
 if (!skip) lockScroll(true);
 // any scroll intent during the opening fast-forwards it instead of being swallowed
 const hurry = () => { if (!introOver && tl.isActive()) tl.timeScale(4); };
@@ -592,7 +609,7 @@ addEventListener('mousemove', e => { mouse.x = e.clientX / innerWidth - 0.5; mou
 const step01 = v => (v > 0.6 ? 1 : 0), tmp2 = new THREE.Vector3(), tmp3 = new THREE.Vector3(), siteT = new THREE.Vector3(), siteDir = new THREE.Vector3();
 const pos = new THREE.Vector3(), look = new THREE.Vector3(), tmp = new THREE.Vector3(), clock = new THREE.Clock();
 const camUp = new THREE.Vector3(0, 1, 0), NORTH = new THREE.Vector3(0, 0, -1), fwd = new THREE.Vector3();
-const spaceMeshes = [planets.earth, planets.clouds, planets.moon, planets.mars, planets.earthAtmo, planets.marsAtmo];
+const spaceMeshes = MM ? [planets.mars, planets.marsAtmo] : [planets.earth, planets.clouds, planets.moon, planets.mars, planets.earthAtmo, planets.marsAtmo];
 const COLOR_SPACE_SUN = new THREE.Color(0xfff1dc);
 // light rig + shadow box per set (the loop calls it on a mode change; the boot warm-up uses it for its throwaway renders)
 function rig(inSite) {
@@ -607,18 +624,54 @@ const setClip = (n, f) => { if (cam.near !== n || cam.far !== f) { cam.near = n;
 const fmtH = h => { const hh = Math.floor(h), mm = Math.floor((h - hh) * 60); return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0'); };
 // DOM writes only on change (style writes invalidate style even when the value is the same)
 const css = (el, k, v) => { const c = el._d5 || (el._d5 = {}); if (c[k] !== v) { c[k] = v; el.style[k] = v; } };
-const txt = (el, v) => { if (el._d5t !== v) { el._d5t = v; el.textContent = v; } };
+const txt = (el, v) => { if (el && el._d5t !== v) { el._d5t = v; el.textContent = v; } };
+const scramble = (el, text) => { if (!el) return; if (window.gsap && window.ScrambleTextPlugin) gsap.to(el, { duration: 0.8, scrambleText: { text, chars: 'upperCase', speed: 0.6 } }); else txt(el, text); };
 const q3 = v => Math.round(v * 1000); // opacity compare at the precision the old toFixed(3) wrote
 // per-frame argument objects, reused (callees destructure them)
 const siteArg = { g: 0, t: 0 }, planetArg = { t: 0, intro: 1, camPos: pos, spin: 0, hole: AUSn }, postArg = { dt: 0, t: 0, focus: 0, aperture: 0, maxblur: 0, ca: 0 };
 const craneOn = c => c.g.visible;
 let siteDist = 0, lastAu = -1, shadowFrame = 0, forceShadow = true, veilSet = false, booted = false;
+// Mars mode gate: near = the track is within AHEAD viewports (IntersectionObserver, bottom of file). On screen, progress and fade come
+// from the track rect; off screen nothing renders and the canvas, HUD, rail, overlays and flash are hidden.
+const MM_P0 = -0.15; // progress floor: the fade-in runs the first shot's lead-in
+let near = false, mmOn = false, mmFade = 0, mmWarm = false;
+function marsOff() {
+  mmOn = false; smV = 0; css(host, 'opacity', '0'); css(host, 'visibility', 'hidden');
+  for (const el of fadeEls) { css(el, 'opacity', '0'); css(el, 'visibility', 'hidden'); }
+  for (const o of ovs) { o.vq = 0; o.el.style.opacity = '0'; css(o.el, 'visibility', 'hidden'); }
+  if (veil) css(veil, 'opacity', '0');
+}
+if (MM) marsOff(); // hidden until the track arrives
+function marsGate() {
+  const r = near && track.getBoundingClientRect();
+  const fade = r ? clamp01(1 - r.top / innerHeight) : 0, on = booted && fade > 0.001 && r.bottom > 0;
+  if (!on) { if (mmOn) marsOff(); return false; }
+  prog = Math.min(1, Math.max(MM_P0, -r.top / Math.max(1, r.height - innerHeight)));
+  if (!mmOn) { mmOn = true; sm = prog; smV = 0; post.resetMotion(); css(host, 'visibility', 'visible'); for (const el of fadeEls) css(el, 'visibility', 'visible'); } // arriving mid-track: start there, no fly-through
+  mmFade = fade; return true;
+}
+// Mars mode: [data-behind] overlays are masked by the planet's disc, so the copy reads as sitting behind Mars
+const behind = MM ? ovs.filter(o => o.el.hasAttribute('data-behind')) : [], mpv = new THREE.Vector3();
+function maskBehind(inSpace) {
+  let x = 0, y = 0, r = -1;
+  if (inSpace) {
+    cam.updateMatrixWorld(); mpv.copy(MARS).project(cam); const d = cam.position.distanceTo(MARS);
+    if (mpv.z < 1 && d > 6.2) { r = Math.round(Math.tan(Math.asin(6.05 / d)) / Math.tan(cam.fov * Math.PI / 360) * innerHeight); x = (mpv.x * 0.5 + 0.5) * innerWidth; y = (0.5 - mpv.y * 0.5) * innerHeight; } // r in half px
+  }
+  for (const o of behind) {
+    if (!o.vq) continue; const b = o.el.getBoundingClientRect();
+    const m = r < 0 ? 'none' : `radial-gradient(circle at ${Math.round(x - b.left)}px ${Math.round(y - b.top)}px, transparent ${r / 2}px, #000 ${r / 2 + 1.5}px)`;
+    css(o.el, 'webkitMaskImage', m); css(o.el, 'maskImage', m);
+  }
+}
 renderer.setAnimationLoop(() => {
   if (!visible || (!booted && !skip)) return; // under the veil nothing draws until the boot warm-up is done
+  if (MM && !marsGate()) return;
   const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
   // the plain page below covers the canvas; once it does, stop drawing
   const cover = after ? clamp01(1 - after.getBoundingClientRect().top / innerHeight) : 0;
-  css(host, 'opacity', (1 - 0.6 * cover).toFixed(3)); if (cover > 0 || lastCover > 0) { const o = (1 - cover).toFixed(3); for (const el of fadeEls) css(el, 'opacity', o); } lastCover = cover;
+  if (MM) { css(host, 'opacity', ((1 - 0.6 * cover) * mmFade).toFixed(3)); const o = ((1 - cover) * mmFade).toFixed(3); for (const el of fadeEls) css(el, 'opacity', o); }
+  else { css(host, 'opacity', (1 - 0.6 * cover).toFixed(3)); if (cover > 0 || lastCover > 0) { const o = (1 - cover).toFixed(3); for (const el of fadeEls) css(el, 'opacity', o); } } lastCover = cover;
   if (cover >= 0.999) return;
   { const W = 3.6; smV += (W * W * (prog - sm) - 2 * W * smV) * dt; sm += smV * dt; } // critically damped scroll: flicks ramp up and settle, never snap
   ms.x += (mouse.x - ms.x) * dt * 2; ms.y += (mouse.y - ms.y) * dt * 2;
@@ -674,7 +727,7 @@ renderer.setAnimationLoop(() => {
   renderer.toneMappingExposure = introOn && zPull > 0 ? 1.05 * (1 - 0.72 * sstep(lam, Math.log(2e3), Math.log(4e4)) * (1 - sstep(lam, Math.log(8e5), Math.log(5e6)))) : 1.05;
   // per-set switches: what is in the world, which light rig, shadow box
   if (mode !== lastMode) {
-    site.group.visible = inSite; colony.visible = inCol;
+    if (site) site.group.visible = inSite; colony.visible = inCol;
     spaceMeshes.forEach(m => (m.visible = !inSite && !inCol));
     rig(inSite);
     post.motion.cutDist = mode === 'site' || mode === 'globe' ? 1e12 : 400;
@@ -694,13 +747,14 @@ renderer.setAnimationLoop(() => {
   else { sunLight.target.position.set(0, 0, 0); sunLight.position.copy(sunDir).multiplyScalar(100); }
   // the one cut left: a warm atmospheric-entry flash into Jezero
   const hIn = sstep(sm, CA - 0.022, CA) * (1 - sstep(sm, CA, CA + 0.026));
-  if (introDone) { if (!veilSet) { veilSet = true; veil.style.background = 'radial-gradient(circle at 50% 55%, #fff4e6 0%, #ffb27a 45%, #c8582a 100%)'; } css(veil, 'opacity', hIn.toFixed(3)); }
+  if (introDone && veil) { if (!veilSet) { veilSet = true; veil.style.background = 'radial-gradient(circle at 50% 55%, #fff4e6 0%, #ffb27a 45%, #c8582a 100%)'; } css(veil, 'opacity', hIn.toFixed(3)); }
   // operator layer: only a faint handheld drift; no springs, no banking, no roll. The curves above are already smooth.
   const dist = pos.distanceTo(look);
   if (!introOn) pos.add(tmp.set(Math.sin(t * 0.21) * 0.6 + Math.sin(t * 0.53 + 1.3) * 0.25, Math.sin(t * 0.17 + 2.1) * 0.5 + Math.sin(t * 0.41) * 0.2, Math.sin(t * 0.13 + 4) * 0.4).multiplyScalar(dist * 0.002 * live));
   cam.up.copy(camUp);
   if (Math.abs(cam.fov - fov) > 0.01) { cam.fov = fov; cam.updateProjectionMatrix(); }
   cam.position.copy(pos); cam.lookAt(look);
+  if (behind.length) maskBehind(mode === 'space');
   // dust: smoothed camera velocity drives streak length (a short virtual shutter)
   if (hasLast && dt > 0) { velTmp.copy(pos).sub(lastPos).divideScalar(dt); if (velTmp.length() > 4000) velTmp.set(0, 0, 0); camVel.lerp(velTmp, Math.min(1, dt * 6)); }
   lastPos.copy(pos); hasLast = true;
@@ -724,7 +778,7 @@ renderer.setAnimationLoop(() => {
   bloom.strength = 0.6 + flare * 0.3;
 
   // satellite + focus: rack to the look target; deep focus everywhere except the colony
-  const sp = sm - SATP; sat.visible = mode === 'space' && Math.abs(sp) < 0.06;
+  const sp = sm - SATP; sat.visible = !MM && mode === 'space' && Math.abs(sp) < 0.06;
   // ride along the camera's own path: it starts ~25 units ahead, just right of and below the lens, and slides back past us,
   // so the pass reads the same however hard the camera is accelerating on this leg
   if (sat.visible) { tmp3.copy(look).sub(pos).normalize(); tmp2.crossVectors(tmp3, camUp).normalize();
@@ -738,7 +792,7 @@ renderer.setAnimationLoop(() => {
 
   // overlays
   for (const o of ovs) {
-    const w = win(sm, o.a, o.b), v = w * (1 - cover), vq = q3(v), ty = Math.round((1 - w) * (sm < o.a ? 30 : -30) * 100);
+    const w = win(sm, o.a, o.b), v = MM ? w * (1 - cover) * mmFade : w * (1 - cover), vq = q3(v), ty = Math.round((1 - w) * (sm < o.a ? 30 : -30) * 100);
     if (vq !== o.vq) { o.vq = vq; o.el.style.opacity = (vq / 1000).toFixed(3); css(o.el, 'visibility', v > 0.01 ? 'visible' : 'hidden'); }
     if (ty !== o.ty) { o.ty = ty; o.el.style.transform = `translate3d(0,${ty / 100}px,0)`; }
   }
@@ -749,21 +803,21 @@ renderer.setAnimationLoop(() => {
     else { const km = Math.exp(lam) / 1000, k = -1 - (km < 10 ? Math.round(km * 10) : Math.round(km) * 100); if (k !== lastAu) { lastAu = k; txt(au, 'ALT ' + (km < 10 ? km.toFixed(1) : Math.round(km).toLocaleString('en-US')) + ' KM'); } }
   } else {
     let z = 0; for (let i = 0; i < ZONES.length; i++) if (sm >= ZONES[i][0]) z = i;
-    if (z !== zone) { zone = z; gsap.to(loc, { duration: 0.8, scrambleText: { text: ZONES[z][1], chars: 'upperCase', speed: 0.6 } }); }
+    if (z !== zone) { zone = z; if (MM) scramble(loc, ZONES[z][1]); else gsap.to(loc, { duration: 0.8, scrambleText: { text: ZONES[z][1], chars: 'upperCase', speed: 0.6 } }); }
     const a = ZONES[z], b = ZONES[Math.min(z + 1, ZONES.length - 1)], span = (b[0] - a[0]) || 1, cg = clamp01((sm - CA) / (1 - CA));
     // on the surface the readout becomes a sol counter, so the timelapse reads as months of work
     const auV = a[3] ? 1 + Math.floor(cg * 667) : Math.round((a[2] + (b[2] - a[2]) * THREE.MathUtils.clamp((sm - a[0]) / span, 0, 1)) * 100), k = a[3] ? 1e6 + auV : 2e6 + auV;
     if (k !== lastAu) { lastAu = k; txt(au, a[3] ? 'SOL ' + String(auV).padStart(4, '0') : (auV / 100).toFixed(2) + ' AU'); }
   }
-  { const f = Math.round(sm * 1e4); if (f !== fill._d5f) { fill._d5f = f; fill.style.transform = `scaleY(${f / 1e4})`; } }
+  { const f = Math.round((MM ? clamp01(sm) : sm) * 1e4); if (fill && f !== fill._d5f) { fill._d5f = f; fill.style.transform = `scaleY(${f / 1e4})`; } }
   post.render();
 });
 
 // rail dots sit at their scroll position and jump there on click
-const STOPS = [['Earth', 0], ['Luna', 0.3], ['Mars', 0.47], ['Jezero', 0.72]];
+const STOPS = MM ? [['Mars', 0], ['Jezero', +(CA + 0.33 * (1 - CA)).toFixed(3)]] : [['Earth', 0], ['Luna', 0.3], ['Mars', 0.47], ['Jezero', 0.72]];
 qa('.d5-stop').forEach((s, i) => { if (STOPS[i]) { s.textContent = STOPS[i][0]; s.dataset.p = STOPS[i][1]; } else s.remove(); });
 qa('.d5-stop').forEach(s => (s.style.top = (+s.dataset.p * 100) + '%'));
-qa('.d5-stop').forEach(s => s.addEventListener('click', e => { e.preventDefault(); const p = +s.dataset.p, y = track.offsetTop + p * (track.offsetHeight - innerHeight); window.lenis ? lenis.scrollTo(y, { duration: 2.4 }) : scrollTo(0, y); }));
+qa('.d5-stop').forEach(s => s.addEventListener('click', e => { e.preventDefault(); const p = +s.dataset.p, y = (MM ? track.getBoundingClientRect().top + scrollY : track.offsetTop) + p * (track.offsetHeight - innerHeight); window.lenis ? lenis.scrollTo(y, { duration: 2.4 }) : scrollTo(0, y); }));
 
 // ---------- boot warm-up: compile every program and upload every buffer while the veil is still up ----------
 // compileAsync covers the main programs (KHR_parallel_shader_compile lets the driver build them off the main thread);
@@ -779,8 +833,8 @@ const spaceRoots = () => [...spaceMeshes, sunCore, streak, dust, sat, ...(sky ? 
 // run fn with exactly one world shown, as the loop shows it in that mode. Only site.group holds lights (the two work lights),
 // so its visibility is what sets the light count in the program keys; the rest only matters for the throwaway draws.
 function inWorld(w, fn) {
-  const roots = [site.group, colony, ...spaceRoots()], vis = roots.map(o => o.visible), rt = renderer.getRenderTarget();
-  site.group.visible = w === 'site'; colony.visible = w === 'colony'; for (const o of spaceRoots()) o.visible = w === 'space';
+  const roots = site ? [site.group, colony, ...spaceRoots()] : [colony, ...spaceRoots()], vis = roots.map(o => o.visible), rt = renderer.getRenderTarget();
+  if (site) site.group.visible = w === 'site'; colony.visible = w === 'colony'; for (const o of spaceRoots()) o.visible = w === 'space';
   renderer.setRenderTarget(rtWarm);
   try { return fn(); } finally { roots.forEach((o, i) => (o.visible = vis[i])); renderer.setRenderTarget(rt); }
 }
@@ -810,6 +864,7 @@ async function precompile() {
   await Promise.race([Promise.all(jobs), wait(1500)]);
   if (!skip) throwaway('site'); throwaway('space'); if (colonyAPI) throwaway('colony');
   if (!skip) post.warm({ fx: HIGH }); // AO + trails only ever run on the high tier (and only in the site); skip is already live, so no resets
+  else if (MM) post.warm({ fx: false }); // Mars mode warms while its canvas is still hidden
   window.__d5.bootMs = Math.round(performance.now() - t0); window.__d5.bootPrograms = renderer.info.programs.length;
 }
 // the colony is populated after boot (see populateColony): same warm-up for it once it exists, unless it is already on screen
@@ -822,7 +877,14 @@ async function warmColony() {
 window.__d5.ensureColony = ensureColony; // QA hook
 
 // ---------- start: the timelapse waits for the warm-up and its first photos (800 m ortho + Earth maps), at most 2.5 s for the photos ----------
-const bootP = precompile().catch(e => console.warn('d5 warm-up:', e)).then(() => { booted = true; });
-const loadP = Promise.race([Promise.all([site.ready, planets.ready]), wait(2500)]);
+let wake = null; // Mars mode: the warm-up waits for the track to come within AHEAD viewports
+const bootP = (MM ? new Promise(r => (wake = r)).then(() => { mmWarm = true; return precompile(); }) : precompile()).catch(e => console.warn('d5 warm-up:', e)).then(() => { booted = true; });
+const loadP = MM ? null : Promise.race([Promise.all([site.ready, planets.ready]), wait(2500)]);
 window.__d5.boot = bootP;
-(window.tfReady || (f => f()))(() => { if (skip) { tl.progress(1); introDone = true; } else Promise.all([bootP, loadP]).then(() => { window.__d5.startMs = Math.round(performance.now()); tl.play(); }); });
+if (MM) {
+  window.__d5.mars = { get p() { return sm; }, get on() { return mmOn; }, get near() { return near; } }; // eased track progress for the host page (rail etc.)
+  const io = new IntersectionObserver(es => { near = es[es.length - 1].isIntersecting; if (near) { wake(); scheduleColony(); } },
+    { rootMargin: `${AHEAD * 100}% 0px ${AHEAD * 100}% 0px` });
+  if (track) io.observe(track);
+}
+(window.tfReady || (f => f()))(() => { if (skip) { if (tl) tl.progress(1); introDone = true; } else Promise.all([bootP, loadP]).then(() => { window.__d5.startMs = Math.round(performance.now()); tl.play(); }); });

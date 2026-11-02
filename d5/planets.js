@@ -240,7 +240,7 @@ void main(){
 }`;
 
 // ---------------------------------------------------------------------------------------------
-export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS, assetBase, deferAfter = 20000 }) {
+export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS, assetBase, deferAfter = 20000, skip = null }) { // skip: map names never fetched (D5 Mars mode)
   const R_EARTH = 10, R_MOON = 2.7, R_MARS = 6;
   const anis = Math.min(8, renderer.capabilities.getMaxAnisotropy());
   const loader = new THREE.TextureLoader(); loader.setCrossOrigin('anonymous');
@@ -259,6 +259,7 @@ export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS
   const upload = t => { if (t && renderer && renderer.initTexture) try { renderer.initTexture(t); } catch (e) { /* first draw uploads it instead */ } };
   const U = (name, srgb, fb, deferred) => { // returns a uniform whose value is swapped when the file loads
     const u = { value: fb };
+    if (skip && skip.includes(name)) return u;                     // keeps its 1x1 fallback
     const swap = t => { if (t) { upload(t); u.value = t; } };   // upload first, then swap: the next draw doesn't stall on it
     if (deferred) deferredJobs.push(() => fetchTex(name, srgb).then(t => ({ t, swap })));
     else pending.push(fetchTex(name, srgb).then(swap));
