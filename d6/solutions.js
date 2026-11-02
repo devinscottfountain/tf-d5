@@ -71,7 +71,7 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
   grid.cutAttr = cutAttr; grid.zoneAttr = zoneAttr;
 
   const MAPFADE = /* glsl */ `
-  float mapA(vec2 m){ float ax = clamp((m.x - 420.) / 1250., 0., 1.); float ay = smoothstep(80., 760., m.y); return ax * (.25 + .75*ax) * ay; }`;
+  float mapA(vec2 m){ float ax = clamp((m.x - 420.) / 1250., 0., 1.); float ay = smoothstep(0., 560., m.y); return ax * (.25 + .75*ax) * ay; }`;
   const U = {
     uMorph: { value: 0 }, uOff: { value: new THREE.Vector2() }, uMS: { value: MAP_SCALE }, uAmp: { value: 0 }, uLift: { value: 6 },
     uPlanZ: { value: 0 }, uGameZ: { value: 0 }, uS2: { value: 1 }, uS4: { value: 0 }, uSize: { value: 0.12 }, uPx: { value: 1000 },
@@ -199,7 +199,7 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
   const C_MAP = { tx: 0, tz: 0, w: 160, pitch: 89.9 * DEG, yaw: 0, fov: 12, oy: 0 };
   const C_PLAN = { tx: 0, tz: 3, w: 90, pitch: 66 * DEG, yaw: 0, fov: 30, oy: -0.32 };
   const C_CTRL = { tx: 0, tz: 0, w: 60, pitch: 27 * DEG, yaw: -0.42, fov: 32, oy: -0.45 };
-  const C_EXEC = { tx: -2.1, tz: 3.9, w: 44, pitch: 35 * DEG, yaw: 0.62, fov: 30, oy: -0.46 };
+  const C_EXEC = { tx: -2.1, tz: 3.9, w: 44, pitch: 35 * DEG, yaw: 0.62, fov: 30, oy: -0.38 };
   const cs = { tx: 0, tz: 0, w: 0, pitch: 0, yaw: 0, fov: 0, oy: 0 }, cm = { ...cs };
   const blendC = (o, a, b, t) => { for (const k in o) o[k] = lerp(a[k], b[k], t); return o; };
   const tgt = new THREE.Vector3();
@@ -337,7 +337,8 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
     // camera
     if (mF <= 1) blendC(cm, C_PLAN, C_CTRL, sm(mF)); else blendC(cm, C_CTRL, C_EXEC, sm(mF - 1));
     // control target follows the game, drift with the pointer
-    smx += (mx - smx) * (1 - Math.exp(-dt * 3)); smy += (my - smy) * (1 - Math.exp(-dt * 3));
+    const hold = game.drawing ? 0 : 1; // no drift while a zone is being placed
+    smx += (mx * hold - smx) * (1 - Math.exp(-dt * 3)); smy += (my * hold - smy) * (1 - Math.exp(-dt * 3));
     cm.tx += (game.focus.x - C_CTRL.tx) * wC; cm.tz += (game.focus.z - C_CTRL.tz) * wC;
     cm.yaw += smx * 0.12 * wC + (effT - 0.5) * 0.08 * wP + (effT - 0.5) * 0.12 * wC;
     cm.pitch += -smy * 0.05 * wC;
@@ -413,6 +414,7 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
     // test hook: render one frame now (headless screenshots)
     renderNow(dt = 0.016, n = 1) { for (let i = 0; i < n; i++) frame(dt); renderer.render(scene, camera); },
     get game() { return game; },
+    get stats() { let lv = 0; scene.traverse(o => { if (o.isLineSegments || o.isLine) lv += o.geometry.attributes.position.count; }); return { lineVerts: lv, points: N, calls: renderer.info.render.calls }; },
     dispose() {
       this.stop(); window.removeEventListener('pointermove', onMove); if (ro) ro.disconnect(); else window.removeEventListener('resize', resize); if (io) io.disconnect();
       game.dispose();

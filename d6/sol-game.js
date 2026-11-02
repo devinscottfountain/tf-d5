@@ -138,8 +138,8 @@ export function createGame({ THREE, scene, canvas, camera, exc, grid, hField, MS
   }
 
   // ------------------------------------------------------------------ job runner (sequential steps)
-  let steps = null, si = 0, st = 0, started = false, onDone = null, flash = 0;
-  const run = (list, done) => { steps = list; si = 0; st = 0; started = false; onDone = done; };
+  let steps = null, si = 0, st = 0, started = false, onDone = null, flash = 0, jobOn = false;
+  const run = (list, done, job = true) => { steps = list; si = 0; st = 0; started = false; onDone = done; jobOn = job; };
   const armTo = (to, d, ease = io2) => { const from = {}; return { d, s() { for (const k in to) from[k] = ARM[k]; }, u(k) { const e = ease(k); for (const k2 in to) ARM[k2] = from[k2] + ((typeof to[k2] === 'function' ? to[k2]() : to[k2]) - from[k2]) * e; } }; };
   const call = fn => ({ d: 0, s: fn });
   const tickJob = dt => {
@@ -152,10 +152,10 @@ export function createGame({ THREE, scene, canvas, camera, exc, grid, hField, MS
       if (k < 1) return;
       S.e && S.e(); si++; st = 0; started = false;
     }
-    if (steps) { steps = null; const d = onDone; onDone = null; d && d(); }
+    if (steps) { steps = null; jobOn = false; const d = onDone; onDone = null; d && d(); }
   };
-  const busy = () => !!steps;
-  const stopJob = () => { steps = null; onDone = null; speed = 0; run([armTo({ ...REST }, 0.8)], null); loadMat.opacity = 0; load.position.y = 0; state = 'IDLE'; };
+  const busy = () => jobOn;
+  const stopJob = () => { steps = null; onDone = null; speed = 0; run([armTo({ ...REST }, 0.8)], null, false); loadMat.opacity = 0; load.position.y = 0; state = 'IDLE'; };
 
   let DUMP = 1.55;
   function runJob() {
@@ -213,12 +213,12 @@ export function createGame({ THREE, scene, canvas, camera, exc, grid, hField, MS
     if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) moved = true;
     if (drag >= 0 && active) { const p = pick(e); if (p) { vx[drag] = p.x; vz[drag] = p.z; writeZone(); } }
   };
-  const onUp = () => { if (drag >= 0) { drag = -1; moved = true; } };
+  const onUp = () => { drag = -1; }; // a press on a handle without movement still counts as a click
   const onClick = e => {
     if (!active || moved) return;
     user = true; const p = pick(e); if (!p) return;
     if (busy() || closed) { stopJob(); clearZone(); }
-    if (nv >= 3 && screenOf(vx[0], vz[0], e) < 16) { if (closeZone()) runJob(); return; }
+    if (nv >= 3 && (screenOf(vx[0], vz[0], e) < 22 || Math.hypot(p.x - vx[0], p.z - vz[0]) < 2.5)) { if (closeZone()) runJob(); return; }
     addVert(p.x, p.z);
   };
   const onDbl = () => { if (!active) return; user = true; if (!busy() && closeZone()) runJob(); };
@@ -249,7 +249,7 @@ export function createGame({ THREE, scene, canvas, camera, exc, grid, hField, MS
     api.roll = roll; api.pitch = pitch;
     exc.setArm(ARM.a1, ARM.a2, ARM.a3, ARM.sw);
     if (!busy() && closed === false && nv === 0) focusGoal.set(pos.x + 5, 0, pos.z - 1);
-    focus.lerp(focusGoal, 1 - Math.exp(-dt * 1.2));
+    if (!(nv > 0 && !closed)) focus.lerp(focusGoal, 1 - Math.exp(-dt * 1.2)); // hold the view while placing points
   };
   api.telemetry = out => {
     const R2D = 180 / Math.PI, yd = Math.atan2(Math.sin(yaw), Math.cos(yaw)) * R2D, rd = (api.roll || 0) * R2D + (speed > 0 ? Math.sin(performance.now() / 120) * 0.4 : 0);
@@ -259,6 +259,8 @@ export function createGame({ THREE, scene, canvas, camera, exc, grid, hField, MS
     out.speed = +speed.toFixed(1); out.state = state; out.blade = Math.max(-1, Math.min(1, rd / 12));
     return out;
   };
+  Object.defineProperty(api, 'drawing', { get: () => nv > 0 && !closed });
+  api.debug = () => ({ nv, closed, jobOn, user, active, state, demoK });
   api.demo = demo; api.clear = () => { stopJob(); clearZone(); };
   api.dispose = () => {
     canvas.removeEventListener('pointerdown', onDown); canvas.removeEventListener('pointermove', onMoveC); canvas.removeEventListener('pointerup', onUp);

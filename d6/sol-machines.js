@@ -361,14 +361,15 @@ export function createMachineKit(THREE) {
     d.cyl(DR, DW, 0, 0, 0, 36);
     for (const z of [-1, 1]) { d.cyl(DR * 0.55, 0.05, 0, 0, z * (DW / 2 + 0.02), 24); d.cyl(0.18, 0.12, 0, 0, z * (DW / 2 + 0.06), 14); }
     // padfoot chevrons: rows across the width, staggered around the drum
-    const rows = 7, ring = 22;
+    const rows = 6, ring = 16;
     for (let r = 0; r < rows; r++) {
-      const z = -DW / 2 + 0.16 + r * ((DW - 0.32) / (rows - 1)), sh = (r % 2) * 0.5;
-      for (let k = 0; k < ring; k++) {
-        const a = ((k + sh) / ring) * Math.PI * 2, g = new THREE.BoxGeometry(0.13, 0.11, 0.2);
-        g.rotateY(r % 2 ? 0.55 : -0.55); g.translate(0, DR + 0.05, 0); g.rotateZ(a); g.translate(0, 0, z); d.add(g);
+      const z = -DW / 2 + 0.18 + r * ((DW - 0.36) / (rows - 1)), sh = (r % 2) * 0.5;
+      for (let k = 0; k < ring; k++) { // tapered pad: wide at the drum, small on top
+        const a = ((k + sh) / ring) * Math.PI * 2, g = new THREE.CylinderGeometry(0.07, 0.12, 0.14, 4, 1);
+        g.rotateY(Math.PI / 4 + (r % 2 ? 0.35 : -0.35)); g.translate(0, DR + 0.06, 0); g.rotateZ(a); g.translate(0, 0, z); d.add(g);
       }
     }
+    for (const z of [-1, 1]) d.cyl(DR + 0.02, 0.05, 0, 0, z * (DW / 2 - 0.03), 36); // drum edge rings
     const drum = d.build();
 
     const f = part(); // front frame (yoke) around the drum, origin at drum centre
