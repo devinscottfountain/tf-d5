@@ -65,7 +65,7 @@ export function buildRoom({ THREE, scene, high, quality }) {
   tb.bind(M.stand, 'brushed_metal', { maps: ['normalMap', 'roughnessMap'] }); tb.bind(M.metal, 'brushed_metal', { maps: ['normalMap', 'roughnessMap'] });
   tb.bind(M.mull, 'brushed_metal', { maps: ['normalMap', 'roughnessMap'], normalScale: 0.4 }); tb.bind(M.frame, 'brushed_metal', { maps: ['normalMap', 'roughnessMap'] });
   for (const k of ['bezel', 'plastic', 'keys']) tb.bind(M[k], 'black_plastic', { maps: ['normalMap', 'roughnessMap'] });
-  tb.bind(M.fabric, 'fabric_chair', { color: 0x2a2c33 }); tb.bind(M.carpet, 'carpet', { color: 0x202228 });
+  tb.bind(M.fabric, 'fabric_chair', { color: 0x1a1b20 }); // tan leather scan, tinted near black tb.bind(M.carpet, 'carpet', { color: 0x202228 });
   tb.bind(M.ceil, 'ceiling_panel', { color: 0x2a2b30 }); tb.bind(M.sill, 'concrete_floor', { color: 0x3a3b3f });
 
   const add = (geo, mat, x = 0, y = 0, z = 0, parent = group) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); parent.add(m); return m; };
@@ -73,7 +73,7 @@ export function buildRoom({ THREE, scene, high, quality }) {
   const ZB = 7.4, ZF = GLASS_Z + 0.42; // back wall, inner face of the head soffit
 
   // floor: carpet tiles, 0.5 m world UVs
-  P(M.carpet, boxUV(THREE, new THREE.PlaneGeometry(14, ZB - GLASS_Z).rotateX(-Math.PI / 2).translate(0, 0, (ZB + GLASS_Z) / 2), 0.5));
+  P(M.carpet, boxUV(THREE, new THREE.PlaneGeometry(14, ZB - GLASS_Z).rotateX(-Math.PI / 2).translate(0, 0, (ZB + GLASS_Z) / 2), 1));
   // ceiling: slab, 1200 x 600 acoustic tiles in a T-grid, three dead linear lights running along the glass
   P(M.dark, new THREE.PlaneGeometry(14, ZB - GLASS_Z).rotateX(Math.PI / 2).translate(0, CEIL + 0.02, (ZB + GLASS_Z) / 2));
   { const lightsZ = [-0.9, 1.5, 3.9];
@@ -98,7 +98,7 @@ export function buildRoom({ THREE, scene, high, quality }) {
     P(M.mull, boxUV(THREE, mergeAll(THREE, mul), 0.5));
     // sill: stone ledge with a radiused nose + base track; head: soffit with a shadow gap + head track
     const sill = new THREE.Shape([[-0.32, 0], [0.03, 0], [0.03, 0.07], [-0.3, 0.07]].map(p => new THREE.Vector2(...p))); sill.quadraticCurveTo(-0.32, 0.07, -0.32, 0.05);
-    P(M.sill, boxUV(THREE, sweep(THREE, sill, [-7, 0, GLASS_Z], [7, 0, GLASS_Z], [0, 1, 0]), 0.6));
+    P(M.sill, boxUV(THREE, sweep(THREE, sill, [-7, 0, GLASS_Z], [7, 0, GLASS_Z], [0, 1, 0]), 2));
     P(M.frame, sweep(THREE, rrect(THREE, 0.05, 0.04, 0.004, 0, 0.088), [-7, 0, GLASS_Z], [7, 0, GLASS_Z], [0, 1, 0]));
     P(M.frame, sweep(THREE, rrect(THREE, 0.05, 0.05, 0.004, 0, CEIL - 0.325), [-7, 0, GLASS_Z], [7, 0, GLASS_Z], [0, 1, 0]));
     P(M.frame, sweep(THREE, new THREE.Shape([[-0.42, CEIL - 0.3], [0.06, CEIL - 0.3], [0.06, CEIL], [-0.42, CEIL]].map(p => new THREE.Vector2(...p))), [-7, 0, GLASS_Z], [7, 0, GLASS_Z], [0, 1, 0]));
@@ -123,7 +123,7 @@ export function buildRoom({ THREE, scene, high, quality }) {
         vec2 e=vec2(atan(R.z,R.x)/6.2832+.5, asin(clamp(R.y,-1.,1.))/3.1416+.5);
         vec3 env=texture2D(tEnv,e).rgb;
         float sm=fbm2(vW.xy*vec2(2.5,1.2)+4.);                                  // faint smudges
-        sm=mix(sm, texture2D(tSm, vW.xy/1.6).r, uSm*.7);
+        sm=mix(sm, texture2D(tSm, vW.xy/1.5).r, uSm*.7);
         vec3 c=env*uRefl*(F*3.+.05)*(.75+.5*sm) + uTintC*uTint;
         gl_FragColor=vec4(c, uTint*(.9+.2*sm)); }`
   }), 0, CEIL / 2, GLASS_Z);

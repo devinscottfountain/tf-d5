@@ -67,7 +67,7 @@ export function buildOutside({ THREE, scene, high, quality }) {
   };
   tm.customProgramCacheKey = () => 'd6hero-terrain';
   const terrain = new THREE.Mesh(tg, tm); terrain.receiveShadow = true; group.add(terrain);
-  tb.bind(tm, 'dirt_ground', { normalScale: 0.8 });
+  tb.bind(tm, 'dirt_ground', { maps: ['map', 'normalMap', 'aoMap'], normalScale: 0.35, ao: 0.6 }); // no roughness map: moonlit glints alias at distance
 
   // ridgelines: two strips of silhouette hills, far
   const ridge = (R, a0, a1, base, amp, seed, col) => {
@@ -132,9 +132,9 @@ export function buildOutside({ THREE, scene, high, quality }) {
     const m = MAT[k], prev = m.onBeforeCompile;
     m.onBeforeCompile = (sh, r) => { prev(sh, r); sh.uniforms.tPaint = paintU;
       sh.fragmentShader = (k === 'paint' ? 'uniform sampler2D tPaint;\n' : '') + sh.fragmentShader.replace('#include <roughnessmap_fragment>',
-      (k === 'paint' && paintU.value ? `{ vec3 an=abs(normalize(vMN)); an/=an.x+an.y+an.z+1e-4; vec3 q=vMObj*.45;
+      (k === 'paint' && paintU.value ? `{ vec3 an=abs(normalize(vMN)); an/=an.x+an.y+an.z+1e-4; vec3 q=vMObj*.5;
         vec3 tp=texture2D(tPaint,q.zy).rgb*an.x+texture2D(tPaint,q.xz).rgb*an.y+texture2D(tPaint,q.xy).rgb*an.z;
-        diffuseColor.rgb*=mix(vec3(1.), tp*2., .7); }\n` : '') +
+        diffuseColor.rgb*=mix(1., dot(tp,vec3(.3,.59,.11))*2.2, .7); }\n` : '') +
       'diffuseColor.rgb = mix(vec3(dot(diffuseColor.rgb, vec3(.3,.59,.11))), diffuseColor.rgb, .14) * .34;\n#include <roughnessmap_fragment>'); };
     m.customProgramCacheKey = () => 'd6night-' + k + (k === 'paint' && paintU.value ? '-tex' : '');
   }

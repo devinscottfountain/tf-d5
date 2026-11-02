@@ -26,7 +26,7 @@ export function monitorGeo(THREE, w, h, { BZ = 0.014, deskDy = -0.385, cables = 
       shell.push(new THREE.TubeGeometry(c, 18, rr, 5, false));
     }
   }
-  return { shell: boxUV(THREE, mergeAll(THREE, shell), 0.4), metal: boxUV(THREE, mergeAll(THREE, metal), 0.3) };
+  return { shell: boxUV(THREE, mergeAll(THREE, shell), 0.25), metal: boxUV(THREE, mergeAll(THREE, metal), 0.5) };
 }
 
 // ------------------------------------------------------------------ desk, props, chair (world space, static)
@@ -105,7 +105,7 @@ export function buildDesk({ THREE, group, M, DESK_Y, high, bind }) {
     P('plastic', new THREE.CylinderGeometry(0.03, 0.065, 0.11, 18, 1, true).rotateZ(0.45).translate(hd[0] - 0.02, hd[1] - 0.05, hd[2])); }
 
   // chair: high-back operator chair seen from behind, low in the foreground
-  const chair = new THREE.Group(); chair.position.set(-0.62, 0, 1.38); chair.rotation.y = 0.22; group.add(chair);
+  const chair = new THREE.Group(); chair.position.set(-0.8, 0, 1.75); chair.rotation.y = 0.3; group.add(chair);
   const cp = {}; const C = (k, g) => (cp[k] ||= []).push(g);
   { const bend = (g, k) => { const p = g.attributes.position; for (let i = 0; i < p.count; i++) p.setZ(i, p.getZ(i) + k * p.getX(i) ** 2); g.computeVertexNormals(); return g; };
     C('fabric', bend(extrude(THREE, rrect(THREE, 0.5, 0.64, 0.14), 0.045, 0.022, 2, 5), -0.6).rotateX(0.12).translate(0, 0.84, 0.06));
@@ -123,7 +123,7 @@ export function buildDesk({ THREE, group, M, DESK_Y, high, bind }) {
   chair.updateMatrix(); for (const k in cp) for (const g of cp[k]) P(k, g.applyMatrix4(chair.matrix)); group.remove(chair);
 
   // merge per material, world-scale UVs
-  const scale = { desk: 0.6, edge: 0.3, metal: 0.4, plastic: 0.3, fabric: 0.3, rubber: 0.2, ceramic: 0.2, paper: 0.25, accent: 0.2, accentY: 0.2, led: 1 };
+  const scale = { desk: 1, edge: 0.5, metal: 0.5, plastic: 0.25, fabric: 0.12, rubber: 0.25, ceramic: 0.25, paper: 0.25, accent: 0.25, accentY: 0.25, led: 1 }; // match hero-tex texScale per role
   const meshes = {};
   for (const k in parts) {
     const g = boxUV(THREE, mergeAll(THREE, parts[k]), scale[k] || 0.5), m = new THREE.Mesh(g, M[k] || M.plastic);
