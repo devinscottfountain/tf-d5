@@ -3,11 +3,27 @@
 // Centre: dozer cab camera (render target from hero-cab.js) + UI overlay, crossfading to the Series B still.
 // Right: lidar heat map, procedural point cloud under a UI overlay.
 // All screens invert the ACES tone map so the pixels land on the display as authored.
+// Media hooks: setScreenMedia(i, el) puts real footage (<video>, <img>, <canvas>) on screen 0/1/2 (left/centre/right),
+// cover-fit; textures stay raw sRGB bytes and are decoded in the shader (as the browser draws them, so the hand-off matches).
+// Close up, an RGB stripe subpixel mask fades in (uSub), aliasing into a faint moire, then fades out before the hand-off.
 import { NOISE, INV_ACES, acesInverseUniforms, rng } from './hero-glsl.js';
 
 const MONO = '"IBM Plex Mono", ui-monospace, Menlo, monospace';
 const SANS = 'Geist, Inter, system-ui, sans-serif';
 const VS = `varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`;
+// per-screen media + panel pixel mask (linear HDR in, linear HDR out)
+const PANEL = /* glsl */ `
+uniform sampler2D tMedia; uniform float uMedia, uSub; uniform vec4 uMCover; uniform vec2 uNpx;
+vec3 media(){ return texture2D(tMedia, vUv*uMCover.xy+uMCover.zw).rgb; }
+vec3 panel(vec3 lin){
+  if(uSub<=0.) return lin;
+  vec2 q=vUv*uNpx; float fw=max(fwidth(q.x),fwidth(q.y)), a=uSub*(1.-smoothstep(.3,.95,fw));
+  if(a<=0.) return lin;
+  float x=fract(q.x), y=fract(q.y), e=clamp(fw*.5,.02,.12);
+  vec3 m=vec3(smoothstep(.15+e,.15-e,abs(x-.1667)), smoothstep(.15+e,.15-e,abs(x-.5)), smoothstep(.15+e,.15-e,abs(x-.8333)));
+  float g=smoothstep(0.,.1+e,y)*smoothstep(1.,.9-e,y);
+  return lin*mix(vec3(1.), m*g*3.6, a); }
+`;
 
 function cv(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return [c, c.getContext('2d')]; }
 function rr(x, X, Y, w, h, r) { x.beginPath(); x.roundRect ? x.roundRect(X, Y, w, h, r) : x.rect(X, Y, w, h); }
@@ -154,6 +170,7 @@ function cabUI(W, H) {
 }
 
 export function createScreens({ THREE, renderer, high, stillUrl, cab }) {
+  const panelU = () => ({ tMedia: { value: null }, uMedia: { value: 0 }, uSub: { value: 0 }, uMCover: { value: new THREE.Vector4(1, 1, 0, 0) }, uNpx: { value: new THREE.Vector2(1920, 1080) } });
   const SW = high ? 1600 : 1200, SH = Math.round(SW / 1.8);
   const tex = (c, srgb = true) => { const t = new THREE.CanvasTexture(c); t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace; t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy()); t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter; return t; };
   const aces = acesInverseUniforms(THREE);
@@ -162,23 +179,24 @@ export function createScreens({ THREE, renderer, high, stillUrl, cab }) {
   // left
   const pl = plannerCanvases(SW, SH);
   const left = new THREE.ShaderMaterial({
-    uniforms: { ...aces, time, tBase: { value: tex(pl.base) }, tFlow: { value: tex(pl.flow, false) }, uLevel: { value: 0.92 } },
+    uniforms: { ...aces, ...panelU(), time, tBase: { value: tex(pl.base) }, tFlow: { value: tex(pl.flow, false) }, uLevel: { value: 0.88 } },
     vertexShader: VS, fragmentShader: `${INV_ACES}
-      uniform sampler2D tBase, tFlow; uniform float time, uLevel; varying vec2 vUv;
+      uniform sampler2D tBase, tFlow; uniform float time, uLevel; varying vec2 vUv; ${PANEL}
       void main(){ vec3 c=texture2D(tBase,vUv).rgb; vec4 f=texture2D(tFlow,vUv);
         float ph=atan(f.y-.5,f.x-.5), spd=f.z;
         float route=step(.2,length(f.xy-.5))*step(.25,f.z);
         float pulse=pow(.5+.5*cos(ph-time*(1.5+3.*spd)),18.)*route;
         float zone=(1.-step(.2,length(f.xy-.5)))*step(.1,f.z)*(1.-step(.25,f.z));
         c=c*(1.+1.1*pulse)+pulse*.35+vec3(.05,.25,.35)*zone*(.5+.5*sin(time*1.7));
-        gl_FragColor=vec4(invACES(srgbDec(min(c,1.))*uLevel),1.); }`
+        c=mix(min(c,1.),media(),uMedia);
+        gl_FragColor=vec4(panel(invACES(srgbDec(clamp(c,0.,1.))*uLevel)),1.); }`
   });
 
   // right
   const right = new THREE.ShaderMaterial({
-    uniforms: { ...aces, time, tUI: { value: tex(lidarUI(SW, SH)) }, uLevel: { value: 0.92 } },
+    uniforms: { ...aces, ...panelU(), time, tUI: { value: tex(lidarUI(SW, SH)) }, uLevel: { value: 0.88 }, uMUI: { value: 0 } },
     vertexShader: VS, fragmentShader: `${INV_ACES}${NOISE}
-      uniform sampler2D tUI; uniform float time, uLevel; varying vec2 vUv;
+      uniform sampler2D tUI; uniform float time, uLevel, uMUI; varying vec2 vUv; ${PANEL}
       vec3 ramp(float h){ h=clamp(h,0.,1.);
         vec3 a=vec3(.04,.1,.63), b=vec3(.12,.35,1.), c=vec3(.13,.88,1.), d=vec3(.25,1.,.38), e=vec3(1.,.88,.13), f=vec3(1.,.17,.06);
         return h<.2?mix(a,b,h/.2):h<.4?mix(b,c,(h-.2)/.2):h<.6?mix(c,d,(h-.4)/.2):h<.8?mix(d,e,(h-.6)/.2):mix(e,f,(h-.8)/.2); }
@@ -204,28 +222,30 @@ export function createScreens({ THREE, renderer, high, stillUrl, cab }) {
           col=mix(ramp(h)*.07, pc, pt*(.55+.45*hh21(id+1.7)));
           col*=smoothstep(0.,.08,a.x)*smoothstep(1.,.9,a.y);
         }
-        col=mix(col, ui.rgb, ui.a);
-        gl_FragColor=vec4(invACES(srgbDec(min(col,1.))*uLevel),1.); }`
+        col=mix(col, media(), uMedia);
+        col=mix(col, ui.rgb, ui.a*(1.-uMedia*(1.-uMUI)));
+        gl_FragColor=vec4(panel(invACES(srgbDec(clamp(col,0.,1.))*uLevel)),1.); }`
   });
 
   // centre: cab feed + UI, crossfading to the still. tStill is raw sRGB bytes (also used by the hand-off pass)
   const still = new THREE.Texture(); still.colorSpace = THREE.NoColorSpace; still.generateMipmaps = true; still.minFilter = THREE.LinearMipmapLinearFilter;
   const ui = tex(cabUI(SW, SH));
   const centre = new THREE.ShaderMaterial({
-    uniforms: { ...aces, time, tCab: { value: cab.texture }, tUI: { value: ui }, tStill: { value: still }, uMix: { value: 0 }, uUI: { value: 1 }, uLevel: { value: 0.95 },
+    uniforms: { ...aces, ...panelU(), time, tCab: { value: cab.texture }, tUI: { value: ui }, tStill: { value: still }, uMix: { value: 0 }, uUI: { value: 1 }, uLevel: { value: 0.95 },
       uCover: { value: new THREE.Vector4(1, 1, 0, 0) } },
     vertexShader: VS, fragmentShader: `${INV_ACES}
-      uniform sampler2D tCab, tUI, tStill; uniform float time, uMix, uUI, uLevel; uniform vec4 uCover; varying vec2 vUv;
+      uniform sampler2D tCab, tUI, tStill; uniform float time, uMix, uUI, uLevel; uniform vec4 uCover; varying vec2 vUv; ${PANEL}
       float hs(vec2 p){ return fract(sin(dot(p,vec2(12.9898,78.233)))*43758.5453); }
       void main(){
         vec3 cab=texture2D(tCab,vUv).rgb; cab=1.-exp(-cab*1.35);                        // the cab camera's own exposure
         cab=pow(cab,vec3(1./2.2));                                                      // to display (sRGB-ish) space
         vec2 q=vUv-.5; cab*=1.-.35*dot(q,q)*1.6;                                        // feed vignette
         cab+=(hs(floor(vUv*vec2(640.,360.))+fract(time*13.))-.5)*.025;                  // sensor noise
+        cab=mix(cab, media(), uMedia);                                                  // real cab footage replaces the render
         vec4 ui=texture2D(tUI,vUv); vec3 feed=mix(cab, ui.rgb, ui.a*uUI);
         vec3 s=texture2D(tStill, vUv*uCover.xy+uCover.zw).rgb;
         vec3 c=mix(feed*uLevel, s, uMix);
-        gl_FragColor=vec4(invACES(srgbDec(clamp(c,0.,1.))),1.); }`
+        gl_FragColor=vec4(panel(invACES(srgbDec(clamp(c,0.,1.)))),1.); }`
   });
   [left, right, centre].forEach(m => { m.toneMapped = false; m.fog = false; });
 
@@ -240,20 +260,47 @@ export function createScreens({ THREE, renderer, high, stillUrl, cab }) {
   const stillReady = loadStill(stillUrl);
 
   // cover fit of the still into a screen of aspect a (matches CSS object-fit: cover, centred)
-  function cover(a, out) {
-    if (a > stillAspect) out.set(1, stillAspect / a, 0, (1 - stillAspect / a) / 2); else out.set(a / stillAspect, 1, (1 - a / stillAspect) / 2, 0);
+  function cover(a, out, src = stillAspect) {
+    if (a > src) out.set(1, src / a, 0, (1 - src / a) / 2); else out.set(a / src, 1, (1 - a / src) / 2, 0);
     return out;
   }
-  function setMedia(el) { // swap the still for a <video> or another image (the overlay pass follows)
-    const t = el.tagName === 'VIDEO' ? new THREE.VideoTexture(el) : new THREE.Texture(el);
-    t.colorSpace = THREE.NoColorSpace; t.needsUpdate = true; centre.uniforms.tStill.value = t;
-    stillAspect = (el.videoWidth || el.naturalWidth || 16) / (el.videoHeight || el.naturalHeight || 9); return t;
+  const mats = [left, centre, right], aspects = [1.8, 1.8, 1.8], media = [null, null, null], owned = new Set();
+  const elAspect = el => (el.videoWidth || el.naturalWidth || el.width || 16) / (el.videoHeight || el.naturalHeight || el.height || 9);
+  function mediaTex(el) { // raw sRGB bytes (decoded in the shaders); video: no mipmaps
+    const isV = el.tagName === 'VIDEO', t = isV ? new THREE.VideoTexture(el) : el.tagName === 'CANVAS' ? new THREE.CanvasTexture(el) : new THREE.Texture(el);
+    t.colorSpace = THREE.NoColorSpace; t.generateMipmaps = !isV; t.minFilter = isV ? THREE.LinearFilter : THREE.LinearMipmapLinearFilter;
+    t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy()); t.needsUpdate = true; owned.add(t); return t;
   }
+  const whenSized = (el, fn) => { if (el.tagName === 'VIDEO' && !el.videoWidth) el.addEventListener('loadedmetadata', fn, { once: true }); else if (el.tagName === 'IMG' && !el.naturalWidth) el.addEventListener('load', fn, { once: true }); };
+  function fitMedia(i) { const m = media[i]; if (m) cover(aspects[i], mats[i].uniforms.uMCover.value, elAspect(m.el)); }
+  // screen i (0 left, 1 centre cab feed, 2 right) shows el, cover-fit; null restores the procedural feed. opts.ui keeps the UI overlay on top.
+  function setScreenMedia(i, el, opts = {}) {
+    const m = mats[i]; if (!m) return null;
+    const prev = media[i]; if (prev && prev.tex !== stillTexCur()) { prev.tex.dispose(); owned.delete(prev.tex); }
+    if (!el) { media[i] = null; m.uniforms.uMedia.value = 0; m.uniforms.tMedia.value = null; return null; }
+    const t = mediaTex(el); media[i] = { el, tex: t }; m.uniforms.tMedia.value = t; m.uniforms.uMedia.value = 1;
+    if (i === 1) m.uniforms.uUI.value = opts.ui ? 1 : 0; if (i === 2) m.uniforms.uMUI.value = opts.ui ? 1 : 0;
+    if (opts.level !== undefined) m.uniforms.uLevel.value = opts.level;
+    fitMedia(i); whenSized(el, () => fitMedia(i)); return t;
+  }
+  const stillTexCur = () => centre.uniforms.tStill.value;
+  function setMedia(el) { // swap the Series B still (centre, end of the move; also what the hand-off pass composites) for a <video> or image
+    const old = stillTexCur(); const t = mediaTex(el); centre.uniforms.tStill.value = t;
+    if (old !== still && owned.has(old)) { old.dispose(); owned.delete(old); }
+    stillAspect = elAspect(el); whenSized(el, () => { stillAspect = elAspect(el); onAspect?.(); }); return t;
+  }
+  let onAspect = null;
 
   return {
-    left, right, centre, still, time, stillReady, cover, setMedia,
+    left, right, centre, still, time, stillReady, cover, setMedia, setScreenMedia, mats,
     get stillTex() { return centre.uniforms.tStill.value; }, get stillAspect() { return stillAspect; },
+    get cabLive() { return !media[1]; },                                   // false once real footage replaces the cab render
+    set onAspect(fn) { onAspect = fn; },
+    // physical aspect (w/h) and panel resolution of each screen, for cover fit and the pixel mask
+    setScreen(i, aspect, npx) { aspects[i] = aspect; if (npx) mats[i].uniforms.uNpx.value.set(npx, Math.round(npx / aspect)); fitMedia(i); },
+    setSubpixel(v) { for (const m of mats) m.uniforms.uSub.value = v; },
+    setLevels(l, c, r) { left.uniforms.uLevel.value = l; centre.uniforms.uLevel.value = c; right.uniforms.uLevel.value = r; },
     setExposure(e) { aces.uExp.value = e; },
-    dispose() { [left, right, centre].forEach(m => { for (const k in m.uniforms) { const v = m.uniforms[k].value; if (v && v.isTexture && v !== cab.texture) v.dispose(); } m.dispose(); }); }
+    dispose() { owned.forEach(t => t.dispose()); [left, right, centre].forEach(m => { for (const k in m.uniforms) { const v = m.uniforms[k].value; if (v && v.isTexture && v !== cab.texture) v.dispose(); } m.dispose(); }); }
   };
 }

@@ -1,14 +1,18 @@
 // TerraFirma D6 hero in three.js: a remote-operations room at night, three monitors in front of a glass wall,
 // a night dig outside. Scroll progress dollies the camera into the centre monitor, whose cab feed crossfades to
 // the Series B still; at p=1 the screen covers the target rect exactly (solved camera), so the DOM card can take over.
-// Post: D5 stack (AO, motion blur, bokeh DOF, bloom, tone map, SMAA, lens) + a final hand-off pass.
+// Shot like a film frame: monitor spill + moonlit window fill, haze and light-tower cones outside, dust in the screen
+// light, a mirrored window (planar reflection, smudges, second-pane ghost), slider move with operator wobble, rack focus
+// with shaped bokeh, lens breathing, anamorphic streaks, halation, grade and grain.
+// Post: D5 stack (AO, motion blur, DOF, bloom, tone map, SMAA, lens) with hero passes spliced in:
+//   scene -> HDR FX -> [atmosphere] -> DOF (half-res shaped bokeh) -> [streak extract] -> bloom -> ACES -> SMAA -> film lens/grade -> hand-off
 import { createPost } from '../d5/post.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-import { buildRoom } from './hero-room.js';
-import { buildOutside } from './hero-outside.js';
+import * as RoomMod from './hero-room.js';
+import * as OutMod from './hero-outside.js';
 import { createScreens } from './hero-screens.js';
 import { createCab } from './hero-cab.js';
-import { sstep } from './hero-glsl.js';
+import { sstep, noise1, NOISE3, rng, createAtmosphere, upgradeDOF, createStreaks, filmLens, createMirror, NOISE } from './hero-glsl.js';
 
 export const SERIES_B = 'https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae8ed33c51d167d8d66b21b_d6-seriesb.webp';
 
@@ -16,16 +20,20 @@ const FOV0 = 36, FOV1 = 30;                         // lens at p=0 and at the ha
 const POS0 = [0, 1.64, 2.7], LOOK0 = [0, 1.58, -3];
 const STILL_IN = [0.68, 0.86];                      // cab feed -> Series B still, on the 3D screen
 const HAND_IN = [0.9, 0.985];                       // tone-mapped screen -> exact sRGB still (hand-off pass)
+const RACK = [0.1, 0.56];                           // focus pull: site -> centre screen
+const SITE_FOCUS = 46;                              // m, the excavator / dozer line outside
+const REFL_LAYER = 1;                               // objects only the window reflection sees
 
 export function createHero({ THREE, host, quality = 'high', still = SERIES_B, canvas: cvIn, fadeOutside = true } = {}) {
   const HIGH = quality !== 'low';
   const V3 = THREE.Vector3, Q = THREE.Quaternion;
+  const GLASS_Z = RoomMod.GLASS_Z ?? -2.2, G0 = OutMod.G0 ?? -1;
   const canvas = cvIn || document.createElement('canvas');
   if (!cvIn) { canvas.className = 'd6-hero-canvas'; Object.assign(canvas.style, { position: 'absolute', left: 0, top: 0, width: '100%', height: '100%', display: 'block' }); host.appendChild(canvas); }
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance', stencil: false });
   let prMax = HIGH ? Math.min(devicePixelRatio || 1, 1.5) : 1, pr = prMax;
   renderer.setPixelRatio(pr);
-  renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;   // ACES: the screens invert exactly this curve
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.shadowMap.enabled = HIGH; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.info.autoReset = false;
@@ -33,27 +41,136 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
   renderer.setSize(W, H, false);
 
   const scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0x0a1430, 0.0011);
+  scene.fog = new THREE.FogExp2(0x0a1430, HIGH ? 0.0004 : 0.0011);   // high: the atmosphere pass does the real haze
   const cam = new THREE.PerspectiveCamera(FOV0, W / H, 0.05, 2500);
 
-  const room = buildRoom({ THREE, scene, high: HIGH });
-  const outside = buildOutside({ THREE, scene, high: HIGH });
+  const room = RoomMod.buildRoom({ THREE, scene, high: HIGH, quality: HIGH ? 'high' : 'low' });
+  const outside = OutMod.buildOutside({ THREE, scene, high: HIGH, quality: HIGH ? 'high' : 'low' });
   const cab = createCab({ THREE, high: HIGH });
   const screens = createScreens({ THREE, renderer, high: HIGH, stillUrl: still, cab });
   const mons = room.makeMonitors(screens);
+  const time = screens.time;
+  const monList = [mons.left, mons.centre, mons.right];
+
+  // ---------------------------------------------------------------- light: moon through the glass (one-sided area light, so the site is untouched)
+  const moonFill = new THREE.RectAreaLight(0x5b74b8, HIGH ? 0.55 : 0.4, 14, 3.4);
+  moonFill.position.set(0, 1.75, GLASS_Z + 0.03); moonFill.lookAt(0, 1.2, 6); scene.add(moonFill);
+  const spill = { left: new THREE.Color(0.5, 0.62, 0.9), right: new THREE.Color(0.42, 0.74, 1.0), cab: new THREE.Color(1.0, 0.84, 0.66), still: new THREE.Color(0.78, 0.74, 0.7) };
+
+  // ---------------------------------------------------------------- light-tower beams: additive cones, soft edges, drifting dust noise
+  const coneU = { time, uG: { value: G0 } };
+  const cones = new THREE.Group(); scene.add(cones);
+  const spots = outside.spots || [];
+  if (HIGH) for (const s of spots) {
+    s.updateMatrixWorld(); s.target.updateMatrixWorld();
+    const a = s.getWorldPosition(new V3()), b = s.target.getWorldPosition(new V3()), len = a.distanceTo(b) * 1.12, ang = Math.min(0.6, (s.angle || 0.7) * 0.62);
+    const g = new THREE.ConeGeometry(len * Math.tan(ang), len, 40, 1, true).translate(0, -len / 2, 0);
+    const m = new THREE.Mesh(g, new THREE.ShaderMaterial({
+      uniforms: { ...coneU, uCol: { value: new THREE.Color(1.0, 0.7, 0.4).multiplyScalar(0.05) } }, transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending, fog: false, toneMapped: true,
+      vertexShader: `varying vec3 vW, vN; varying float vA; void main(){ vec4 w=modelMatrix*vec4(position,1.); vW=w.xyz; vN=normalize(mat3(modelMatrix)*normal); vA=1.-uv.y; gl_Position=projectionMatrix*viewMatrix*w; }`,
+      fragmentShader: `${NOISE3} uniform vec3 uCol; uniform float time, uG; varying vec3 vW, vN; varying float vA;
+        void main(){ vec3 V=normalize(cameraPosition-vW); float e=abs(dot(normalize(vN),V));
+          float fall=pow(1.-vA,1.3)*smoothstep(0.,.05,vA)/(.15+vA*vA*3.);
+          float n=(.45+.9*vn3(vW*.3+vec3(0.,-time*.22,time*.07)))*(.7+.6*vn3(vW*1.1+vec3(time*.09,time*.05,0.)));
+          float gr=smoothstep(uG+.2,uG+2.8,vW.y);
+          gl_FragColor=vec4(uCol*pow(e,1.6)*fall*n*gr,1.); }`
+    }));
+    m.position.copy(a); m.quaternion.setFromUnitVectors(new V3(0, -1, 0), b.clone().sub(a).normalize()); m.renderOrder = 1; m.frustumCulled = false;
+    cones.add(m);
+  }
+
+  // ---------------------------------------------------------------- dust in the screen light: points with their own CoC (scatter bokeh)
+  const dustU = { time, focus: { value: 3 }, cocK: { value: 0 }, maxC: { value: 16 }, pxScale: { value: 500 }, lightP: { value: new V3(0, 1.13, 0.05) }, lightC: { value: new THREE.Color(0.7, 0.78, 0.95) }, amt: { value: 1 } };
+  let dust = null;
+  if (HIGH) {
+    const N = 520, r = rng(77), P = new Float32Array(N * 3), S = new Float32Array(N);
+    for (let i = 0; i < N; i++) { P[i * 3] = (r() - 0.5) * 3.4; P[i * 3 + 1] = 0.8 + r() * 1.5; P[i * 3 + 2] = -0.15 + r() * 2.6; S[i] = r(); }
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(P, 3)); g.setAttribute('seed', new THREE.BufferAttribute(S, 1));
+    dust = new THREE.Points(g, new THREE.ShaderMaterial({
+      uniforms: dustU, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+      vertexShader: `attribute float seed; uniform float time, focus, cocK, maxC, pxScale, amt; uniform vec3 lightP, lightC; varying vec3 vC;
+        void main(){ vec3 p=position;
+          p.y=.8+mod(p.y-.8-time*.008*(.4+seed),1.5);
+          p.x+=.07*sin(time*.11+seed*40.); p.z+=.05*sin(time*.08+seed*17.); p.y+=.02*sin(time*.3+seed*9.);
+          vec4 mv=modelViewMatrix*vec4(p,1.); float z=max(-mv.z,.05);
+          float coc=min(abs(cocK*(1./focus-1./z)),maxC);
+          float sz=max(pxScale*.0014/z,1.), d=max(sz,coc*2.);
+          vec3 q=p-lightP; float front=smoothstep(-.05,.25,q.z)*smoothstep(1.9,.0,abs(q.x))*smoothstep(1.1,.0,abs(q.y));
+          float tw=.25+.75*pow(.5+.5*sin(time*(.7+seed*2.3)+seed*61.),8.);
+          vC=lightC*front*tw*amt*2.2*(sz*sz)/(d*d)/(.3+q.z*q.z*2.);
+          gl_PointSize=d; gl_Position=projectionMatrix*mv; }`,
+      fragmentShader: `varying vec3 vC; void main(){ float r=length(gl_PointCoord-.5)*2.; float a=smoothstep(1.,.78,r)*(.85+.3*smoothstep(.5,.95,r)); if(a<=0.) discard; gl_FragColor=vec4(vC*a,1.); }`
+    }));
+    dust.frustumCulled = false; dust.renderOrder = 3; scene.add(dust);
+  }
+
+  // ---------------------------------------------------------------- the room behind the camera, seen only in the window
+  const backRoom = new THREE.Group(); scene.add(backRoom);
+  if (HIGH) {
+    const dark = new THREE.MeshStandardMaterial({ color: 0x15171c, roughness: 0.85 });
+    const add = (geo, mat, x, y, z, ry = 0) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.rotation.y = ry; backRoom.add(m); return m; };
+    add(new THREE.PlaneGeometry(14, 3.5), dark, 0, 1.75, 6.8, Math.PI);
+    for (const s of [-1, 1]) add(new THREE.PlaneGeometry(9, 3.5), dark, s * 5.2, 1.75, 2.3, -s * Math.PI / 2);
+    const strip = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.12, 0.135, 0.16) }), frameM = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.05, 0.055, 0.065) });
+    for (const [x, z] of [[-2.6, 1.5], [2.6, 1.5], [-2.6, 4.6], [2.6, 4.6]]) add(new THREE.BoxGeometry(0.12, 0.02, 1.4), strip, x, 3.47, z);
+    add(new THREE.PlaneGeometry(1.0, 2.1), new THREE.MeshBasicMaterial({ color: new THREE.Color(0.1, 0.07, 0.045) }), 3.6, 1.05, 6.78, Math.PI); // door glow
+    for (let i = 0; i < 7; i++) for (const s of [-1, 1]) add(new THREE.BoxGeometry(0.03, 3.3, 0.03), frameM, s * 5.17, 1.75, -1.6 + i * 1.3);     // side window frames
+    backRoom.traverse(o => o.layers.set(REFL_LAYER));
+  }
+
+  // ---------------------------------------------------------------- window: planar reflection (half res, mip-blurred by smudge roughness), second-pane ghost
+  const mirror = HIGH && room.glass ? createMirror({ THREE, z: GLASS_Z, layer: REFL_LAYER }) : null;
+  const glassU = {
+    time, tRefl: { value: mirror?.texture ?? null }, texM: { value: mirror?.texM ?? new THREE.Matrix4() }, tEnv: { value: room.env ?? null }, tSmudge: { value: null }, hasSm: { value: 0 }, hasRefl: { value: mirror ? 1 : 0 },
+    uRefl: { value: 0.75 }, uEnv: { value: 0.35 }, uTint: room.glassU?.uTint ?? { value: 0.32 }, uTintC: room.glassU?.uTintC ?? { value: new THREE.Color(0x010304) },
+    uGhost: { value: new THREE.Vector2(0.0045, -0.003) }, uSmear: { value: 0.035 }
+  };
+  if (room.glass) {
+    const old = room.glass.material;
+    room.glass.material = new THREE.ShaderMaterial({
+      uniforms: glassU, transparent: true, depthWrite: false, blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
+      vertexShader: `uniform mat4 texM; varying vec3 vW; varying vec4 vR; void main(){ vec4 w=modelMatrix*vec4(position,1.); vW=w.xyz; vR=texM*w; gl_Position=projectionMatrix*viewMatrix*w; }`,
+      fragmentShader: `${NOISE} uniform sampler2D tRefl, tEnv, tSmudge; uniform float uRefl, uEnv, uTint, hasSm, hasRefl, uSmear, time; uniform vec3 uTintC; uniform vec2 uGhost; varying vec3 vW; varying vec4 vR;
+        void main(){ vec3 V=normalize(vW-cameraPosition), N=vec3(0.,0.,1.), R=reflect(V,N);
+          float ct=abs(dot(V,N)), F=.04+.96*pow(1.-ct,5.), F2=2.*F/(1.+F);                 // two panes
+          float sm=hasSm>.5 ? texture2D(tSmudge,vW.xy*vec2(.42,.42)+vec2(.13,.4)).r : fbm2(vW.xy*vec2(2.5,1.2)+4.);
+          float sm2=fbm2(vW.xy*vec2(.7,.35)+11.);                                            // big wipes
+          float rough=clamp(.25+1.6*sm*sm2,0.,2.6);
+          vec2 e=vec2(atan(R.z,R.x)/6.2832+.5, asin(clamp(R.y,-1.,1.))/3.1416+.5);
+          vec3 env=texture2D(tEnv,e).rgb*uEnv;
+          vec3 refl=env;
+          if(hasRefl>.5){ vec2 uv=vR.xy/vR.w;
+            vec3 a=texture2D(tRefl,uv,rough+1.).rgb, b=texture2D(tRefl,uv+uGhost*(1.4-ct),rough+2.).rgb;   // second pane: offset, softer
+            refl=(a+.55*b)*uRefl+env*.35; }
+          vec3 c=refl*F2*(.75+.6*sm)+uTintC*uTint;
+          c+=refl*uSmear*sm*sm2*4.;                                                           // smudges catch the room light
+          gl_FragColor=vec4(c, uTint*(.88+.25*sm)); }`
+    });
+    room.glass.material.toneMapped = true; old?.dispose?.();
+  }
+  const reflHide = [outside.group, room.glass, cones, dust].filter(Boolean);
 
   // ---------------------------------------------------------------- post
   const post = createPost({ THREE, renderer, scene, cam });
+  const P = post.composer.passes, scenePass = P[0], mbPass = P[1];
+  const depthTex = () => scenePass.rt.depthTexture;
   post.auto.enabled = false;                              // exposure is authored per p (scrubbing must be deterministic)
   post.ao.enabled = HIGH; post.ao.radius = 0.04; post.ao.intensity = 0.9;
   post.motion.shutter = 0.5; post.motion.maxLen = 0.02;
-  // lens: barrel + vignette become uniforms so the last frames are distortion free
-  const lens = post.lens;
-  lens.uniforms.barrel = { value: 0.035 }; lens.uniforms.vig = { value: 0.55 };
-  lens.material.fragmentShader = lens.material.fragmentShader
-    .replace('uniform vec2 res;', 'uniform vec2 res; uniform float barrel; uniform float vig;')
-    .replace('(1.-0.035*r2)', '(1.-barrel*r2)').replace('smoothstep(0.75,0.12,r2*1.6),0.55)', 'smoothstep(0.75,0.12,r2*1.6),vig)');
-  lens.material.needsUpdate = true;
+  let atmoRan = false, atmo = null, streak = null;
+  if (HIGH) {
+    atmo = createAtmosphere({ THREE, cam, depth: depthTex, src: read => (mbPass.enabled ? read.texture : scenePass.useRT ? scenePass.rt.texture : null) });
+    const ar = atmo.render; atmo.render = (r, w, rd) => { ar(r, w, rd); atmoRan = atmo.needsSwap; };
+    atmo.uniforms.glassZ.value = GLASS_Z; atmo.uniforms.hazeY0.value = G0;
+    P.splice(P.indexOf(post.dof), 0, atmo);
+    upgradeDOF({ THREE, dof: post.dof, cam, depth: depthTex, src: read => (atmoRan || mbPass.enabled ? read.texture : scenePass.rt.texture), taps: 48 });
+    streak = createStreaks({ THREE, cam, depth: depthTex, src: read => read.texture });
+    P.splice(P.indexOf(post.bloom), 0, streak);
+  }
+  const lensU = filmLens(THREE, post.lens);
+  if (streak) lensU.tStreak.value = streak.texture;
+  lensU.tHal.value = post.bloom.renderTargetsVertical?.[1]?.texture ?? null;
   // hand-off: inside the projected screen rect, blend to the still exactly as the browser draws it (sRGB, object-fit cover, rounded)
   const hand = new ShaderPass({
     uniforms: { tDiffuse: { value: null }, tStill: { value: screens.still }, amt: { value: 0 }, rect: { value: new THREE.Vector4(0, 0, 1, 1) }, res: { value: new THREE.Vector2(1, 1) }, rad: { value: 0 }, outFade: { value: 0 }, cover: { value: new THREE.Vector4(1, 1, 0, 0) } },
@@ -89,64 +206,138 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
     m4.lookAt(p0, new V3(...LOOK0), new V3(0, 1, 0)); q0.setFromRotationMatrix(m4);
     screens.cover(room.centreW / room.centreH, screens.centre.uniforms.uCover.value);
     screens.cover(ta, hand.uniforms.cover.value);
+    monList.forEach((m, i) => { const w = m.w ?? 0.8, h = m.h ?? room.centreH; screens.setScreen?.(i, w / h, i === 1 ? 1920 * w / 0.8 : 1920); });
   }
+  screens.onAspect = () => { if (!dead) solve(); };
 
-  // ---------------------------------------------------------------- camera
-  let prog = 0, ptrX = 0, ptrY = 0, sx = 0, sy = 0, time = 0;
-  const c1 = new V3(), c2 = new V3(), tq = new Q(), dq = new Q(), eu = new THREE.Euler();
+  // ---------------------------------------------------------------- camera: slider dolly + gimbal, operator wobble, rack focus, breathing
+  let prog = 0, ptrX = 0, ptrY = 0, sx = 0, sy = 0, clock = 0;
+  const c1 = new V3(), c2 = new V3(), dq = new Q(), eu = new THREE.Euler(), tv = new V3(), fwd = new V3();
+  const nP = noise1(3), nY = noise1(5), nR = noise1(8), nX = noise1(13), nZ = noise1(21);
   const bez = (a, b, c, d, t, out) => { const u = 1 - t; return out.set(0, 0, 0).addScaledVector(a, u * u * u).addScaledVector(b, 3 * u * u * t).addScaledVector(c, 3 * u * t * t).addScaledVector(d, t * t * t); };
+  let focusDist = SITE_FOCUS, rackT = 0;
   function pose(p, t) {
     const s = p * p * p * (p * (p * 6 - 15) + 10);            // smootherstep: accelerates in, settles exactly on the end pose
-    c1.copy(p0).add({ x: 0, y: -0.04, z: -0.55 }); c2.copy(pEnd).add({ x: 0, y: 0.06, z: 0.75 });
+    c1.copy(p0).add({ x: 0, y: -0.05, z: -0.55 }); c2.copy(pEnd).add({ x: 0, y: 0.07, z: 0.75 });   // a slight crane dip, then rise onto the screen
     bez(p0, c1, c2, pEnd, s, cam.position);
-    cam.quaternion.slerpQuaternions(q0, qEnd, sstep(0, 1, Math.min(1, s * 1.08)));
-    // handheld + pointer, both gone by the hand-off
-    const k = 1 - sstep(0.72, 0.97, p);
+    cam.quaternion.slerpQuaternions(q0, qEnd, sstep(0, 1, Math.min(1, s * 1.08)));   // the gimbal leads the slider a touch
+    // operator: 1/f wobble (breathing, hand) + pointer, all gone before the hand-off
+    const k = 1 - sstep(0.7, 0.96, p);
     sx += (ptrX - sx) * 0.06; sy += (ptrY - sy) * 0.06;
-    eu.set(k * (0.0016 * Math.sin(t * 0.53) + 0.0009 * Math.sin(t * 1.31 + 2) - sy * 0.012), k * (0.0022 * Math.sin(t * 0.37 + 1) + 0.0008 * Math.sin(t * 1.7) - sx * 0.02), k * 0.0007 * Math.sin(t * 0.61));
+    eu.set(k * (0.0019 * nP(t * 0.45) - sy * 0.012), k * (0.0024 * nY(t * 0.38) - sx * 0.02), k * 0.0009 * nR(t * 0.3));
     cam.quaternion.multiply(dq.setFromEuler(eu));
-    cam.position.x += k * (sx * 0.07 + 0.004 * Math.sin(t * 0.41)); cam.position.y += k * (sy * 0.035 + 0.003 * Math.sin(t * 0.67 + 1));
+    cam.position.x += k * (sx * 0.07 + 0.004 * nX(t * 0.5)); cam.position.y += k * (sy * 0.035 + 0.0035 * nZ(t * 0.62)); cam.position.z += k * 0.003 * nX(t * 0.33 + 9);
+    // focus: dioptre-linear pull from the site to the centre screen
+    tv.setFromMatrixPosition(mons.centre.screen.matrixWorld).sub(cam.position);
+    const scrD = Math.max(0.2, Math.abs(tv.dot(fwd.set(0, 0, -1).applyQuaternion(cam.quaternion))));
+    rackT = sstep(RACK[0], RACK[1], p);
+    focusDist = 1 / ((1 - rackT) / SITE_FOCUS + rackT / scrD);
+    // lens: FOV ramps to the solved one; breathing narrows it ~1.4% as focus comes close, released before the hand-off
     const a = W / H, f0 = a >= 1.2 ? FOV0 : Math.min(62, Math.max(FOV0, 2 * Math.atan(0.3 / a) * 180 / Math.PI)); // portrait: keep the desk in frame
-    cam.fov = f0 + (FOV1 - f0) * s; cam.aspect = W / H; cam.updateProjectionMatrix();
+    const breathe = 1 - 0.014 * rackT * (1 - sstep(0.72, 0.95, p));
+    cam.fov = (f0 + (FOV1 - f0) * s) * breathe; cam.aspect = W / H; cam.updateProjectionMatrix();
     const sq = 1 + (squeeze - 1) * s; if (sq !== 1) { cam.projectionMatrix.elements[0] *= sq; cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert(); }
     cam.updateMatrixWorld();
     return s;
   }
 
   // ---------------------------------------------------------------- per frame
-  const corners = [new V3(-0.5, -0.5, 0), new V3(0.5, -0.5, 0), new V3(0.5, 0.5, 0), new V3(-0.5, 0.5, 0)], tv = new V3();
+  const corners = [new V3(-0.5, -0.5, 0), new V3(0.5, -0.5, 0), new V3(0.5, 0.5, 0), new V3(-0.5, 0.5, 0)], cv = new V3();
   function screenRect() {
     const m = mons.centre.screen.matrixWorld; let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
-    for (const c of corners) { tv.copy(c).applyMatrix4(m).project(cam); const x = (tv.x * 0.5 + 0.5) * W, y = (0.5 - tv.y * 0.5) * H; x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+    for (const c of corners) { cv.copy(c).applyMatrix4(m).project(cam); const x = (cv.x * 0.5 + 0.5) * W, y = (0.5 - cv.y * 0.5) * H; x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
     return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
   }
-  let lastT = 0, cabAcc = 0, frames = 0, ftAcc = 0, ftN = 0;
+  const lampCol = new THREE.Color(1.0, 0.68, 0.38), tmpC = new THREE.Color();
+  let lastT = 0, cabAcc = 0, frames = 0, ftAcc = 0, ftN = 0, reflW = 0, reflH = 0;
   function frame(now) {
-    const t = now / 1000, dt = lastT ? Math.min(0.1, t - lastT) : 1 / 60; lastT = t; time += dt;
+    const t = now / 1000, dt = lastT ? Math.min(0.1, t - lastT) : 1 / 60; lastT = t; clock += dt;
     renderer.info.reset();
-    const p = prog, s = pose(p, time);
-    outside.update(time); screens.time.value = time;
-    // centre feed: cab view until the still takes over, rendered at 30 Hz on low
-    const mix = sstep(STILL_IN[0], STILL_IN[1], p); screens.centre.uniforms.uMix.value = mix; screens.centre.uniforms.uUI.value = 1 - sstep(0.6, 0.8, p);
+    const p = prog, s = pose(p, clock);
+    outside.update(clock); time.value = clock;
+    // centre feed: cab view until the still takes over, rendered at 30 Hz on low (skipped once real footage replaces it)
+    const mix = sstep(STILL_IN[0], STILL_IN[1], p); screens.centre.uniforms.uMix.value = mix;
+    if (screens.cabLive !== false) screens.centre.uniforms.uUI.value = 1 - sstep(0.6, 0.8, p);
     cabAcc += dt;
-    if (mix < 1 && (HIGH || cabAcc > 1 / 30)) { cabAcc = 0; cab.update(time); cab.render(renderer); }
-    // look
-    const focus = Math.abs(tv.copy(mons.centre.screen.getWorldPosition(tv)).sub(cam.position).dot(c1.set(0, 0, -1).applyQuaternion(cam.quaternion)));
-    const near = sstep(0.0, 0.7, p);
-    renderer.toneMappingExposure = 1.0; screens.setExposure(1.0);
-    post.bloom.strength = 0.62 - 0.4 * sstep(0.55, 1, p); post.bloom.radius = 0.55; post.bloom.threshold = 0.78;
-    lens.uniforms.barrel.value = 0.035 * (1 - s); lens.uniforms.vig.value = 0.55 - 0.25 * s; lens.uniforms.grain.value = 0.04 - 0.02 * s;
-    room.setGlow(1 - 0.3 * near);
-    post.update({ dt, t: time, focus, aperture: HIGH ? (0.00012 + 0.0008 * near) * (1 - sstep(0.85, 1, p)) : 0, maxblur: HIGH ? (0.003 + 0.007 * near) * (1 - sstep(0.88, 1, p)) : 0, ca: 0.012 * (1 - s) });
+    if (mix < 1 && screens.cabLive !== false && (HIGH || cabAcc > 1 / 30)) { cabAcc = 0; cab.update(clock); cab.render(renderer); }
+    const near = sstep(0.0, 0.7, p), end = sstep(0.86, 0.97, p);
+
+    // exposure ride: open a touch on the wide (the site), close as the screen fills frame, back to 1 for the hand-off.
+    // the screens are compensated progressively so their pixels land as authored by the time they are the picture.
+    const ex = 1.06 - 0.13 * sstep(0.2, 0.68, p) + 0.07 * sstep(0.72, 0.93, p);
+    renderer.toneMappingExposure = ex; screens.setExposure(1 + (ex - 1) * sstep(0.45, 0.88, p));
+    screens.setLevels?.(0.86, 0.95, 0.86);
+    screens.setSubpixel?.(0.55 * sstep(0.5, 0.74, p) * (1 - sstep(0.8, 0.9, p)));
+
+    // monitor spill: colour follows each feed, softens as we close in (the frame is the screen then)
+    const glow = 1 - 0.35 * near;
+    if (mons.left?.light) { mons.left.light.color.copy(spill.left); mons.left.light.intensity = 2.3 * glow; }
+    if (mons.right?.light) { mons.right.light.color.copy(spill.right); mons.right.light.intensity = 2.3 * glow; }
+    if (mons.centre?.light) { mons.centre.light.color.copy(spill.cab).lerp(spill.still, mix); mons.centre.light.intensity = 2.8 * glow; }
+    moonFill.intensity = (HIGH ? 0.55 : 0.4) * (1 - 0.4 * near);
+
+    // atmosphere + beams + dust
+    const lampK = 1 - 0.5 * end;
+    if (atmo) {
+      const au = atmo.uniforms; au.time.value = clock;
+      spots.forEach((sp, i) => { if (i < 4) { sp.getWorldPosition(cv); au.lampP.value[i].set(cv.x, cv.y, cv.z, 0.1 * lampK); au.lampC.value[i].copy(lampCol); } });
+      tmpC.copy(mons.centre?.light?.color ?? spill.cab).lerp(spill.left, 0.4); au.roomC.value.copy(tmpC).multiplyScalar(0.0022 * (1 - sstep(0.45, 0.78, p)));
+      mons.centre.screen.getWorldPosition(au.roomP.value); au.roomP.value.z += 0.35;
+    }
+    for (const c of cones.children) c.material.uniforms.uCol.value.setRGB(1.0, 0.7, 0.4).multiplyScalar(0.04 * lampK);
+
+    // lens: rack focus with shaped bokeh, fully sharp for the hand-off
+    const dofK = HIGH ? 1 - sstep(0.88, 0.98, p) : 0;
+    const aperture = (3.2 + 6 * near) * dofK, maxblur = 16 / 1600 * dofK;      // CoC px per dioptre and max CoC radius, at 1600 px wide
+    if (dust) {
+      const bw = W * pr; dustU.focus.value = focusDist; dustU.cocK.value = aperture * bw / 1600; dustU.maxC.value = maxblur * bw;
+      dustU.pxScale.value = H * pr * cam.projectionMatrix.elements[5] * 0.5; dustU.amt.value = 1 - sstep(0.7, 0.9, p);
+      mons.centre.screen.getWorldPosition(dustU.lightP.value); dustU.lightC.value.copy(mons.centre.light?.color ?? spill.cab).lerp(spill.right, 0.35);
+    }
+    post.bloom.strength = 0.66 - 0.42 * sstep(0.55, 1, p); post.bloom.radius = 0.55; post.bloom.threshold = 0.8;
+    lensU.barrel.value = 0.035 * (1 - s); lensU.vig.value = 0.6 - 0.32 * s; lensU.grain.value = 0.032 - 0.016 * s;
+    lensU.grade.value = 1 - end; lensU.hal.value = 0.12 * (1 - end); lensU.streak.value = 0.6 * (1 - end);
+    if (streak) { streak.uniforms.minZ.value = Math.max(0.5, cam.position.z - GLASS_Z + 0.3); streak.uniforms.thr.value = 2.2; }
+    post.update({ dt, t: clock, focus: focusDist, aperture, maxblur, ca: 0.022 * (1 - s) + 0.004 });
+
+    // window reflection: half res, every frame on high
+    if (mirror) {
+      const rw = Math.max(1, Math.round(W * pr / 2)), rh = Math.max(1, Math.round(H * pr / 2));
+      if (rw !== reflW || rh !== reflH) { reflW = rw; reflH = rh; mirror.setSize(rw, rh); }
+      glassU.hasRefl.value = mirror.render(renderer, scene, cam, reflHide) ? 1 : 0;
+    }
+
     // hand-off pass follows the projected screen
     const hu = hand.uniforms, ha = sstep(HAND_IN[0], HAND_IN[1], p); hu.amt.value = ha; hu.outFade.value = fadeOutside ? sstep(HAND_IN[0], 1, p) : 0;
     if (ha > 0) { const r = p >= 1 ? target : screenRect(); hu.rect.value.set(r.x / W, 1 - (r.y + r.h) / H, (r.x + r.w) / W, 1 - r.y / H); hu.res.value.set(W * pr, H * pr); hu.rad.value = targetRad * pr * sstep(HAND_IN[0], 1, p); }
+    atmoRan = false;
     post.render();
     // adaptive resolution (high only): sustained slow frames drop the pixel ratio a notch
     if (HIGH && running) { ftAcc += dt; ftN++; if (ftN >= 90) { const avg = ftAcc / ftN; ftAcc = ftN = 0; if (avg > 1 / 45 && pr > 1) setPR(Math.max(1, pr - 0.25)); } }
     frames++;
   }
   function setPR(v) { pr = v; renderer.setPixelRatio(pr); post.setSize(W, H); renderer.domElement.style.width = renderer.domElement.style.height = '100%'; }
+
+  // ---------------------------------------------------------------- textures stream in (never block ready)
+  let texApi = null, glassTex = null, texQueued = false;
+  function applyTextures() { // roles land one by one: coalesce into one apply + one async compile per burst
+    if (texQueued) return; texQueued = true; setTimeout(applyNow, 30);
+  }
+  function applyNow() {
+    texQueued = false; if (dead || !texApi) return;
+    for (const [inst, mod] of [[room, RoomMod], [outside, OutMod]]) {
+      const fn = inst.applyHeroTextures ? inst.applyHeroTextures.bind(inst) : mod.applyHeroTextures;
+      try { fn?.(texApi, inst); } catch (e) { console.warn('d6 hero textures:', e); }
+    }
+    const g = texApi.get?.('glass_smudge'), m = g && (g.roughnessMap || g.map || g.aoMap);
+    if (m && m !== glassTex) { glassTex = m; m.wrapS = m.wrapT = THREE.RepeatWrapping; m.needsUpdate = true; glassU.tSmudge.value = m; glassU.hasSm.value = 1; }
+    renderer.compileAsync?.(scene, cam).catch(() => {});
+  }
+  import('./hero-tex.js').then(mod => {
+    if (dead || !mod.loadHeroTextures) return;
+    texApi = mod.loadHeroTextures({ THREE, renderer, quality: HIGH ? 'high' : 'low', base: new URL('./assets/tex/', import.meta.url).href });
+    if (texApi?.onReady) texApi.onReady(applyTextures); else texApi?.ready?.then(applyTextures);
+  }).catch(() => { /* textures are optional: flat materials stay */ });
 
   // ---------------------------------------------------------------- loop + api
   let running = false, raf = 0, dead = false;
@@ -160,10 +351,16 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
   post.setSize(W, H); canvas.style.width = canvas.style.height = '100%';
 
   const ready = (async () => {
-    // the still is only seen from p ~0.68: no wait for it (its onload flags the texture, the next frame uploads it)
+    // neither the Series B still (seen from p ~0.68) nor the textures gate the boot: they swap in when they land
     screens.stillReady.then(ok => { if (ok && !dead) solve(); }); // cover fit follows its real aspect
     pose(0, 0); outside.update(0); cab.update(0);
-    try { if (renderer.compileAsync) { await renderer.compileAsync(scene, cam); await renderer.compileAsync(cab.scene, cab.cam); } } catch (e) { /* compile on first frame instead */ }
+    try {
+      if (renderer.compileAsync) {
+        await renderer.compileAsync(scene, cam); await renderer.compileAsync(cab.scene, cab.cam);
+        if (mirror) await renderer.compileAsync(scene, mirror.vcam);
+      }
+    } catch (e) { /* compile on first frame instead */ }
+    if (dead) return false;
     cab.render(renderer);
     post.warm({ fx: HIGH });
     frame(performance.now());
@@ -172,11 +369,15 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
 
   return {
     ready, renderer, scene, camera: cam, post,
+    fx: { atmo, streak, mirror, lens: lensU, glass: glassU, dust: dustU, cones, moonFill },   // look tunables (QA)
     setProgress(p) { prog = Math.min(1, Math.max(0, +p || 0)); },
     setTarget(rect, radius) { if (!rect) { autoTarget = true; } else { target = { x: rect.x ?? rect.left, y: rect.y ?? rect.top, w: rect.w ?? rect.width, h: rect.h ?? rect.height }; autoTarget = false; } if (radius !== undefined) targetRad = radius; solve(); },
-    screenRect() { pose(prog, time); return screenRect(); },
+    screenRect() { pose(prog, clock); return screenRect(); },
     setPointer(x, y) { ptrX = Math.max(-1, Math.min(1, x)); ptrY = Math.max(-1, Math.min(1, y)); },
-    setMedia(el) { const t = screens.setMedia(el); hand.uniforms.tStill.value = t; solve(); },
+    // centre end frame (Series B): the 3D screen and the hand-off composite both use it
+    setMedia(el) { const t = screens.setMedia(el); hand.uniforms.tStill.value = t; solve(); return t; },
+    // live feed on screen i (0 left, 1 centre cab feed, 2 right); null restores the procedural feed
+    setScreenMedia(i, el, opts) { return screens.setScreenMedia(i, el, opts); },
     start() { if (running) return; running = true; lastT = 0; post.resetMotion(); raf = requestAnimationFrame(loop); },
     stop() { running = false; cancelAnimationFrame(raf); },
     renderOnce() { frame(performance.now()); },
@@ -184,7 +385,9 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
     stats() { const i = renderer.info; return { calls: i.render.calls, triangles: i.render.triangles, pixelRatio: pr, frames, programs: i.programs?.length }; },
     dispose() {
       running = false; dead = true; cancelAnimationFrame(raf);
-      room.dispose(); outside.dispose(); cab.dispose(); screens.dispose(); post.composer.dispose?.();
+      texApi?.dispose?.(); room.dispose(); outside.dispose(); cab.dispose(); screens.dispose(); mirror?.dispose(); atmo?.dispose(); streak?.dispose(); post.dof.dispose?.();
+      for (const o of [...cones.children, dust, ...backRoom.children].filter(Boolean)) { o.geometry?.dispose(); o.material?.dispose(); }
+      room.glass?.material?.dispose?.(); post.composer.dispose?.();
       renderer.dispose(); if (!cvIn) canvas.remove();
     }
   };

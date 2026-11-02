@@ -3,8 +3,15 @@
 // The room floor sits 1 m above the site; the camera looks along -z.
 import { createMachines } from '../d5/machines.js';
 import { NOISE, rng } from './hero-glsl.js';
+import { texBinder } from './hero-model-kit.js';
+import { buildSite } from './hero-model-site.js';
 
 export const G0 = -1.0;
+const TEX_DIRT = 4; // metres per dirt_ground tile
+
+const live = new Set();
+// assign streamed textures by role to every live outside (no-op for roles not loaded yet)
+export function applyHeroTextures(tex) { for (const o of live) o.applyHeroTextures(tex); }
 
 // JS value noise matching nothing in GLSL (terrain shape only)
 function makeNoise(seed) {
@@ -15,8 +22,10 @@ function makeNoise(seed) {
   return (x, y, o = 4) => { let s = 0, a = 0.5, f = 1; for (let k = 0; k < o; k++) { s += a * n(x * f, y * f); f *= 2.03; a *= 0.5; } return s; };
 }
 
-export function buildOutside({ THREE, scene, high }) {
-  const group = new THREE.Group(); scene.add(group);
+export function buildOutside({ THREE, scene, high, quality }) {
+  if (high === undefined) high = quality !== 'low';
+  const group = new THREE.Group(); group.name = 'hero-outside'; scene.add(group);
+  const tb = texBinder();
   const fbm = makeNoise(19);
   const bump = (x, z, cx, cz, rx, rz, h) => { const d = ((x - cx) / rx) ** 2 + ((z - cz) / rz) ** 2; return h * Math.exp(-d * 2.2); };
   const hgt = (x, z) => {
@@ -31,17 +40,22 @@ export function buildOutside({ THREE, scene, high }) {
 
   // terrain
   const tg = new THREE.PlaneGeometry(420, 420, high ? 210 : 140, high ? 210 : 140).rotateX(-Math.PI / 2).translate(0, 0, -215);
-  { const p = tg.attributes.position; for (let i = 0; i < p.count; i++) p.setY(i, G0 + hgt(p.getX(i), p.getZ(i))); tg.computeVertexNormals(); }
+  { const p = tg.attributes.position, uv = tg.attributes.uv; for (let i = 0; i < p.count; i++) { p.setY(i, G0 + hgt(p.getX(i), p.getZ(i))); uv.setXY(i, p.getX(i) / TEX_DIRT, -p.getZ(i) / TEX_DIRT); } tg.computeVertexNormals(); }
+  tg.userData.texScale = TEX_DIRT;
   const tm = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.96 });
   tm.onBeforeCompile = sh => {
     sh.vertexShader = 'varying vec3 vW;\n' + sh.vertexShader.replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvW=(modelMatrix*vec4(transformed,1.)).xyz;');
     sh.fragmentShader = 'varying vec3 vW;\n' + NOISE + sh.fragmentShader
       .replace('#include <color_fragment>', `#include <color_fragment>
+        vec3 tcol=diffuseColor.rgb;
         float n1=fbm2(vW.xz*.18), n2=vn2(vW.xz*2.3+7.), n3=vn2(vW.xz*11.), tr=.5+.5*sin(vW.x*3.2+n1*4.);
         vec3 dirt=mix(vec3(.26,.19,.14), vec3(.4,.31,.23), n1);
         dirt*=.78+.3*n2+.12*(n3-.5);
         dirt=mix(dirt, vec3(.14,.11,.09), smoothstep(.55,.85,fbm2(vW.xz*.06+3.))*.6);   // wet / dark patches
         diffuseColor.rgb=dirt;
+        #ifdef USE_MAP
+        diffuseColor.rgb*=mix(vec3(1.), tcol*2.2, .75);
+        #endif
         float wash=smoothstep(-34.,-50.,vW.z)*smoothstep(-110.,-70.,vW.z)*smoothstep(95.,30.,abs(vW.x))*(.55+.6*fbm2(vW.xz*.05+9.));
         float bh=n2*.35+n3*.1+tr*.08*smoothstep(-20.,-60.,vW.z);`)
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
@@ -53,21 +67,35 @@ export function buildOutside({ THREE, scene, high }) {
   };
   tm.customProgramCacheKey = () => 'd6hero-terrain';
   const terrain = new THREE.Mesh(tg, tm); terrain.receiveShadow = true; group.add(terrain);
+  tb.bind(tm, 'dirt_ground', { normalScale: 0.8 });
 
   // ridgelines: two strips of silhouette hills, far
   const ridge = (R, a0, a1, base, amp, seed, col) => {
-    const n = 220, f = makeNoise(seed), P = [], I = [];
+    const n = 220, f = makeNoise(seed), P = [], I = [], top = [];
     for (let i = 0; i <= n; i++) {
       const a = a0 + (a1 - a0) * i / n, x = Math.sin(a) * R, z = -Math.cos(a) * R;
       const h = base + amp * (f(i * 0.035, seed) * 1.2 + 0.25 * f(i * 0.2, 7)) + amp * 0.9 * Math.exp(-(((a + 0.55) / 0.22) ** 2));
-      P.push(x, -40, z, x, G0 + h * 0.55, z, x, G0 + h, z);
+      P.push(x, -40, z, x, G0 + h * 0.55, z, x, G0 + h, z); top.push([x, G0 + h, z, a]);
       if (i < n) { const k = i * 3; I.push(k, k + 3, k + 1, k + 1, k + 3, k + 4, k + 1, k + 4, k + 2, k + 2, k + 4, k + 5); }
     }
     const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); g.setIndex(I); g.computeVertexNormals();
-    const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: col, roughness: 1 })); group.add(m); return m;
+    const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: col, roughness: 1 })); m.userData.top = top; group.add(m); return m;
   };
   ridge(520, -1.3, 1.3, 14, 26, 4, 0x1a1d26);
-  ridge(900, -1.25, 1.25, 30, 55, 9, 0x141822);
+  const r2 = ridge(900, -1.25, 1.25, 30, 55, 9, 0x141822);
+  // distant town over the far ridge: sparse sodium / white points on its flanks (the sky adds the glow dome)
+  const city = (() => {
+    const rr = rng(77), P = [], C = [], top = r2.userData.top, c = new THREE.Color();
+    for (let i = 0; i < (high ? 260 : 140); i++) {
+      const a = 0.35 + Math.pow(rr(), 0.7) * 0.6, k = Math.min(top.length - 2, Math.floor((a + 1.25) / 2.5 * (top.length - 1))), t = top[k];
+      const d = 0.985 + rr() * 0.01, y = t[1] - 2 - Math.pow(rr(), 2) * 22;
+      P.push(Math.sin(a) * 900 * d, y, -Math.cos(a) * 900 * d);
+      c.setRGB(...(rr() < 0.7 ? [1.0, 0.62, 0.28] : [0.85, 0.9, 1.0])).multiplyScalar(0.6 + rr() * 0.9); C.push(c.r, c.g, c.b);
+    }
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(C, 3));
+    const pts = new THREE.Points(g, new THREE.PointsMaterial({ size: high ? 1.6 : 1.3, sizeAttenuation: false, vertexColors: true, fog: false, transparent: true, depthWrite: false }));
+    pts.userData.part = 'city-lights'; group.add(pts); return pts;
+  })();
 
   // sky dome: blue hour, near black overhead, a few stars
   const skyU = { cHor: { value: new THREE.Color(0.05, 0.16, 0.44) }, cMid: { value: new THREE.Color(0.01, 0.03, 0.1) }, cTop: { value: new THREE.Color(0.001, 0.0015, 0.004) }, time: { value: 0 } };
@@ -79,6 +107,7 @@ export function buildOutside({ THREE, scene, high }) {
         vec3 c=mix(cHor, cMid, smoothstep(.0,.12,e)); c=mix(c, cTop, smoothstep(.08,.3,e));
         c*=1.+.25*exp(-pow(az+.15,2.)*1.5)*smoothstep(.25,0.,e);                   // last light, a touch left of centre
         c+=vec3(.06,.04,.03)*exp(-max(e,0.)*40.)*.4;                                 // sodium haze on the horizon
+        c+=vec3(.07,.04,.018)*exp(-pow((az-.62)/.22,2.))*exp(-max(e-.05,0.)*22.)*smoothstep(-.02,.06,e); // town glow over the far ridge
         vec2 sc=vec2(az*260.,e*260.); vec2 id=floor(sc); float s=hh21(id);
         float st=step(.992,s)*smoothstep(.22,.0,length(fract(sc)-.5))*smoothstep(.08,.3,e)*(.6+.4*sin(time*2.+s*90.));
         c+=vec3(.5,.55,.7)*st*.12;
@@ -98,12 +127,18 @@ export function buildOutside({ THREE, scene, high }) {
   for (const k of ['paint', 'metal', 'glass']) { MAT[k].envMap = night; }
   MAT.paint.envMapIntensity = 0.5; MAT.metal.envMapIntensity = 0.9; MAT.glass.envMapIntensity = 1.4;
   MAT.glow.color.setRGB(4, 4, 4);
+  const paintU = { value: null }; // excavator_paint, triplanar in object space (D5 machine geometry carries no UVs)
   for (const k of ['paint', 'rough', 'metal']) { // night read: mostly silhouettes, the CAT yellow only hinted
     const m = MAT[k], prev = m.onBeforeCompile;
-    m.onBeforeCompile = (sh, r) => { prev(sh, r); sh.fragmentShader = sh.fragmentShader.replace('#include <roughnessmap_fragment>',
+    m.onBeforeCompile = (sh, r) => { prev(sh, r); sh.uniforms.tPaint = paintU;
+      sh.fragmentShader = (k === 'paint' ? 'uniform sampler2D tPaint;\n' : '') + sh.fragmentShader.replace('#include <roughnessmap_fragment>',
+      (k === 'paint' && paintU.value ? `{ vec3 an=abs(normalize(vMN)); an/=an.x+an.y+an.z+1e-4; vec3 q=vMObj*.45;
+        vec3 tp=texture2D(tPaint,q.zy).rgb*an.x+texture2D(tPaint,q.xz).rgb*an.y+texture2D(tPaint,q.xy).rgb*an.z;
+        diffuseColor.rgb*=mix(vec3(1.), tp*2., .7); }\n` : '') +
       'diffuseColor.rgb = mix(vec3(dot(diffuseColor.rgb, vec3(.3,.59,.11))), diffuseColor.rgb, .14) * .34;\n#include <roughnessmap_fragment>'); };
-    m.customProgramCacheKey = () => 'd6night-' + k;
+    m.customProgramCacheKey = () => 'd6night-' + k + (k === 'paint' && paintU.value ? '-tex' : '');
   }
+  tb.bind(null, 'excavator_paint', { custom: set => { const t = set.map; if (!t || paintU.value === t) return; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.needsUpdate = true; paintU.value = t; MAT.paint.needsUpdate = true; } });
   const place = (o, x, z, ry) => { o.position.set(x, G0 + hgt(x, z) - 0.05, z); o.rotation.y = ry; group.add(o); return o; };
   const exA = yard.exA, dozer = yard.dozer;
   place(exA.g, 12, -50, Math.PI * 0.95); exA.g.scale.setScalar(1.55);
@@ -131,6 +166,10 @@ export function buildOutside({ THREE, scene, high }) {
     group.add(s, s.target); return s;
   });
 
+  // site dressing: barriers, fence, stockpiles, trailer, pickup, work lights, light cones
+  const site = buildSite({ THREE, group, hgt, G0, high, spots, machines: { exA, dozer } });
+  site.bind(tb);
+
 
   // idle animation: the excavator works slowly, the dozer creeps
   const exPose = (e, t, k) => {
@@ -147,8 +186,11 @@ export function buildOutside({ THREE, scene, high }) {
     const s = Math.sin(t * 0.13); dozer.position.set(dz0.x + s * 2.4 * Math.cos(0.35), dz0.y, dz0.z - s * 2.4 * Math.sin(0.35));
   }
   update(0);
-  return {
-    group, update, spots, hemi, moon, skyU, hgt,
-    dispose() { group.traverse(o => { if (o.geometry) o.geometry.dispose(); }); tm.dispose(); sky.material.dispose(); night.dispose(); Object.values(MAT).forEach(m => m.dispose()); }
+  const api = {
+    group, update, spots, hemi, moon, skyU, hgt, site, cones: site.cones, city,
+    applyHeroTextures: tex => tb.apply(tex),
+    dispose() { live.delete(api); site.dispose(); group.traverse(o => { if (o.geometry) o.geometry.dispose(); }); tm.dispose(); sky.material.dispose(); night.dispose(); city.material.dispose(); Object.values(MAT).forEach(m => m.dispose()); }
   };
+  live.add(api);
+  return api;
 }
