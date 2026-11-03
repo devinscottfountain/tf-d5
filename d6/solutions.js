@@ -199,7 +199,7 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
     vec4 clip(vec2 s){ return vec4(s.x / uRes.x*2. - 1., 1. - s.y / uRes.y*2., 0., 1.); }
     // left fade: 0 at x <= 583, full by ~1100; capped to .25 (x .6 stroke = .15) under the copy box
     float mapA(vec2 m){
-      float ax = smoothstep(583., 1100., m.x)*smoothstep(-80., 300., m.y)*(1. - smoothstep(660., 940., m.y));
+      float ax = smoothstep(583., 1100., m.x)*smoothstep(0., 280., m.y)*(1. - smoothstep(660., 940., m.y));
       float box = smoothstep(${MAP_CAP[0].toFixed(1)} - 60., ${MAP_CAP[0].toFixed(1)}, m.x)*(1. - smoothstep(${MAP_CAP[2].toFixed(1)}, ${MAP_CAP[2].toFixed(1)} + 60., m.x))
         *smoothstep(${MAP_CAP[1].toFixed(1)} - 50., ${MAP_CAP[1].toFixed(1)}, m.y)*(1. - smoothstep(${MAP_CAP[3].toFixed(1)}, ${MAP_CAP[3].toFixed(1)} + 70., m.y));
       return min(ax, mix(1., .25, box*uCap));
@@ -231,6 +231,8 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
   });
   const dMat = new THREE.ShaderMaterial({
     uniforms: MU, transparent: true, depthWrite: false, depthTest: false,
+    // max blending too: the many vertices that snap onto one lattice node never stack up into a bright block
+    blending: THREE.CustomBlending, blendEquation: THREE.MaxEquation, blendEquationAlpha: THREE.MaxEquation,
     vertexShader: /* glsl */ `
       uniform float uDotA, uDot; varying float vA;
       ${MAP_GLSL}
@@ -243,7 +245,7 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
       }`,
     fragmentShader: /* glsl */ `
       uniform float uDot, uPR; varying float vA;
-      void main(){ float r = length(gl_PointCoord - .5)*(uDot*uPR + 1.); float a = vA*clamp(uDot*uPR*.5 + .5 - r, 0., 1.); if (a < .004) discard; gl_FragColor = vec4(.88, .96, 1., a); }`,
+      void main(){ float r = length(gl_PointCoord - .5)*(uDot*uPR + 1.); float a = vA*clamp(uDot*uPR*.5 + .5 - r, 0., 1.); if (a < .004) discard; gl_FragColor = vec4(vec3(.88, .96, 1.)*a, a); }`,
   });
   let lines = null, mdots = null;
 
@@ -371,7 +373,8 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
     Fg.exec = fitOne(C_EXEC, KP.exec, [{ ...full, y0: ny(ch - Math.max(22, ch * 0.03)), x0: nx(Math.max(12, cw * 0.03)), x1: nx(cw - Math.max(12, cw * 0.03)), y1: ny(FR.gt - 16) }]);
     // control: the excavator centred near 63.5% vh, as large as the room between the tabs and the HUD allows
     const hud = FR.hud.filter(r => r && r.r - r.l > 2 && r.b - r.t > 2);
-    const m = Math.max(12, cw * 0.012), top = FR.gt - 24;
+    // top: clear of the page's control hint (one mono line just under the tabs, right aligned) on desktop
+    const m = Math.max(12, cw * 0.012), top = cw >= 768 ? FR.gt + Math.max(36, cw * 0.034) : FR.gt - 24;
     let l = mx, r = cw - mx, hTop = ch - mb, hBot = Math.min(ch - mb, ch * 0.88);
     for (const h of hud) { if ((h.l + h.r) / 2 < cw / 2) l = Math.max(l, h.r + m); else r = Math.min(r, h.l - m); hTop = Math.min(hTop, h.t - m); hBot = Math.max(Math.min(hBot, h.b), FR.gt + ch * 0.2); }
     const band = (x0, x1, y0, y1) => { const h = Math.min(y1 - y0, ch * 0.34), yc = Math.min(Math.max(ch * 0.635, y0 + h / 2), y1 - h / 2); return { x0: nx(x0), x1: nx(x1), y0: ny(yc + h / 2), y1: ny(yc - h / 2), minW: 0.3 }; };

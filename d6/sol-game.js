@@ -193,7 +193,7 @@ export function createGame({ THREE, scene, canvas, camera, exc, grid, hField, MS
     state = 'EN ROUTE';
     const list = [
       { d: Math.max(0.8, 0.4 + Math.abs(dYaw) * 0.5), s() { const f = {}; for (const k of ['a1', 'a2']) f[k] = ARM[k]; this.f = f; }, u(k) { const e = io2(k); yaw = y0 + dYaw * e; ARM.a1 = this.f.a1 + (0.75 - this.f.a1) * e; ARM.a2 = this.f.a2 + (-1.7 - this.f.a2) * e; exc.drive(Math.abs(dYaw) * 0.02); } },
-      { d: Math.max(0.6, travel / 6), u(k) { const e = io2(k); const nx = sx + (tx - sx) * e, nz = sz + (tz - sz) * e; const m = Math.hypot(nx - pos.x, nz - pos.z); pos.x = nx; pos.z = nz; exc.drive(m / MSCALE); speed = travel > 0.5 ? 1 : 0; } },
+      { d: travel > 0.3 ? Math.max(0.6, travel / 6) : 0, u(k) { const e = io2(k); const nx = sx + (tx - sx) * e, nz = sz + (tz - sz) * e; const m = Math.hypot(nx - pos.x, nz - pos.z); pos.x = nx; pos.z = nz; exc.drive(m / MSCALE); speed = travel > 0.5 ? 1 : 0; } },
       call(() => { speed = 0; state = 'DIGGING'; fillTarget = 0.55; }),
     ];
     [0, -0.2, 0.2, -0.1, 0.12].forEach((sw, k) => list.push(
