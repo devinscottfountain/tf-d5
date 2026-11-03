@@ -170,9 +170,9 @@ export function createMachineKit(THREE) {
   const opacityFn = (root, m) => o => {
     root.visible = o > 0.004;
     m.line.opacity = 0.92 * o;
-    const so = Math.min(1, Math.max(0, (o - 0.55) / 0.4)), tr = so < 0.999;
+    const so = Math.min(1, Math.max(0, (o - 0.8) / 0.2)), tr = so < 0.999; // occluder clears first: no black silhouette left behind
     if (m.solid.transparent !== tr) { m.solid.transparent = tr; m.solid.needsUpdate = true; }
-    m.solid.opacity = so * so; m.solid.depthWrite = so > 0.6; m.solid.colorWrite = so > 0.004;
+    m.solid.opacity = so * so * so; m.solid.depthWrite = so > 0.9; m.solid.colorWrite = so > 0.004;
   };
 
   // ================================================================== EXCAVATOR (36 t class)

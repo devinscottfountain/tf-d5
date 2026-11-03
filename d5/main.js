@@ -679,7 +679,7 @@ function maskBehind(inSpace) {
 // Size: the camera moves along its line to Mars (same lens, look and phase; only the distance changes). Position: a view offset on
 // the projection. It lets go as the title leaves (sm 0.15 -> 0.27, the title is gone by 0.155) into the D5 arrival framing.
 const titleEl = behind.length ? behind[0].el : null, mcv = new THREE.Vector3();
-const MM_R = 0.14, MM_BITE = 0.18; // disc radius / viewport height; limb overlap into each facing letter, fraction of the narrower glyph
+const MM_R = 0.14, MM_BITE = -0.22; // disc radius / viewport height; negative = clear air between the limb and each facing letter, fraction of the narrower glyph
 let gap = null, gapKey = '', framed = false, tParts = null;
 if (titleEl && document.fonts) document.fonts.ready.then(() => (gapKey = ''));
 function splitTitle() { // once: [left half][spacer][right half], split at the word gap nearest the middle of the text

@@ -304,7 +304,7 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
     const r = canvas.getBoundingClientRect(), px = x - r.left, py = y - r.top, m = 14;
     return FR.hud.some(h => h && px > h.l - m && px < h.r + m && py > h.t - m && py < h.b + m) || (FR.gt != null && py < FR.gt + 8);
   };
-  let gOut = 0, gReset = true, tyS = 0; // control rig presence (tweens out when control is left), eased camera height
+  let gOut = 0, gReset = true, tyS = 0; const mK = [0, 0, 0]; // control rig presence (tweens out when control is left), eased camera height
 
   // ------------------------------------------------------------------ camera states
   // tx, tz: look target; w: visible width (world) at the target; pitch, yaw (rad); fov; ox, oy: NDC offset of the target.
@@ -521,8 +521,10 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
     // control rig (dig game machine, zone, dug points): tweens out as soon as control is left, gone by modeT ~0.15
     // in exec, then resets so the next visit starts on a fresh demo
     if (mode === 1) { gOut = Math.min(1, gOut + dt / 0.5); gReset = false; }
-    else { gOut = Math.max(0, gOut - dt / 0.35); if (mode === 2) gOut = Math.min(gOut, 1 - sm(effT / 0.15)); }
+    else { gOut = Math.max(0, gOut - dt / 0.18); if (mode === 2) gOut = Math.min(gOut, 1 - sm(effT / 0.15)); }
     if (gOut <= 0 && !gReset) { gReset = true; game.reset(); }
+    // tab switch: the outgoing machines clear in 0.18 s instead of riding the slower camera ease
+    for (let i = 0; i < 3; i++) mK[i] = i === mode ? Math.min(1, mK[i] + dt / 0.3) : Math.max(0, mK[i] - dt / 0.18);
 
     // map: lines draw in with topo; vertices snap to the lattice over morph 0..0.4
     mapPlace(topo, morph);
@@ -534,7 +536,7 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
     // dot field
     U.uApp.value = sm((morph - 0.42) / 0.5); U.uAmp.value = amp; U.uCtrl.value = toCtrl * (1 - clamp01(effFlat)); U.uCutK.value = gOut;
     U.uS4.value = toExec; U.uS2.value = Math.max(1 - toCtrl, toExec);
-    U.uPlanZ.value = wP * mApp; U.uGameZ.value = wC * mApp * gOut;
+    U.uPlanZ.value = wP * mApp * mK[0]; U.uGameZ.value = wC * mApp * gOut;
     U.uSize.value = lerp(lerp(0.17, 0.11, toCtrl), 0.2, toExec);
     U.uFar.value = lerp(1e4, lerp(150, 120, toExec), toCtrl);
     // mask: nothing above the tab cards (their bottom - 40 px, soft 70 px), following the stage as it scrolls in
@@ -564,7 +566,7 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
     U.uPx.value = ch * PRU.value / (2 * Math.tan(cs.fov * DEG / 2));
 
     // plan machines + zones: short crossfades so the plan and control machines barely overlap
-    const pa = sm((wP - 0.35) / 0.65) * mApp;
+    const pa = sm((wP - 0.35) / 0.65) * mApp * mK[0];
     for (const P of PLAN) {
       placeMachine(P.m, P.x, P.z, P.yaw, amp, pa);
       if (pa > 0.004) { const a = P.arm, s = Math.sin(t * 0.6 + P.x) * 0.06; P.m.setArm(a[0] + s, a[1] - s, a[2], a[3] + Math.sin(t * 0.35 + P.z) * 0.25); }
@@ -580,7 +582,7 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
     for (const E of EXEC) {
       const p = 1 - Math.pow(1 - clamp01((effT - E.s) / (0.7 - E.s)), 2.5);
       const back = (1 - p) * E.back, fx = Math.cos(E.yaw), fz = -Math.sin(E.yaw);
-      placeMachine(E.m, E.x - fx * back, E.z - fz * back, E.yaw, amp, wE * sm(effT * 8 - E.s * 8));
+      placeMachine(E.m, E.x - fx * back, E.z - fz * back, E.yaw, amp, wE * sm(effT * 8 - E.s * 8) * mK[2]);
       if (wE > 0.004) {
         E.m.setDrive(-back / (MSCALE * EXS));
         if (E.arm) { const s = Math.sin(t * 0.5 + E.x) * 0.08 * p; E.m.setArm(E.arm[0] + s, E.arm[1] - s * 1.2, E.arm[2] + s, E.arm[3]); }
