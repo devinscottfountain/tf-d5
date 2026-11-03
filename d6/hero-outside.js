@@ -143,8 +143,9 @@ export function buildOutside({ THREE, scene, high, quality }) {
   tb.bind(null, 'excavator_paint', { custom: set => { const t = set.map; if (!t || paintU.value === t) return; paintU.value = t; paintK.value = 1; } }); // ref swap only
   const place = (o, x, z, ry) => { o.position.set(x, G0 + hgt(x, z) - 0.05, z); o.rotation.y = ry; group.add(o); return o; };
   const exA = yard.exA, dozer = yard.dozer;
-  // excavator pulled left of the lead copy (72-95 vw): the copy sits over dark ground and hills, not the lit house
-  const EX_X = +(globalThis.__EXX ?? 8.5);
+  // excavator pulled left of the lead copy (72-95 vw) and out of the right tower's beam (aimed past it, see spots): a dark
+  // silhouette under the copy as in Tim's frame, not a lit house; its stick stays clear of the H1 at full parallax
+  const EX_X = 10.5;
   place(exA.g, EX_X, -50, Math.PI * 0.95); exA.g.scale.setScalar(1.55);
   place(dozer, -8, -54, 0.3); dozer.scale.setScalar(1.2);
   const keep = [exA.g, dozer];
@@ -170,7 +171,8 @@ export function buildOutside({ THREE, scene, high, quality }) {
   const spots = towers.map((t, i) => {
     const s = new THREE.SpotLight(0xffcf98, [1000, 1000][i], 0, [0.85, 0.75][i], 0.95, 2);
     const head = new THREE.Vector3(-0.45, 9.6, 0).applyMatrix4(t.matrix.compose(t.position, t.quaternion, t.scale));
-    s.position.copy(head); s.target.position.copy([new THREE.Vector3(2, G0, -44), new THREE.Vector3(14, G0, -56), new THREE.Vector3(-36, G0, -90)][i]);
+    s.target.position.copy([new THREE.Vector3(2, G0, -44), new THREE.Vector3(24, G0, -58), new THREE.Vector3(-36, G0, -90)][i]);
+    s.position.copy(head).addScaledVector(s.target.position.clone().sub(head).normalize(), 0.6);   // just in front of the lens faces: the housings never catch their own lamp
     if (i === 0 && high) { s.castShadow = true; s.shadow.mapSize.set(1024, 1024); s.shadow.camera.near = 2; s.shadow.camera.far = 110; s.shadow.bias = -0.0008; s.shadow.normalBias = 0.04; s.shadow.radius = 3; }
     group.add(s, s.target); return s;
   });

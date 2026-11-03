@@ -395,8 +395,8 @@ function init() {
     D6.scene = scene;
   }
 
-  // solutions -> Mars hand-off, in px of scroll past the pin end: canvas 0 at sol, Mars from mars (>= 150 px of black between)
-  const EXIT = { sol: () => 0.34 * innerHeight, mars: () => 0.34 * innerHeight + Math.max(150, 0.17 * innerHeight), len: () => 0.3 * innerHeight };
+  // solutions -> Mars hand-off, in px of scroll past the pin end: canvas 0 at sol, Mars from mars (>= 180 px of black between)
+  const EXIT = { sol: () => 0.34 * innerHeight, mars: () => 0.34 * innerHeight + Math.max(180, 0.2 * innerHeight), len: () => 0.3 * innerHeight };
   D6.exit = EXIT;
   // ---------- Mars: D5 in mars mode, imported when its track is ~1.5 viewports away ----------
   let marsP = null; const endEl = q('.d6-end');
