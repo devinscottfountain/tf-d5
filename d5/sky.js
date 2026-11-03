@@ -74,17 +74,13 @@ void main(){
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.);
 }`;
 const STAR_FRAG = /* glsl */ `
-uniform float uGain; uniform float uPeak; varying vec3 vCol; varying float vI;
+uniform float uGain; varying vec3 vCol; varying float vI;
 void main(){
   float d = length(gl_PointCoord - 0.5) * 2.;
   float core = 1. - smoothstep(0., 1., d);     // round falloff (same curve as before, written with ordered edges)
   float a = core * core;
   if (a < 0.003) discard;
-  vec3 c = vCol * vI * a * uGain;
-  // optional soft ceiling: keeps a bright star's core under the bloom threshold, so bloom's near-box first blur
-  // cannot turn it into a soft square. 0 = off (the default; output unchanged).
-  if (uPeak > 0.) { float m = max(c.r, max(c.g, c.b)), k = 0.5 * uPeak; if (m > k) c *= (k + (uPeak - k) * (1. - exp(-(m - k) / (uPeak - k)))) / m; }
-  gl_FragColor = vec4(c, 1.);
+  gl_FragColor = vec4(vCol * vI * a * uGain, 1.);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`;
@@ -116,7 +112,6 @@ export async function createSky({
   milkyWay = true,          // set false to skip the panorama
   milkyWayIntensity = 0.30, // linear gain on the panorama
   starGain = 1.0,           // global star brightness
-  starPeak = 0,             // > 0: soft ceiling on a star's linear value (keep it under the bloom threshold); 0 = off
   pixelRatio = null,        // defaults to min(devicePixelRatio, 2)
 } = {}) {
   const V = THREE.Vector3;
@@ -140,7 +135,7 @@ export async function createSky({
   g.setAttribute('aBV', new THREE.BufferAttribute(bv, 1));
   const starMat = new THREE.ShaderMaterial({
     vertexShader: STAR_VERT, fragmentShader: STAR_FRAG,
-    uniforms: { uPx: { value: pixelRatio || Math.min(window.devicePixelRatio || 1, 2) }, uGain: { value: starGain }, uPeak: { value: starPeak } },
+    uniforms: { uPx: { value: pixelRatio || Math.min(window.devicePixelRatio || 1, 2) }, uGain: { value: starGain } },
     transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: true, fog: false,
   });
   const stars = new THREE.Points(g, starMat);
