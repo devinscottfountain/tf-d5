@@ -23,8 +23,8 @@ export const SERIES_B = 'https://cdn.prod.website-files.com/6ae4c2b96de64cf78d48
 
 const FOV0 = 36, FOV1 = 30;                         // lens at p=0 and at the hand-off
 const POS0 = [0, 1.64, 2.7], LOOK0 = [0, 1.58, -3];
-const FEED_DIP = [0.56, 0.64];                      // cab feed dips to ~10 % (a channel change, not a dissolve)
-const STILL_IN = [0.64, 0.78];                      // then the Series B still comes up on the 3D screen
+const FEED_DIP = [0.56, 0.62, 0.67];                // cab feed dips to ~10 %, then to black (a channel change, not a dissolve)
+const STILL_IN = [0.66, 0.78];                      // then the Series B still comes up on the 3D screen
 const HAND_IN = [0.86, 0.97];                       // tone-mapped screen -> exact sRGB still (hand-off pass)
 const MIRROR_OFF = [0.6, 0.7];                      // window reflection fades out (the glass is deep in bokeh), then is skipped
 const GLARE_COV = [0.42, 0.6];                      // screen coverage over which bloom / halation / streaks / dust leave the screen
@@ -317,7 +317,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
 
     // centre feed: the cab view dips to black, then the Series B still comes up (never both visible); cab at 30 Hz on low
     const cu = screens.centre.uniforms, live = screens.cabLive !== false;
-    const feed = 1 - 0.9 * sstep(FEED_DIP[0], FEED_DIP[1], p), mix = sstep(STILL_IN[0], STILL_IN[1], p);
+    const feed = (1 - 0.9 * sstep(FEED_DIP[0], FEED_DIP[1], p)) * (1 - sstep(FEED_DIP[1], FEED_DIP[2], p)), mix = sstep(STILL_IN[0], STILL_IN[1], p);
     cu.uFeed.value = feed; cu.uMix.value = mix;
     if (live) cu.uUI.value = 1 - sstep(FEED_DIP[0] - 0.04, FEED_DIP[1], p);
     cabAcc += dt;
@@ -343,7 +343,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
     if (atmo) {
       const au = atmo.uniforms; au.time.value = clock;
       for (let i = 0; i < spots.length && i < 4; i++) { spots[i].getWorldPosition(cv); au.lampP.value[i].set(cv.x, cv.y, cv.z, 0.1 * lampK); au.lampC.value[i].copy(lampCol); }
-      tmpC.copy(mons.centre?.light?.color ?? spill.cab).lerp(spill.left, 0.4); au.roomC.value.copy(tmpC).multiplyScalar(0.0022 * (1 - sstep(0.45, 0.78, p)) * glare);
+      tmpC.copy(mons.centre?.light?.color ?? spill.cab).lerp(spill.left, 0.4); au.roomC.value.copy(tmpC).multiplyScalar(0.0022 * (1 - sstep(0.4, 0.62, p)) * glare * lit); // screen-light haze: follows what the screen shows, gone before it is the picture
       mons.centre.screen.getWorldPosition(au.roomP.value); au.roomP.value.z += 0.35;
     }
     for (const c of cones.children) c.material.uniforms.uCol.value.setRGB(1.0, 0.7, 0.4).multiplyScalar(0.04 * lampK);

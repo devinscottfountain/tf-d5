@@ -148,7 +148,8 @@ export function buildOutside({ THREE, scene, high, quality }) {
   const keep = [exA.g, dozer];
   if (high) { place(yard.trucks[0].g, -24, -70, -2.6); keep.push(yard.trucks[0].g); }
   // light towers: the head meshes' parents are the tower groups
-  const towerSpots = [[-17, -44, -0.6], [30, -76, 2.6]];
+  // towers framed off the copy (H1 left, lead right): one behind the excavator, one high on the right, both >= 120 px from text at 1280-1920 incl. parallax
+  const towerSpots = [[8, -64, -0.6], [16, -40, 2.6]];
   yard.towers[0].material.color.setRGB(1.4, 1.3, 1.15);
   const towers = towerSpots.map(([x, z, ry], i) => { const t = yard.towers[i].parent; place(t, x, z, ry); keep.push(t); return t; });
   scratch.traverse(o => { if (o.isMesh && !keep.some(k => isIn(o, k))) o.geometry.dispose(); });
