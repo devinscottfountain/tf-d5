@@ -60,12 +60,13 @@ export function buildRoom({ THREE, scene, high, quality }) {
     strip: S({ color: 0x1a1b1e, roughness: 0.3, emissive: 0x0d0e10 }),
     sill: S({ color: 0x1b1c1f, roughness: 0.5, envMap: env, envMapIntensity: 0.6 }),
   };
-  const tb = texBinder();
+  const tb = texBinder(THREE);
   tb.bind(M.desk, 'desk_laminate', { color: 0x1a1a1d }); tb.bind(M.edge, 'brushed_metal', { maps: ['normalMap', 'roughnessMap'] });
   tb.bind(M.stand, 'brushed_metal', { maps: ['normalMap', 'roughnessMap'] }); tb.bind(M.metal, 'brushed_metal', { maps: ['normalMap', 'roughnessMap'] });
   tb.bind(M.mull, 'brushed_metal', { maps: ['normalMap', 'roughnessMap'], normalScale: 0.4 }); tb.bind(M.frame, 'brushed_metal', { maps: ['normalMap', 'roughnessMap'] });
   for (const k of ['bezel', 'plastic', 'keys']) tb.bind(M[k], 'black_plastic', { maps: ['normalMap', 'roughnessMap'] });
-  tb.bind(M.fabric, 'fabric_chair', { color: 0x1a1b20 }); // tan leather scan, tinted near black tb.bind(M.carpet, 'carpet', { color: 0x202228 });
+  tb.bind(M.fabric, 'fabric_chair', { color: 0x1a1b20 }); // tan leather scan, tinted near black
+  tb.bind(M.carpet, 'carpet', { color: 0x202228 });
   tb.bind(M.ceil, 'ceiling_panel', { color: 0x2a2b30 }); tb.bind(M.sill, 'concrete_floor', { color: 0x3a3b3f });
 
   const add = (geo, mat, x = 0, y = 0, z = 0, parent = group) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); parent.add(m); return m; };
@@ -128,7 +129,7 @@ export function buildRoom({ THREE, scene, high, quality }) {
         gl_FragColor=vec4(c, uTint*(.9+.2*sm)); }`
   }), 0, CEIL / 2, GLASS_Z);
   glass.renderOrder = 2; glass.userData.part = 'glass';
-  tb.bind(null, 'glass_smudge', { custom: set => { const t = set.roughnessMap || set.map; if (t && glassU.tSm.value !== t) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.needsUpdate = true; glassU.tSm.value = t; glassU.uSm.value = 1; } } });
+  tb.bind(null, 'glass_smudge', { custom: set => { const t = set.roughnessMap || set.map; if (t && glassU.tSm.value !== t) { glassU.tSm.value = t; glassU.uSm.value = 1; } } });
 
   // monitors: screen plane (unit quad scaled to w x SH at z=+0.8 mm) inside a rebuilt-per-width body
   const unitPlane = new THREE.PlaneGeometry(1, 1), deskDy = DESK_Y - SCREEN_Y;

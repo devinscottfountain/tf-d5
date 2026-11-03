@@ -94,7 +94,7 @@ export function createAtmosphere({ THREE, src, depth, cam }) {
       add+=roomC*air(camPos,dir,0.,ti,roomP);
       gl_FragColor=vec4(c*T+add,1.); }`);
   const q = new FullScreenQuad(m);
-  const pass = new Pass(); pass.needsSwap = true; pass.uniforms = u;
+  const pass = new Pass(); pass.needsSwap = true; pass.uniforms = u; pass.materials = [m];
   pass.render = (r, write, read) => {
     const s = src(read); if (!s) { pass.needsSwap = false; return; }
     pass.needsSwap = true;
@@ -161,6 +161,7 @@ export function upgradeDOF({ THREE, dof, src, depth, cam, taps = 48 }) {
   dof.setSize = function (w, h) { U.aspect.value = w / h; res.set(Math.max(1, w >> 1), Math.max(1, h >> 1)); A.setSize(res.x, res.y); B.setSize(res.x, res.y); };
   const old = dof.dispose?.bind(dof);
   dof.dispose = () => { A.dispose(); B.dispose(); [mPre, mGather, mComp].forEach(m => m.dispose()); q.dispose(); old?.(); };
+  dof.materials = [mPre, mGather, mComp];
   return { setTaps() {} };
 }
 
@@ -180,7 +181,7 @@ export function createStreaks({ THREE, src, depth, cam }) {
       for(int i=-12;i<=12;i++){ float w=exp(-abs(float(i))*.22); a+=texture2D(tSrc,vUv+vec2(float(i)*step/res.x,0.)).rgb*w; ws+=w; }
       gl_FragColor=vec4(a/ws,1.); }`);
   const q = new FullScreenQuad(mEx);
-  const pass = new Pass(); pass.needsSwap = false; pass.uniforms = u; pass.texture = A.texture;
+  const pass = new Pass(); pass.needsSwap = false; pass.uniforms = u; pass.texture = A.texture; pass.materials = [mEx, mBl];
   pass.render = (r, write, read) => {
     u.tColor.value = src(read); u.tDepth.value = depth(); u.near.value = cam.near; u.far.value = cam.far;
     q.material = mEx; r.setRenderTarget(A); q.render(r);
@@ -230,14 +231,21 @@ export function filmLens(THREE, lens) {
 }
 
 // ---------------------------------------------------------------- planar mirror for a z = const window (Reflector maths, oblique near plane)
+// Renders into a raw HDR target, then a sanitize copy (NaN / inf -> 0, clamp) into the mip-mapped target the glass samples:
+// one bad texel would otherwise spread through the mip chain and black out a whole pane.
 export function createMirror({ THREE, z, layer = 1 }) {
-  const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType });
+  const raw = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType });
+  const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false });
   rt.texture.generateMipmaps = true; rt.texture.minFilter = THREE.LinearMipmapLinearFilter;
+  const mSan = fsMat(THREE, { tSrc: { value: raw.texture } }, `uniform sampler2D tSrc; varying vec2 vUv;
+    void main(){ vec3 c=texture2D(tSrc,vUv).rgb; gl_FragColor=vec4(c.r+c.g+c.b<3e4 ? clamp(c,0.,64.) : vec3(0.),1.); }`);
+  const sq = new FullScreenQuad(mSan);
   const vcam = new THREE.PerspectiveCamera(); vcam.layers.enable(0); vcam.layers.enable(layer);
   const N = new THREE.Vector3(0, 0, 1), P = new THREE.Vector3(0, 0, z), cp = new THREE.Vector3(), view = new THREE.Vector3(), look = new THREE.Vector3(), tgt = new THREE.Vector3();
   const rot = new THREE.Matrix4(), plane = new THREE.Plane(), clip = new THREE.Vector4(), q = new THREE.Vector4();
-  const texM = new THREE.Matrix4();
-  function render(renderer, scene, cam, hide = []) {
+  const texM = new THREE.Matrix4(), vis = [];
+  const api = { rt, raw, texture: rt.texture, texM, vcam, valid: false, materials: [mSan], render, setSize, dispose, aim };
+  function aim(cam) { // place the virtual camera; false when the camera is behind the plane
     cp.setFromMatrixPosition(cam.matrixWorld); view.subVectors(P, cp);
     if (view.dot(N) > 0) return false;
     view.reflect(N).negate().add(P);
@@ -253,13 +261,21 @@ export function createMirror({ THREE, z, layer = 1 }) {
     clip.multiplyScalar(2 / clip.dot(q));
     pm[2] = clip.x; pm[6] = clip.y; pm[10] = clip.z + 1; pm[14] = clip.w;
     vcam.projectionMatrixInverse.copy(vcam.projectionMatrix).invert();
-    const vis = hide.map(o => o.visible); hide.forEach(o => { o.visible = false; });
-    const sm = renderer.shadowMap.autoUpdate, old = renderer.getRenderTarget(), xr = renderer.xr.enabled;
-    renderer.shadowMap.autoUpdate = false; renderer.xr.enabled = false;
-    renderer.setRenderTarget(rt); renderer.clear(); renderer.render(scene, vcam);
-    renderer.setRenderTarget(old); renderer.shadowMap.autoUpdate = sm; renderer.xr.enabled = xr;
-    hide.forEach((o, i) => { o.visible = vis[i]; });
     return true;
   }
-  return { rt, texture: rt.texture, texM, vcam, render, setSize(w, h) { rt.setSize(Math.max(1, w), Math.max(1, h)); }, dispose() { rt.dispose(); } };
+  function render(renderer, scene, cam, hide = []) {
+    if (!aim(cam)) return false;
+    vis.length = hide.length; for (let i = 0; i < hide.length; i++) { vis[i] = hide[i].visible; hide[i].visible = false; }
+    const sm = renderer.shadowMap.autoUpdate, old = renderer.getRenderTarget(), xr = renderer.xr.enabled;
+    renderer.shadowMap.autoUpdate = false; renderer.xr.enabled = false;
+    renderer.setRenderTarget(raw); renderer.clear(); renderer.render(scene, vcam);
+    renderer.setRenderTarget(rt); sq.render(renderer);                       // sanitize + mips
+    renderer.setRenderTarget(old); renderer.shadowMap.autoUpdate = sm; renderer.xr.enabled = xr;
+    for (let i = 0; i < hide.length; i++) hide[i].visible = vis[i];
+    api.valid = true;
+    return true;
+  }
+  function setSize(w, h) { w = Math.max(1, w); h = Math.max(1, h); raw.setSize(w, h); rt.setSize(w, h); api.valid = false; }
+  function dispose() { raw.dispose(); rt.dispose(); mSan.dispose(); sq.dispose(); }
+  return api;
 }

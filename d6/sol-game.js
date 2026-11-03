@@ -1,7 +1,9 @@
 // sol-game.js: the Direction 3 "little game" for D6 Mission Control. Click the lidar terrain to drop zone
-// vertices (drag a handle to move it), click the first point or double-click to close; the excavator turns,
-// drives into reach and digs: zone points sink, the spoil pile grows where it dumps. Runs a demo dig on its
-// own until someone plays. Pointer input is only live while `active` (control mode); wheel is never captured.
+// vertices (drag a handle to move it); a live edge follows the cursor and a snap ring shows on the first point
+// when it will close the zone (click it, or double-click). The excavator turns, drives into reach and digs:
+// zone points sink, the spoil pile grows where it dumps. Runs a demo dig on its own until someone plays.
+// Pointer input is only live while `active` (control mode); wheel is never captured. on(fn) reports user
+// actions: { type: 'point' | 'close' | 'dig' | 'done', points }.
 
 const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
 const io2 = t => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
@@ -9,11 +11,11 @@ const in2 = t => t * t, out2 = t => 1 - (1 - t) * (1 - t);
 const io3 = t => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 const MAXV = 16, SEG = 20;
 
-export function createGame({ THREE, scene, canvas, camera, exc, grid, hField, MSCALE, zoneLineMat, zoneFillMat, handleMat }) {
+export function createGame({ THREE, scene, canvas, camera, exc, grid, hField, MSCALE, mkLine, mkHandles, segBuffers }) {
   const { NX, NZ, SP, X0, Z0, gx, gz, aCut, aZone, cutAttr, zoneAttr } = grid;
   const HOME = { x: -4, z: 4 };
   const pos = { x: HOME.x, z: HOME.z }; let yaw = 0.35;
-  const ARM = { a1: 0.55, a2: -1.5, a3: -0.6, sw: 0 }, REST = { a1: 0.55, a2: -1.5, a3: -0.6, sw: 0 };
+  const ARM = { a1: 0.22, a2: -1.5, a3: -0.35, sw: 0 }, REST = { a1: 0.22, a2: -1.5, a3: -0.35, sw: 0 }; // rest: bucket low, as in frame 5
   const DIG = { a1: -0.12, a2: -1.0, a3: 0.25 };
   let amp = 1, speed = 0, state = 'IDLE', active = false, vis = 0;
   const focus = new THREE.Vector3(HOME.x + 5, 0, HOME.z - 1), focusGoal = focus.clone();
@@ -30,29 +32,45 @@ export function createGame({ THREE, scene, canvas, camera, exc, grid, hField, MS
   const load = new THREE.Points(loadGeo, loadMat); load.renderOrder = 3; exc.bucket.add(load);
 
   // ------------------------------------------------------------------ zone visuals (preallocated)
+  // edges: 1 px cyan screen-space quads draped on the terrain; handles: 6 px cyan dots (+ snap ring); fill .35
   const vx = new Float32Array(MAXV), vz = new Float32Array(MAXV); let nv = 0, closed = false;
-  const zl = new Float32Array((MAXV * SEG + 1) * 3), zlGeo = new THREE.BufferGeometry();
-  zlGeo.setAttribute('position', new THREE.BufferAttribute(zl, 3).setUsage(THREE.DynamicDrawUsage)); zlGeo.setDrawRange(0, 0);
-  const zLine = new THREE.Line(zlGeo, zoneLineMat); zLine.frustumCulled = false; zLine.renderOrder = 5;
-  const hp = new Float32Array(MAXV * 3), hGeo = new THREE.BufferGeometry();
-  hGeo.setAttribute('position', new THREE.BufferAttribute(hp, 3).setUsage(THREE.DynamicDrawUsage)); hGeo.setDrawRange(0, 0);
+  const lineMat = mkLine(0x97ddfb, 1), handleMat = mkHandles(0x6cc0e6, 6, { round: true, ring: 14, depthTest: false });
+  const fillMat = new THREE.MeshBasicMaterial({ color: 0x6cc0e6, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide });
+  const ZS = segBuffers(THREE, (MAXV + 1) * SEG, 3);
+  const zLine = new THREE.Mesh(ZS.geo, lineMat); zLine.frustumCulled = false; zLine.renderOrder = 5; ZS.geo.setDrawRange(0, 0);
+  const hp = new Float32Array((MAXV + 1) * 3), hk = new Float32Array(MAXV + 1), hGeo = new THREE.BufferGeometry();
+  hGeo.setAttribute('position', new THREE.BufferAttribute(hp, 3).setUsage(THREE.DynamicDrawUsage));
+  hGeo.setAttribute('aKind', new THREE.BufferAttribute(hk, 1).setUsage(THREE.DynamicDrawUsage)); hGeo.setDrawRange(0, 0);
   const handles = new THREE.Points(hGeo, handleMat); handles.frustumCulled = false; handles.renderOrder = 6;
   let fill = null;
   const grp = new THREE.Group(); grp.add(zLine, handles); scene.add(grp);
-  const api = { focus, zoneVis: 0, fillVis: 0 };
+  const fns = [], emit = (type) => { const e = { type, points: nv }; for (const f of fns.slice()) f(e); };
+  const api = { focus, zoneVis: 0, fillVis: 0, on(fn) { fns.push(fn); return () => { const k = fns.indexOf(fn); if (k >= 0) fns.splice(k, 1); }; } };
   let fillA = 0, fillTarget = 0;
+  let hov = null, snap = false; // cursor on the terrain while placing; snap: it would close the zone
 
+  const Y = (x, z) => hField(x, z) * amp + 0.18;
   const writeZone = () => {
-    let o = 0;
-    const segs = closed ? nv : nv - 1;
-    for (let s = 0; s < segs; s++) {
-      const a = s, b = (s + 1) % nv;
-      for (let k = 0; k < SEG; k++) { const f = k / SEG, x = vx[a] + (vx[b] - vx[a]) * f, z = vz[a] + (vz[b] - vz[a]) * f; zl[o++] = x; zl[o++] = hField(x, z) * amp + 0.18; zl[o++] = z; }
-    }
-    if (nv) { const e = closed ? 0 : nv - 1; zl[o++] = vx[e]; zl[o++] = hField(vx[e], vz[e]) * amp + 0.18; zl[o++] = vz[e]; }
-    zlGeo.setDrawRange(0, nv > 1 ? o / 3 : 0); zlGeo.attributes.position.needsUpdate = true;
-    for (let i = 0; i < nv; i++) { hp[i * 3] = vx[i]; hp[i * 3 + 1] = hField(vx[i], vz[i]) * amp + 0.18; hp[i * 3 + 2] = vz[i]; }
-    hGeo.setDrawRange(0, nv); hGeo.attributes.position.needsUpdate = true;
+    let n = 0;
+    const seg = (ax, az, bx, bz) => {
+      for (let k = 0; k < SEG; k++) {
+        const f0 = k / SEG, f1 = (k + 1) / SEG, x0 = ax + (bx - ax) * f0, z0 = az + (bz - az) * f0, x1 = ax + (bx - ax) * f1, z1 = az + (bz - az) * f1;
+        const y0 = Y(x0, z0), y1 = Y(x1, z1), v = n * 12;
+        ZS.pos[v] = x0; ZS.pos[v + 1] = y0; ZS.pos[v + 2] = z0; ZS.pos[v + 3] = x0; ZS.pos[v + 4] = y0; ZS.pos[v + 5] = z0;
+        ZS.pos[v + 6] = x1; ZS.pos[v + 7] = y1; ZS.pos[v + 8] = z1; ZS.pos[v + 9] = x1; ZS.pos[v + 10] = y1; ZS.pos[v + 11] = z1;
+        ZS.oth[v] = x1; ZS.oth[v + 1] = y1; ZS.oth[v + 2] = z1; ZS.oth[v + 3] = x1; ZS.oth[v + 4] = y1; ZS.oth[v + 5] = z1;
+        ZS.oth[v + 6] = x0; ZS.oth[v + 7] = y0; ZS.oth[v + 8] = z0; ZS.oth[v + 9] = x0; ZS.oth[v + 10] = y0; ZS.oth[v + 11] = z0;
+        n++;
+      }
+    };
+    for (let i = 0; i + 1 < nv; i++) seg(vx[i], vz[i], vx[i + 1], vz[i + 1]);
+    if (closed && nv > 2) seg(vx[nv - 1], vz[nv - 1], vx[0], vz[0]);
+    else if (nv && hov && active) seg(vx[nv - 1], vz[nv - 1], snap ? vx[0] : hov.x, snap ? vz[0] : hov.z); // live edge to the cursor
+    ZS.geo.setDrawRange(0, n * 6); ZS.geo.attributes.position.needsUpdate = true; ZS.geo.attributes.aOther.needsUpdate = true;
+    for (let i = 0; i < nv; i++) { hp[i * 3] = vx[i]; hp[i * 3 + 1] = Y(vx[i], vz[i]); hp[i * 3 + 2] = vz[i]; hk[i] = 0; }
+    let nh = nv;
+    if (snap && !closed && nv > 2) { hp[nh * 3] = vx[0]; hp[nh * 3 + 1] = Y(vx[0], vz[0]); hp[nh * 3 + 2] = vz[0]; hk[nh] = 1; nh++; }
+    hGeo.setDrawRange(0, nh); hGeo.attributes.position.needsUpdate = true; hGeo.attributes.aKind.needsUpdate = true;
   };
 
   const inPoly = (x, z) => { let c = false; for (let i = 0, j = nv - 1; i < nv; j = i++) { if ((vz[i] > z) !== (vz[j] > z) && x < ((vx[j] - vx[i]) * (z - vz[i])) / (vz[j] - vz[i]) + vx[i]) c = !c; } return c; };
@@ -77,8 +95,8 @@ export function createGame({ THREE, scene, canvas, camera, exc, grid, hField, MS
       fp.push(...p00, ...p01, ...p10, ...p10, ...p01, ...p11);
     }
     const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(fp, 3));
-    fill = new THREE.Mesh(g, zoneFillMat); fill.renderOrder = 4; fill.position.y = 0.08; fill.frustumCulled = false; grp.add(fill);
-    fillA = 0; fillTarget = 1; flash = 0.5;
+    fill = new THREE.Mesh(g, fillMat); fill.renderOrder = 4; fill.position.y = 0.08; fill.frustumCulled = false; grp.add(fill);
+    fillA = 0; fillTarget = 1; flash = 0.5; snap = false; hov = null;
     return true;
   };
   const clearZone = () => {
@@ -97,7 +115,7 @@ export function createGame({ THREE, scene, canvas, camera, exc, grid, hField, MS
   const addVert = (x, z) => {
     if (nv >= MAXV) return;
     if (nv && Math.hypot(x - vx[nv - 1], z - vz[nv - 1]) < 1.2) return;
-    vx[nv] = x; vz[nv] = z; nv++; writeZone(); flash = 0.25;
+    vx[nv] = x; vz[nv] = z; nv++; writeZone();
   };
 
   // ------------------------------------------------------------------ point height tweens (batched)
@@ -168,12 +186,12 @@ export function createGame({ THREE, scene, canvas, camera, exc, grid, hField, MS
     // dump toward the camera side so the pile shows
     const cdx = camera.position.x - cx, cdz = camera.position.z - cz;
     DUMP = (Math.cos(ty + 1.55) * cdx - Math.sin(ty + 1.55) * cdz) > 0 ? 1.55 : -1.55;
-    focusGoal.set((cx + tx) / 2, 0, (cz + tz) / 2);
+    focusGoal.set((cx + tx + 5) / 2, 0, (cz + tz - 1) / 2); // keep the machine near its framed spot, lean toward the zone
     state = 'EN ROUTE';
     const list = [
       { d: Math.max(0.8, 0.4 + Math.abs(dYaw) * 0.5), s() { const f = {}; for (const k of ['a1', 'a2']) f[k] = ARM[k]; this.f = f; }, u(k) { const e = io2(k); yaw = y0 + dYaw * e; ARM.a1 = this.f.a1 + (0.75 - this.f.a1) * e; ARM.a2 = this.f.a2 + (-1.7 - this.f.a2) * e; exc.drive(Math.abs(dYaw) * 0.02); } },
       { d: Math.max(0.6, travel / 6), u(k) { const e = io2(k); const nx = sx + (tx - sx) * e, nz = sz + (tz - sz) * e; const m = Math.hypot(nx - pos.x, nz - pos.z); pos.x = nx; pos.z = nz; exc.drive(m / MSCALE); speed = travel > 0.5 ? 1 + Math.sin(k * Math.PI) * 4 : 0; } },
-      call(() => { speed = 0; state = 'DIGGING'; fillTarget = 0; }),
+      call(() => { speed = 0; state = 'DIGGING'; fillTarget = 0.55; }),
     ];
     [0, -0.2, 0.2, -0.1, 0.12].forEach((sw, k) => list.push(
       armTo({ a1: DIG.a1 - k * 0.04, a2: DIG.a2, a3: DIG.a3, sw }, 0.9),
@@ -187,7 +205,8 @@ export function createGame({ THREE, scene, canvas, camera, exc, grid, hField, MS
       { d: 0.45, u(q) { load.position.y = -3 * in2(q); loadMat.opacity = 1 - q; }, e() { load.position.y = 0; } },
       armTo({ sw: 0, a3: -0.6 }, 0.75),
     ));
-    run(list, () => { speed = 0; state = 'IDLE'; idleT = 0; });
+    const mine = user; if (mine) emit('dig');
+    run(list, () => { speed = 0; state = 'IDLE'; idleT = 0; fillTarget = 1; if (mine) emit('done'); });
   }
 
   // demo zones relative to the machine's home; cycles until someone plays
@@ -207,39 +226,50 @@ export function createGame({ THREE, scene, canvas, camera, exc, grid, hField, MS
   let drag = -1, downX = 0, downY = 0, moved = false;
   const onDown = e => {
     if (!active) return; downX = e.clientX; downY = e.clientY; moved = false; drag = -1;
-    if (!closed && !busy()) for (let i = 0; i < nv; i++) if (screenOf(vx[i], vz[i], e) < 14) { drag = i; canvas.setPointerCapture && canvas.setPointerCapture(e.pointerId); break; }
+    if (!closed && !busy()) for (let i = 0; i < nv; i++) if (screenOf(vx[i], vz[i], e) < 14) { drag = i; try { canvas.setPointerCapture(e.pointerId); } catch (_) {} break; }
+  };
+  const hover = e => {
+    if (!active || closed || !nv || busy()) { if (hov || snap) { hov = null; snap = false; writeZone(); } return; }
+    const p = pick(e); hov = p ? { x: p.x, z: p.z } : null;
+    snap = nv > 2 && drag < 0 && screenOf(vx[0], vz[0], e) < 14;
+    writeZone();
   };
   const onMoveC = e => {
     if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) moved = true;
-    if (drag >= 0 && active) { const p = pick(e); if (p) { vx[drag] = p.x; vz[drag] = p.z; writeZone(); } }
+    if (drag >= 0 && active) { const p = pick(e); if (p) { vx[drag] = p.x; vz[drag] = p.z; } }
+    hover(e);
   };
+  const onLeave = () => { if (hov || snap) { hov = null; snap = false; writeZone(); } };
   const onUp = () => { drag = -1; }; // a press on a handle without movement still counts as a click
   const onClick = e => {
     if (!active || moved) return;
     user = true; const p = pick(e); if (!p) return;
     if (busy() || closed) { stopJob(); clearZone(); }
-    if (nv >= 3 && (screenOf(vx[0], vz[0], e) < 22 || Math.hypot(p.x - vx[0], p.z - vz[0]) < 2.5)) { if (closeZone()) runJob(); return; }
-    addVert(p.x, p.z);
+    if (nv >= 3 && (screenOf(vx[0], vz[0], e) < 22 || Math.hypot(p.x - vx[0], p.z - vz[0]) < 2.5)) { if (closeZone()) { emit('close'); runJob(); } return; }
+    const n0 = nv; addVert(p.x, p.z); if (nv > n0) emit('point');
+    hover(e);
   };
-  const onDbl = () => { if (!active) return; user = true; if (!busy() && closeZone()) runJob(); };
-  canvas.addEventListener('pointerdown', onDown); canvas.addEventListener('pointermove', onMoveC); canvas.addEventListener('pointerup', onUp);
+  const onDbl = () => { if (!active) return; user = true; if (!busy() && closeZone()) { emit('close'); runJob(); } };
+  canvas.addEventListener('pointerdown', onDown); canvas.addEventListener('pointermove', onMoveC); canvas.addEventListener('pointerup', onUp); canvas.addEventListener('pointerleave', onLeave);
   canvas.addEventListener('click', onClick); canvas.addEventListener('dblclick', onDbl);
 
   // ------------------------------------------------------------------ per frame
   api.update = (dt, o) => {
     const wasActive = active; active = o.active; vis = o.vis;
-    if (active !== wasActive) { canvas.style.pointerEvents = active ? 'auto' : 'none'; canvas.style.cursor = active ? 'crosshair' : ''; }
+    if (active !== wasActive) { canvas.style.pointerEvents = active ? 'auto' : 'none'; canvas.style.cursor = active ? 'crosshair' : ''; if (!active) onLeave(); }
     const ampChanged = Math.abs(o.amp - amp) > 1e-4; amp = o.amp;
     grp.visible = vis > 0.004; exc.setOpacity(vis);
     if (vis <= 0.004) { ctrlT = 0; return; }
     ctrlT += dt;
     tickJob(dt); runBatches(dt);
     if (ampChanged && nv) writeZone();
-    if (fill) { fillA += (fillTarget - fillA) * (1 - Math.exp(-dt * 3)); api.fillVis = fillA; fill.scale.y = amp; } else api.fillVis = 0;
+    if (fill) { fillA += (fillTarget - fillA) * (1 - Math.exp(-dt * 3)); fill.scale.y = amp; } else fillA = 0;
     flash = Math.max(0, flash - dt);
-    api.zoneVis = nv ? (flash > 0 ? (Math.sin(flash * 40) > 0 ? 1 : 0.3) : 1) : 0;
+    api.fillVis = fillA; api.zoneVis = nv ? 1 : 0;
+    lineMat.uniforms.uOpacity.value = vis * api.zoneVis; handleMat.uniforms.uOpacity.value = vis * api.zoneVis;
+    fillMat.opacity = vis * (0.35 * fillA + flash * 0.3); // brief brighten when a zone closes
     // demo when nobody has played
-    if (active && !user && !busy()) { idleT += dt; if ((!closed && ctrlT > 1.2 && demoK === 0) || (closed && idleT > 5)) demo(); }
+    if (active && !user && !api.noDemo && !busy()) { idleT += dt; if ((!closed && ctrlT > 1.2 && demoK === 0) || (closed && idleT > 5)) demo(); }
     // machine on the ground
     const h = hField(pos.x, pos.z) * amp, e = 1.6;
     const dx = (hField(pos.x + e, pos.z) - hField(pos.x - e, pos.z)) * amp / (2 * e), dz = (hField(pos.x, pos.z + e) - hField(pos.x, pos.z - e)) * amp / (2 * e);
@@ -260,12 +290,14 @@ export function createGame({ THREE, scene, canvas, camera, exc, grid, hField, MS
     return out;
   };
   Object.defineProperty(api, 'drawing', { get: () => nv > 0 && !closed });
+  api.pos = pos; // machine ground position (the camera aims at the terrain under it)
   api.debug = () => ({ nv, closed, jobOn, user, active, state, demoK });
   api.demo = demo; api.clear = () => { stopJob(); clearZone(); };
   api.dispose = () => {
-    canvas.removeEventListener('pointerdown', onDown); canvas.removeEventListener('pointermove', onMoveC); canvas.removeEventListener('pointerup', onUp);
+    canvas.removeEventListener('pointerdown', onDown); canvas.removeEventListener('pointermove', onMoveC); canvas.removeEventListener('pointerup', onUp); canvas.removeEventListener('pointerleave', onLeave);
     canvas.removeEventListener('click', onClick); canvas.removeEventListener('dblclick', onDbl);
-    loadGeo.dispose(); loadMat.dispose(); zlGeo.dispose(); hGeo.dispose(); if (fill) fill.geometry.dispose();
+    loadGeo.dispose(); loadMat.dispose(); ZS.geo.dispose(); hGeo.dispose(); if (fill) fill.geometry.dispose();
+    lineMat.dispose(); handleMat.dispose(); fillMat.dispose(); fns.length = 0;
   };
   return api;
 }

@@ -43,8 +43,10 @@ export function texFiles(quality = 'high') {
   return out;
 }
 
-export function loadHeroTextures({ THREE, renderer, quality = 'high', base } = {}) {
+// roles: subset to stream (default all); the hero passes only the roles its materials bind
+export function loadHeroTextures({ THREE, renderer, quality = 'high', base, roles = TEX_ROLES } = {}) {
   const lo = quality === 'low';
+  const want = TEX_ROLES.filter(r => roles.includes(r));
   let root = String(base || new URL('./assets/tex/', import.meta.url)); if (!root.endsWith('/')) root += '/';
   const sets = new Map(), listeners = new Set(), owned = [];
   let disposed = false;
@@ -136,18 +138,18 @@ export function loadHeroTextures({ THREE, renderer, quality = 'high', base } = {
 
   function warn(e) { if (!disposed) console.warn('hero-tex:', e?.message || e); return null; }
 
-  const jobs = TEX_ROLES.map(role => (role === 'night_sky_hdr' ? loadSky() : loadRole(role))
+  const jobs = want.map(role => (role === 'night_sky_hdr' ? loadSky() : loadRole(role))
     .catch(warn).then(set => { if (set && !disposed) publish(role, set); return set; }));
   const inTier = role => role === 'night_sky_hdr' || !!M[role][lo ? 2 : 1];
   const ready = Promise.all(jobs).then(r => ({
-    loaded: TEX_ROLES.filter((_, i) => r[i]),
-    failed: TEX_ROLES.filter((role, i) => !r[i] && inTier(role)),
-    skipped: TEX_ROLES.filter(role => !inTier(role)), // not shipped on this tier (low): materials keep their flat look
+    loaded: want.filter((_, i) => r[i]),
+    failed: want.filter((role, i) => !r[i] && inTier(role)),
+    skipped: TEX_ROLES.filter(role => !want.includes(role) || !inTier(role)), // not shipped on this tier (low): materials keep their flat look
   }));
 
   return {
     ready,
-    roles: TEX_ROLES,
+    roles: want,
     get: role => sets.get(role) || null,
     // fn(role, set) runs as each role lands (and once now if some already have); safe to reapply idempotently
     onReady(fn) {

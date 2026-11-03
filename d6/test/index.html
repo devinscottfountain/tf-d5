@@ -24,6 +24,14 @@ const ids = ['topo', 'morph', 'mode', 'modeT', 'flatten'], el = Object.fromEntri
 for (const k of ids) if (qs.has(k)) el[k].value = qs.get(k);
 if (qs.has('noui')) document.getElementById('ui').style.display = 'none';
 const push = () => sol.setScene(Object.fromEntries(ids.map(k => [k, +el[k].value])));
+// page geometry as main.js measures it (tab-card bottom, HUD cards with their bottom at 86% vh); ?geo=0 to skip
+const W = innerWidth, H = innerHeight, mob = W < 768;
+if (qs.get('geo') !== '0') sol.setScene(mob
+  ? { groundTop: 1.29 * W, hud: [{ l: 0.041 * W, r: 0.554 * W, b: 0.86 * H, t: 0.86 * H - 0.338 * W }, null] }
+  : { groundTop: 0.36063 * W, hud: [{ l: 0.0625 * W, r: 0.2206 * W, b: 0.86 * H, t: 0.86 * H - 0.12 * W }, { l: 0.8294 * W, r: 0.9375 * W, b: 0.86 * H, t: 0.86 * H - 0.12 * W }] });
+if (qs.has('mt')) sol.setScene({ missionTop: +qs.get('mt') });
+window.events = []; sol.onGame(e => window.events.push(e.type));
+if (qs.has('nodemo')) sol.game.noDemo = true;
 ids.forEach(k => el[k].addEventListener('input', push));
 document.querySelectorAll('[data-m]').forEach(b => b.addEventListener('click', () => sol.setMode(+b.dataset.m)));
 sol.onTelemetry(t => { document.getElementById('tel').textContent = JSON.stringify(t, null, 1); });

@@ -4,9 +4,9 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { NOISE } from './hero-glsl.js';
 
-export function createCab({ THREE, high }) {
+export function createCab({ THREE, high, samples = high ? 4 : 0 }) {
   const W = high ? 1024 : 640, H = Math.round(W / 1.8);
-  const rt = new THREE.WebGLRenderTarget(W, H, { type: THREE.HalfFloatType, samples: high ? 4 : 0 });
+  const rt = new THREE.WebGLRenderTarget(W, H, { type: THREE.HalfFloatType, samples });
   const scene = new THREE.Scene();
   const cam = new THREE.PerspectiveCamera(64, W / H, 0.05, 900);
   cam.position.set(0, 2.42, 0.95); cam.lookAt(0, 1.05, -6);

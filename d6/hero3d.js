@@ -1,11 +1,16 @@
 // TerraFirma D6 hero in three.js: a remote-operations room at night, three monitors in front of a glass wall,
-// a night dig outside. Scroll progress dollies the camera into the centre monitor, whose cab feed crossfades to
-// the Series B still; at p=1 the screen covers the target rect exactly (solved camera), so the DOM card can take over.
+// a night dig outside. Scroll progress dollies the camera into the centre monitor, whose cab feed dips to black and
+// gives way to the Series B still; at p=1 the screen covers the target rect exactly (solved camera), so the DOM card can take over.
 // Shot like a film frame: monitor spill + moonlit window fill, haze and light-tower cones outside, dust in the screen
 // light, a mirrored window (planar reflection, smudges, second-pane ghost), slider move with operator wobble, rack focus
 // with shaped bokeh, lens breathing, anamorphic streaks, halation, grade and grain.
 // Post: D5 stack (AO, motion blur, DOF, bloom, tone map, SMAA, lens) with hero passes spliced in:
 //   scene -> HDR FX -> [atmosphere] -> DOF (half-res shaped bokeh) -> [streak extract] -> bloom -> ACES -> SMAA -> film lens/grade -> hand-off
+// Boot: every program is compiled async against the target it really draws into (HDR targets, the cab target, the
+// canvas), ready = first lean frame (no mirror, streaks or dust); enhance() then compiles those, warms frames at
+// p 0.5 and 1 offscreen and fades them in. Textures stream in after ready as plain texture swaps (placeholders are bound
+// from the start), so nothing compiles mid-scroll. The canvas runs at device pixel ratio (crisp hand-off still), the
+// post chain at its own, lower ratio.
 import { createPost } from '../d5/post.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import * as RoomMod from './hero-room.js';
@@ -18,21 +23,53 @@ export const SERIES_B = 'https://cdn.prod.website-files.com/6ae4c2b96de64cf78d48
 
 const FOV0 = 36, FOV1 = 30;                         // lens at p=0 and at the hand-off
 const POS0 = [0, 1.64, 2.7], LOOK0 = [0, 1.58, -3];
-const STILL_IN = [0.68, 0.86];                      // cab feed -> Series B still, on the 3D screen
-const HAND_IN = [0.9, 0.985];                       // tone-mapped screen -> exact sRGB still (hand-off pass)
+const FEED_DIP = [0.56, 0.64];                      // cab feed dips to ~10 % (a channel change, not a dissolve)
+const STILL_IN = [0.64, 0.78];                      // then the Series B still comes up on the 3D screen
+const HAND_IN = [0.86, 0.97];                       // tone-mapped screen -> exact sRGB still (hand-off pass)
+const MIRROR_OFF = [0.6, 0.7];                      // window reflection fades out (the glass is deep in bokeh), then is skipped
+const GLARE_COV = [0.42, 0.6];                      // screen coverage over which bloom / halation / streaks / dust leave the screen
 const RACK = [0.1, 0.56];                           // focus pull: site -> centre screen
 const SITE_FOCUS = 46;                              // m, the excavator / dozer line outside
 const REFL_LAYER = 1;                               // objects only the window reflection sees
+const FADE_MS = 500;                                // enhance fade-in
+const LAMP_K = 1;                                   // tower lamp glow (atmosphere + beams)
+// texture roles the hero's materials actually bind (night_sky_hdr, rock_ridge, rubber_track, tyre_track_decal are not used)
+const HERO_ROLES = ['concrete_floor', 'desk_laminate', 'black_plastic', 'brushed_metal', 'ceiling_panel', 'carpet', 'fabric_chair', 'glass_smudge', 'dirt_ground', 'gravel', 'excavator_paint', 'rusty_metal'];
 
-export function createHero({ THREE, host, quality = 'high', still = SERIES_B, canvas: cvIn, fadeOutside = true } = {}) {
-  const HIGH = quality !== 'low';
-  const V3 = THREE.Vector3, Q = THREE.Quaternion;
-  const GLASS_Z = RoomMod.GLASS_Z ?? -2.2, G0 = OutMod.G0 ?? -1;
+const coarsePointer = () => {
+  try { return matchMedia('(pointer: coarse)').matches || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent)); } catch (_) { return false; }
+};
+const yieldTask = () => new Promise(r => setTimeout(r, 0));
+const idle = fn => (typeof requestIdleCallback === 'function' ? requestIdleCallback(fn, { timeout: 1500 }) : setTimeout(fn, 300));
+
+// options: enhance 'auto' (default, runs on idle after ready) | 'manual' (page calls hero.enhance());
+// lite: no mirror / streaks / dust, cab without MSAA (default: coarse pointer, i.e. tablets)
+export function createHero({ THREE, host, quality = 'high', still = SERIES_B, canvas: cvIn, fadeOutside = true, enhance: enhanceMode = 'auto', lite } = {}) {
   const canvas = cvIn || document.createElement('canvas');
   if (!cvIn) { canvas.className = 'd6-hero-canvas'; Object.assign(canvas.style, { position: 'absolute', left: 0, top: 0, width: '100%', height: '100%', display: 'block' }); host.appendChild(canvas); }
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance', stencil: false });
-  let prMax = HIGH ? Math.min(devicePixelRatio || 1, 1.5) : 1, pr = prMax;
-  renderer.setPixelRatio(pr);
+  try {
+    return build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhanceMode, lite, renderer });
+  } catch (e) { // half-built: drop the context so nothing leaks, the page falls back to the poster
+    try { renderer.dispose(); renderer.forceContextLoss?.(); } catch (_) { /* gone */ }
+    if (!cvIn) canvas.remove();
+    throw e;
+  }
+}
+
+function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhanceMode, lite, renderer }) {
+  const HIGH = quality !== 'low';
+  const COARSE = lite ?? coarsePointer();
+  const RICH = HIGH && !COARSE;                      // mirror, streaks, dust, cab MSAA
+  const DEBUG = typeof location !== 'undefined' && /[?&]debug(=|&|$)/.test(location.search);
+  const V3 = THREE.Vector3, Q = THREE.Quaternion;
+  const GLASS_Z = RoomMod.GLASS_Z ?? -2.2, G0 = OutMod.G0 ?? -1;
+  renderer.debug.checkShaderErrors = DEBUG;
+  // canvas at device ratio (the hand-off still lands crisp), post chain at its own ratio (adaptive, high only)
+  const DPR = Math.min(typeof devicePixelRatio === 'number' && devicePixelRatio > 0 ? devicePixelRatio : 1, 2);
+  const prMax = HIGH ? Math.min(DPR, COARSE ? 1.25 : 1.5) : 1;
+  let pr = prMax;
+  renderer.setPixelRatio(DPR);
   renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;   // ACES: the screens invert exactly this curve
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.shadowMap.enabled = HIGH; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -46,7 +83,7 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
 
   const room = RoomMod.buildRoom({ THREE, scene, high: HIGH, quality: HIGH ? 'high' : 'low' });
   const outside = OutMod.buildOutside({ THREE, scene, high: HIGH, quality: HIGH ? 'high' : 'low' });
-  const cab = createCab({ THREE, high: HIGH });
+  const cab = createCab({ THREE, high: HIGH, samples: RICH ? 4 : 0 });
   const screens = createScreens({ THREE, renderer, high: HIGH, stillUrl: still, cab });
   const mons = room.makeMonitors(screens);
   const time = screens.time;
@@ -83,7 +120,7 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
   // ---------------------------------------------------------------- dust in the screen light: points with their own CoC (scatter bokeh)
   const dustU = { time, focus: { value: 3 }, cocK: { value: 0 }, maxC: { value: 16 }, pxScale: { value: 500 }, lightP: { value: new V3(0, 1.13, 0.05) }, lightC: { value: new THREE.Color(0.7, 0.78, 0.95) }, amt: { value: 1 } };
   let dust = null;
-  if (HIGH) {
+  if (RICH) {
     const N = 520, r = rng(77), P = new Float32Array(N * 3), S = new Float32Array(N);
     for (let i = 0; i < N; i++) { P[i * 3] = (r() - 0.5) * 3.4; P[i * 3 + 1] = 0.8 + r() * 1.5; P[i * 3 + 2] = -0.15 + r() * 2.6; S[i] = r(); }
     const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(P, 3)); g.setAttribute('seed', new THREE.BufferAttribute(S, 1));
@@ -102,12 +139,12 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
           gl_PointSize=d; gl_Position=projectionMatrix*mv; }`,
       fragmentShader: `varying vec3 vC; void main(){ float r=length(gl_PointCoord-.5)*2.; float a=smoothstep(1.,.78,r)*(.85+.3*smoothstep(.5,.95,r)); if(a<=0.) discard; gl_FragColor=vec4(vC*a,1.); }`
     }));
-    dust.frustumCulled = false; dust.renderOrder = 3; scene.add(dust);
+    dust.frustumCulled = false; dust.renderOrder = 3; dust.visible = false; scene.add(dust);   // enhance-only
   }
 
-  // ---------------------------------------------------------------- the room behind the camera, seen only in the window
+  // ---------------------------------------------------------------- the room behind the camera, seen only in the window (mirror only)
   const backRoom = new THREE.Group(); scene.add(backRoom);
-  if (HIGH) {
+  if (RICH) {
     const dark = new THREE.MeshStandardMaterial({ color: 0x15171c, roughness: 0.85 });
     const add = (geo, mat, x, y, z, ry = 0) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.rotation.y = ry; backRoom.add(m); return m; };
     add(new THREE.PlaneGeometry(14, 3.5), dark, 0, 1.75, 6.8, Math.PI);
@@ -120,9 +157,10 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
   }
 
   // ---------------------------------------------------------------- window: planar reflection (half res, mip-blurred by smudge roughness), second-pane ghost
-  const mirror = HIGH && room.glass ? createMirror({ THREE, z: GLASS_Z, layer: REFL_LAYER }) : null;
+  // uReflK: 0 = painted env only (lean boot, glass out of the shot, mirror not rendered yet), 1 = live mirror
+  const mirror = RICH && room.glass ? createMirror({ THREE, z: GLASS_Z, layer: REFL_LAYER }) : null;
   const glassU = {
-    time, tRefl: { value: mirror?.texture ?? null }, texM: { value: mirror?.texM ?? new THREE.Matrix4() }, tEnv: { value: room.env ?? null }, tSmudge: { value: null }, hasSm: { value: 0 }, hasRefl: { value: mirror ? 1 : 0 },
+    time, tRefl: { value: mirror?.texture ?? null }, texM: { value: mirror?.texM ?? new THREE.Matrix4() }, tEnv: { value: room.env ?? null }, tSmudge: { value: null }, hasSm: { value: 0 }, uReflK: { value: 0 },
     uRefl: { value: 0.75 }, uEnv: { value: 0.35 }, uTint: room.glassU?.uTint ?? { value: 0.32 }, uTintC: room.glassU?.uTintC ?? { value: new THREE.Color(0x010304) },
     uGhost: { value: new THREE.Vector2(0.0045, -0.003) }, uSmear: { value: 0.035 }
   };
@@ -131,7 +169,7 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
     room.glass.material = new THREE.ShaderMaterial({
       uniforms: glassU, transparent: true, depthWrite: false, blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
       vertexShader: `uniform mat4 texM; varying vec3 vW; varying vec4 vR; void main(){ vec4 w=modelMatrix*vec4(position,1.); vW=w.xyz; vR=texM*w; gl_Position=projectionMatrix*viewMatrix*w; }`,
-      fragmentShader: `${NOISE} uniform sampler2D tRefl, tEnv, tSmudge; uniform float uRefl, uEnv, uTint, hasSm, hasRefl, uSmear, time; uniform vec3 uTintC; uniform vec2 uGhost; varying vec3 vW; varying vec4 vR;
+      fragmentShader: `${NOISE} uniform sampler2D tRefl, tEnv, tSmudge; uniform float uRefl, uEnv, uTint, hasSm, uReflK, uSmear, time; uniform vec3 uTintC; uniform vec2 uGhost; varying vec3 vW; varying vec4 vR;
         void main(){ vec3 V=normalize(vW-cameraPosition), N=vec3(0.,0.,1.), R=reflect(V,N);
           float ct=abs(dot(V,N)), F=.04+.96*pow(1.-ct,5.), F2=2.*F/(1.+F);                 // two panes
           float sm=hasSm>.5 ? texture2D(tSmudge,vW.xy*vec2(.42,.42)+vec2(.13,.4)).r : fbm2(vW.xy*vec2(2.5,1.2)+4.);
@@ -140,9 +178,11 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
           vec2 e=vec2(atan(R.z,R.x)/6.2832+.5, asin(clamp(R.y,-1.,1.))/3.1416+.5);
           vec3 env=texture2D(tEnv,e).rgb*uEnv;
           vec3 refl=env;
-          if(hasRefl>.5){ vec2 uv=vR.xy/vR.w;
+          if(uReflK>0.){ vec2 uv=vR.xy/max(vR.w,1e-4);
             vec3 a=texture2D(tRefl,uv,rough+1.).rgb, b=texture2D(tRefl,uv+uGhost*(1.4-ct),rough+2.).rgb;   // second pane: offset, softer
-            refl=(a+.55*b)*uRefl+env*.35; }
+            vec3 m=(a+.55*b)*uRefl+env*.35;
+            if(!(m.r+m.g+m.b<1e4)) m=env;                                                    // never let a bad sample black out a pane
+            refl=mix(env,m,uReflK); }
           vec3 c=refl*F2*(.75+.6*sm)+uTintC*uTint;
           c+=refl*uSmear*sm*sm2*4.;                                                           // smudges catch the room light
           gl_FragColor=vec4(c, uTint*(.88+.25*sm)); }`
@@ -151,8 +191,9 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
   }
   const reflHide = [outside.group, room.glass, cones, dust].filter(Boolean);
 
-  // ---------------------------------------------------------------- post
+  // ---------------------------------------------------------------- post (internal ratio pr; the canvas stays at DPR)
   const post = createPost({ THREE, renderer, scene, cam });
+  post.composer.setPixelRatio(pr);
   const P = post.composer.passes, scenePass = P[0], mbPass = P[1];
   const depthTex = () => scenePass.rt.depthTexture;
   post.auto.enabled = false;                              // exposure is authored per p (scrubbing must be deterministic)
@@ -165,7 +206,10 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
     atmo.uniforms.glassZ.value = GLASS_Z; atmo.uniforms.hazeY0.value = G0;
     P.splice(P.indexOf(post.dof), 0, atmo);
     upgradeDOF({ THREE, dof: post.dof, cam, depth: depthTex, src: read => (atmoRan || mbPass.enabled ? read.texture : scenePass.rt.texture), taps: 48 });
+  }
+  if (RICH) {
     streak = createStreaks({ THREE, cam, depth: depthTex, src: read => read.texture });
+    streak.enabled = false;                               // enhance-only
     P.splice(P.indexOf(post.bloom), 0, streak);
   }
   const lensU = filmLens(THREE, post.lens);
@@ -185,6 +229,14 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
   });
   hand.material.toneMapped = false;
   post.composer.addPass(hand);
+  // tone pass: set its defines now (it would on its first render) so the async compile below builds the final program
+  const tonePass = P.find(x => x.mTone);
+  if (tonePass) {
+    const d = {}, tm = { [THREE.LinearToneMapping]: 'LINEAR_TONE_MAPPING', [THREE.ReinhardToneMapping]: 'REINHARD_TONE_MAPPING', [THREE.CineonToneMapping]: 'CINEON_TONE_MAPPING', [THREE.ACESFilmicToneMapping]: 'ACES_FILMIC_TONE_MAPPING', [THREE.AgXToneMapping]: 'AGX_TONE_MAPPING' }[renderer.toneMapping];
+    if (THREE.ColorManagement.getTransfer(renderer.outputColorSpace) === THREE.SRGBTransfer) d.SRGB_TRANSFER = '';
+    if (tm) d[tm] = '';
+    tonePass.mTone.defines = d; tonePass.mTone.needsUpdate = true; tonePass._cs = renderer.outputColorSpace; tonePass._tm = renderer.toneMapping;
+  }
 
   // ---------------------------------------------------------------- layout: target rect and the solved end pose
   let target = null, targetRad = 0, autoTarget = true;
@@ -212,13 +264,13 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
 
   // ---------------------------------------------------------------- camera: slider dolly + gimbal, operator wobble, rack focus, breathing
   let prog = 0, ptrX = 0, ptrY = 0, sx = 0, sy = 0, clock = 0;
-  const c1 = new V3(), c2 = new V3(), dq = new Q(), eu = new THREE.Euler(), tv = new V3(), fwd = new V3();
+  const c1 = new V3(), c2 = new V3(), D1 = new V3(0, -0.05, -0.55), D2 = new V3(0, 0.07, 0.75), dq = new Q(), eu = new THREE.Euler(), tv = new V3(), fwd = new V3();
   const nP = noise1(3), nY = noise1(5), nR = noise1(8), nX = noise1(13), nZ = noise1(21);
   const bez = (a, b, c, d, t, out) => { const u = 1 - t; return out.set(0, 0, 0).addScaledVector(a, u * u * u).addScaledVector(b, 3 * u * u * t).addScaledVector(c, 3 * u * t * t).addScaledVector(d, t * t * t); };
   let focusDist = SITE_FOCUS, rackT = 0;
   function pose(p, t) {
     const s = p * p * p * (p * (p * 6 - 15) + 10);            // smootherstep: accelerates in, settles exactly on the end pose
-    c1.copy(p0).add({ x: 0, y: -0.05, z: -0.55 }); c2.copy(pEnd).add({ x: 0, y: 0.07, z: 0.75 });   // a slight crane dip, then rise onto the screen
+    c1.copy(p0).add(D1); c2.copy(pEnd).add(D2);   // a slight crane dip, then rise onto the screen
     bez(p0, c1, c2, pEnd, s, cam.position);
     cam.quaternion.slerpQuaternions(q0, qEnd, sstep(0, 1, Math.min(1, s * 1.08)));   // the gimbal leads the slider a touch
     // operator: 1/f wobble (breathing, hand) + pointer, all gone before the hand-off
@@ -241,25 +293,35 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
     return s;
   }
 
-  // ---------------------------------------------------------------- per frame
+  // ---------------------------------------------------------------- per frame (no allocations)
   const corners = [new V3(-0.5, -0.5, 0), new V3(0.5, -0.5, 0), new V3(0.5, 0.5, 0), new V3(-0.5, 0.5, 0)], cv = new V3();
-  function screenRect() {
+  function screenRect(out = { x: 0, y: 0, w: 0, h: 0 }) {
     const m = mons.centre.screen.matrixWorld; let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
     for (const c of corners) { cv.copy(c).applyMatrix4(m).project(cam); const x = (cv.x * 0.5 + 0.5) * W, y = (0.5 - cv.y * 0.5) * H; x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
-    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+    out.x = x0; out.y = y0; out.w = x1 - x0; out.h = y1 - y0; return out;
   }
+  const sr = { x: 0, y: 0, w: 0, h: 0 };
+  const coverage = r => Math.max(0, Math.min(W, r.x + r.w) - Math.max(0, r.x)) * Math.max(0, Math.min(H, r.y + r.h) - Math.max(0, r.y)) / (W * H);
   const lampCol = new THREE.Color(1.0, 0.68, 0.38), tmpC = new THREE.Color();
-  let lastT = 0, cabAcc = 0, frames = 0, ftAcc = 0, ftN = 0, reflW = 0, reflH = 0;
+  const pu = { dt: 0, t: 0, focus: 0, aperture: 0, maxblur: 0, ca: 0 };
+  let lastT = 0, cabAcc = 0, frames = 0, ftAcc = 0, ftN = 0, reflW = 0, reflH = 0, cov = 0;
+  let enh = 0, enhT0 = 0, moveT = 0, prWant = pr;
   function frame(now) {
     const t = now / 1000, dt = lastT ? Math.min(0.1, t - lastT) : 1 / 60; lastT = t; clock += dt;
     renderer.info.reset();
+    if (enhT0) enh = Math.min(1, (now - enhT0) / FADE_MS);
     const p = prog, s = pose(p, clock);
-    outside.update(clock); time.value = clock;
-    // centre feed: cab view until the still takes over, rendered at 30 Hz on low (skipped once real footage replaces it)
-    const mix = sstep(STILL_IN[0], STILL_IN[1], p); screens.centre.uniforms.uMix.value = mix;
-    if (screens.cabLive !== false) screens.centre.uniforms.uUI.value = 1 - sstep(0.6, 0.8, p);
+    outside.update(clock); time.value = clock; screens.tick();
+    cov = coverage(screenRect(sr));
+    const glare = 1 - sstep(GLARE_COV[0], GLARE_COV[1], cov);   // 1 while the room is the picture, 0 once the screen is
+
+    // centre feed: the cab view dips to black, then the Series B still comes up (never both visible); cab at 30 Hz on low
+    const cu = screens.centre.uniforms, live = screens.cabLive !== false;
+    const feed = 1 - 0.9 * sstep(FEED_DIP[0], FEED_DIP[1], p), mix = sstep(STILL_IN[0], STILL_IN[1], p);
+    cu.uFeed.value = feed; cu.uMix.value = mix;
+    if (live) cu.uUI.value = 1 - sstep(FEED_DIP[0] - 0.04, FEED_DIP[1], p);
     cabAcc += dt;
-    if (mix < 1 && screens.cabLive !== false && (HIGH || cabAcc > 1 / 30)) { cabAcc = 0; cab.update(clock); cab.render(renderer); }
+    if (mix < 0.98 && live && (HIGH || cabAcc > 1 / 30)) { cabAcc = 0; cab.update(clock); cab.render(renderer); }
     const near = sstep(0.0, 0.7, p), end = sstep(0.86, 0.97, p);
 
     // exposure ride: open a touch on the wide (the site), close as the screen fills frame, back to 1 for the hand-off.
@@ -267,21 +329,21 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
     const ex = 1.06 - 0.13 * sstep(0.2, 0.68, p) + 0.07 * sstep(0.72, 0.93, p);
     renderer.toneMappingExposure = ex; screens.setExposure(1 + (ex - 1) * sstep(0.45, 0.88, p));
     screens.setLevels?.(0.86, 0.95, 0.86);
-    screens.setSubpixel?.(0.55 * sstep(0.5, 0.74, p) * (1 - sstep(0.8, 0.9, p)));
+    screens.setSubpixel?.(0.55 * sstep(0.5, 0.74, p) * glare);
 
-    // monitor spill: colour follows each feed, softens as we close in (the frame is the screen then)
-    const glow = 1 - 0.35 * near;
+    // monitor spill: colour follows each feed, softens as we close in (the frame is the screen then); the centre dims with the dip
+    const glow = 1 - 0.35 * near, lit = Math.max(feed * (1 - mix), mix);
     if (mons.left?.light) { mons.left.light.color.copy(spill.left); mons.left.light.intensity = 2.3 * glow; }
     if (mons.right?.light) { mons.right.light.color.copy(spill.right); mons.right.light.intensity = 2.3 * glow; }
-    if (mons.centre?.light) { mons.centre.light.color.copy(spill.cab).lerp(spill.still, mix); mons.centre.light.intensity = 2.8 * glow; }
+    if (mons.centre?.light) { mons.centre.light.color.copy(spill.cab).lerp(spill.still, mix); mons.centre.light.intensity = 2.8 * glow * (0.2 + 0.8 * lit); }
     moonFill.intensity = (HIGH ? 0.55 : 0.4) * (1 - 0.4 * near);
 
     // atmosphere + beams + dust
-    const lampK = 1 - 0.5 * end;
+    const lampK = (1 - 0.5 * end) * LAMP_K;
     if (atmo) {
       const au = atmo.uniforms; au.time.value = clock;
-      spots.forEach((sp, i) => { if (i < 4) { sp.getWorldPosition(cv); au.lampP.value[i].set(cv.x, cv.y, cv.z, 0.1 * lampK); au.lampC.value[i].copy(lampCol); } });
-      tmpC.copy(mons.centre?.light?.color ?? spill.cab).lerp(spill.left, 0.4); au.roomC.value.copy(tmpC).multiplyScalar(0.0022 * (1 - sstep(0.45, 0.78, p)));
+      for (let i = 0; i < spots.length && i < 4; i++) { spots[i].getWorldPosition(cv); au.lampP.value[i].set(cv.x, cv.y, cv.z, 0.1 * lampK); au.lampC.value[i].copy(lampCol); }
+      tmpC.copy(mons.centre?.light?.color ?? spill.cab).lerp(spill.left, 0.4); au.roomC.value.copy(tmpC).multiplyScalar(0.0022 * (1 - sstep(0.45, 0.78, p)) * glare);
       mons.centre.screen.getWorldPosition(au.roomP.value); au.roomP.value.z += 0.35;
     }
     for (const c of cones.children) c.material.uniforms.uCol.value.setRGB(1.0, 0.7, 0.4).multiplyScalar(0.04 * lampK);
@@ -290,37 +352,101 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
     const dofK = HIGH ? 1 - sstep(0.88, 0.98, p) : 0;
     const aperture = (3.2 + 6 * near) * dofK, maxblur = 16 / 1600 * dofK;      // CoC px per dioptre and max CoC radius, at 1600 px wide
     if (dust) {
+      const da = enh * (1 - sstep(0.7, 0.9, p)) * glare; dust.visible = da > 0.001;
       const bw = W * pr; dustU.focus.value = focusDist; dustU.cocK.value = aperture * bw / 1600; dustU.maxC.value = maxblur * bw;
-      dustU.pxScale.value = H * pr * cam.projectionMatrix.elements[5] * 0.5; dustU.amt.value = 1 - sstep(0.7, 0.9, p);
+      dustU.pxScale.value = H * pr * cam.projectionMatrix.elements[5] * 0.5; dustU.amt.value = da;
       mons.centre.screen.getWorldPosition(dustU.lightP.value); dustU.lightC.value.copy(mons.centre.light?.color ?? spill.cab).lerp(spill.right, 0.35);
     }
-    post.bloom.strength = 0.66 - 0.42 * sstep(0.55, 1, p); post.bloom.radius = 0.55; post.bloom.threshold = 0.8;
+    post.bloom.strength = (0.66 - 0.42 * sstep(0.55, 1, p)) * (0.3 + 0.7 * glare); post.bloom.radius = 0.55; post.bloom.threshold = 0.8;
     lensU.barrel.value = 0.035 * (1 - s); lensU.vig.value = 0.6 - 0.32 * s; lensU.grain.value = 0.032 - 0.016 * s;
-    lensU.grade.value = 1 - end; lensU.hal.value = 0.12 * (1 - end); lensU.streak.value = 0.6 * (1 - end);
-    if (streak) { streak.uniforms.minZ.value = Math.max(0.5, cam.position.z - GLASS_Z + 0.3); streak.uniforms.thr.value = 2.2; }
-    post.update({ dt, t: clock, focus: focusDist, aperture, maxblur, ca: 0.022 * (1 - s) + 0.004 });
+    lensU.grade.value = 1 - end; lensU.hal.value = 0.12 * (1 - end) * glare; lensU.streak.value = 0.6 * (1 - end) * enh * glare;
+    if (streak) { streak.enabled = lensU.streak.value > 0.002; streak.uniforms.minZ.value = Math.max(0.5, cam.position.z - GLASS_Z + 0.3); streak.uniforms.thr.value = 2.2; }
+    pu.dt = dt; pu.t = clock; pu.focus = focusDist; pu.aperture = aperture; pu.maxblur = maxblur; pu.ca = 0.022 * (1 - s) + 0.004;
+    post.update(pu);
 
-    // window reflection: half res, every frame on high
-    if (mirror) {
+    // window reflection: half res, every frame while the glass is in the shot (skipped, no mips, once it is not)
+    const reflK = mirror ? enh * (1 - sstep(MIRROR_OFF[0], MIRROR_OFF[1], p)) : 0;
+    let ok = false;
+    if (reflK > 0.001) {
       const rw = Math.max(1, Math.round(W * pr / 2)), rh = Math.max(1, Math.round(H * pr / 2));
       if (rw !== reflW || rh !== reflH) { reflW = rw; reflH = rh; mirror.setSize(rw, rh); }
-      glassU.hasRefl.value = mirror.render(renderer, scene, cam, reflHide) ? 1 : 0;
+      ok = mirror.render(renderer, scene, cam, reflHide);
     }
+    glassU.uReflK.value = ok ? reflK : 0;
 
-    // hand-off pass follows the projected screen
+    // hand-off pass follows the projected screen (canvas pixels: the canvas runs at DPR)
     const hu = hand.uniforms, ha = sstep(HAND_IN[0], HAND_IN[1], p); hu.amt.value = ha; hu.outFade.value = fadeOutside ? sstep(HAND_IN[0], 1, p) : 0;
-    if (ha > 0) { const r = p >= 1 ? target : screenRect(); hu.rect.value.set(r.x / W, 1 - (r.y + r.h) / H, (r.x + r.w) / W, 1 - r.y / H); hu.res.value.set(W * pr, H * pr); hu.rad.value = targetRad * pr * sstep(HAND_IN[0], 1, p); }
+    if (ha > 0) { const r = p >= 1 ? target : sr; hu.rect.value.set(r.x / W, 1 - (r.y + r.h) / H, (r.x + r.w) / W, 1 - r.y / H); hu.res.value.set(W * DPR, H * DPR); hu.rad.value = targetRad * DPR * sstep(HAND_IN[0], 1, p); }
     atmoRan = false;
     post.render();
-    // adaptive resolution (high only): sustained slow frames drop the pixel ratio a notch
-    if (HIGH && running) { ftAcc += dt; ftN++; if (ftN >= 90) { const avg = ftAcc / ftN; ftAcc = ftN = 0; if (avg > 1 / 45 && pr > 1) setPR(Math.max(1, pr - 0.25)); } }
+    // adaptive resolution (high only): sustained slow frames lower the post ratio a notch, applied only while the scroll is idle
+    if (HIGH && running) { ftAcc += dt; ftN++; if (ftN >= 90) { const avg = ftAcc / ftN; ftAcc = ftN = 0; if (avg > 1 / 45 && prWant > 1) prWant = Math.max(1, prWant - 0.25); } }
+    if (prWant !== pr && now - moveT > 400) setPR(prWant);
     frames++;
   }
-  function setPR(v) { pr = v; renderer.setPixelRatio(pr); post.setSize(W, H); renderer.domElement.style.width = renderer.domElement.style.height = '100%'; }
+  function setPR(v) { pr = prWant = v; post.composer.setPixelRatio(pr); post.resetMotion(); }
 
-  // ---------------------------------------------------------------- textures stream in (never block ready)
+  // ---------------------------------------------------------------- async compile against the real targets
+  // three picks tone mapping / output colour space from the bound target, so each compile binds the target it draws into.
+  const tmpRT = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false });
+  const fsGeo = new THREE.PlaneGeometry(2, 2), fsCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  let depthMats = null;
+  function compileTo(target, obj, camera, targetScene = null) {
+    const old = renderer.getRenderTarget(); renderer.setRenderTarget(target);
+    try { return renderer.compileAsync(obj, camera, targetScene); } finally { renderer.setRenderTarget(old); }
+  }
+  function detached(objs, fn) { // compile without these (their materials and lights), restoring the exact child order
+    const saved = [];
+    for (const o of objs) { if (!o?.parent) continue; const par = o.parent, i = par.children.indexOf(o); par.children.splice(i, 1); saved.push([par, i, o]); }
+    try { return fn(); } finally { for (let k = saved.length - 1; k >= 0; k--) { const [par, i, o] = saved[k]; par.children.splice(i, 0, o); } }
+  }
+  function compileFS(mats, target) {
+    if (!mats.length) return Promise.resolve();
+    const sc = new THREE.Scene(); for (const m of mats) sc.add(new THREE.Mesh(fsGeo, m));
+    return compileTo(target, sc, fsCam);
+  }
+  function compileDepth(targetScene, camera) { // shadow-map depth programs (they take the scene's light state)
+    if (!renderer.shadowMap.enabled) return Promise.resolve();
+    depthMats ||= [THREE.BackSide, THREE.DoubleSide, THREE.FrontSide].map(side => new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, side }));
+    const g = new THREE.Group(); for (const m of depthMats) g.add(new THREE.Mesh(fsGeo, m));
+    return compileTo(tmpRT, g, camera, targetScene);
+  }
+  function postMats(skip) { // every full-screen material the chain draws (minus the ones it never uses here)
+    const out = new Set(), add = m => { if (m?.isShaderMaterial && !skip.includes(m)) out.add(m); };
+    for (const pass of P) {
+      if (pass === hand) continue;
+      pass.materials?.forEach(add);
+      for (const k of Object.keys(pass)) { const v = pass[k]; if (v?.isShaderMaterial) add(v); else if (Array.isArray(v)) v.forEach(add); }
+    }
+    return [...out];
+  }
+  const unused = [post.dof.materialBokeh, mbPass.mTrail].filter(Boolean);
+  function compileLean() {
+    const jobs = [];
+    detached([dust, backRoom], () => jobs.push(compileTo(scenePass.rt, scene, cam)));   // HDR target: linear, no tone map
+    jobs.push(compileTo(cab.rt, cab.scene, cab.cam));
+    jobs.push(compileFS(postMats([...unused, ...(streak?.materials ?? [])]), tmpRT));
+    jobs.push(compileFS([hand.material], null));                                        // the canvas: sRGB out
+    jobs.push(compileDepth(scene, cam), compileDepth(cab.scene, cab.cam));
+    return Promise.all(jobs);
+  }
+  function compileRich() {
+    const jobs = [];
+    if (dust) jobs.push(compileTo(scenePass.rt, dust, cam, scene));
+    if (streak) jobs.push(compileFS(streak.materials, tmpRT));
+    if (mirror) {
+      reflW = Math.max(1, Math.round(W * pr / 2)); reflH = Math.max(1, Math.round(H * pr / 2)); mirror.setSize(reflW, reflH);
+      // the mirror pass sees the room only (outside, glass, beams, dust hidden): its own light state, so its own programs;
+      // the shadow pass that follows it in a frame inherits that light state too
+      detached([outside.group, cones, dust, room.glass], () => jobs.push(compileTo(mirror.raw, scene, mirror.vcam), compileDepth(scene, cam)));
+      jobs.push(compileFS(mirror.materials, mirror.rt));
+    }
+    return Promise.all(jobs);
+  }
+
+  // ---------------------------------------------------------------- textures stream in after ready (never block it)
   let texApi = null, glassTex = null, texQueued = false;
-  function applyTextures() { // roles land one by one: coalesce into one apply + one async compile per burst
+  function applyTextures() { // roles land one by one: coalesce into one apply per burst (only ref swaps: placeholders are bound)
     if (texQueued) return; texQueued = true; setTimeout(applyNow, 30);
   }
   function applyNow() {
@@ -330,17 +456,18 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
       try { fn?.(texApi, inst); } catch (e) { console.warn('d6 hero textures:', e); }
     }
     const g = texApi.get?.('glass_smudge'), m = g && (g.roughnessMap || g.dirtMap || g.map);
-    if (m && m !== glassTex) { glassTex = m; m.wrapS = m.wrapT = THREE.RepeatWrapping; m.needsUpdate = true; glassU.tSmudge.value = m; glassU.hasSm.value = 1; }
-    renderer.compileAsync?.(scene, cam).catch(() => {});
+    if (m && m !== glassTex) { glassTex = m; glassU.tSmudge.value = m; glassU.hasSm.value = 1; }
   }
-  import('./hero-tex.js').then(mod => {
-    if (dead || !mod.loadHeroTextures) return;
-    texApi = mod.loadHeroTextures({ THREE, renderer, quality: HIGH ? 'high' : 'low', base: new URL('./assets/tex/', import.meta.url).href });
-    if (texApi?.onReady) texApi.onReady(applyTextures); else texApi?.ready?.then(applyTextures);
-  }).catch(() => { /* textures are optional: flat materials stay */ });
+  function startTextures() {
+    import('./hero-tex.js').then(mod => {
+      if (dead || !mod.loadHeroTextures) return;
+      texApi = mod.loadHeroTextures({ THREE, renderer, quality: HIGH ? 'high' : 'low', base: new URL('./assets/tex/', import.meta.url).href, roles: HERO_ROLES });
+      if (texApi?.onReady) texApi.onReady(applyTextures); else texApi?.ready?.then(applyTextures);
+    }).catch(() => { /* textures are optional: flat materials stay */ });
+  }
 
   // ---------------------------------------------------------------- loop + api
-  let running = false, raf = 0, dead = false;
+  let running = false, raf = 0, dead = false, stage = 0;   // stage: 0 booting, 1 lean (ready), 2 enhancing, 3 enhanced
   const loop = now => { if (!running) return; raf = requestAnimationFrame(loop); frame(now); };
   function resize() {
     W = Math.max(1, host.clientWidth); H = Math.max(1, host.clientHeight);
@@ -351,26 +478,48 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
   post.setSize(W, H); canvas.style.width = canvas.style.height = '100%';
 
   const ready = (async () => {
-    // neither the Series B still (seen from p ~0.68) nor the textures gate the boot: they swap in when they land
-    screens.stillReady.then(ok => { if (ok && !dead) solve(); }); // cover fit follows its real aspect
+    // neither the Series B still (seen from p ~0.64) nor the textures gate the boot: they swap in when they land
+    screens.stillReady.then(ok => { if (!ok || dead) return; solve(); idle(() => { if (!dead) renderer.initTexture(screens.still); }); }); // upload off the scroll path
     pose(0, 0); outside.update(0); cab.update(0);
-    try {
-      if (renderer.compileAsync) {
-        await renderer.compileAsync(scene, cam); await renderer.compileAsync(cab.scene, cab.cam);
-        if (mirror) await renderer.compileAsync(scene, mirror.vcam);
-      }
-    } catch (e) { /* compile on first frame instead */ }
+    try { await compileLean(); } catch (e) { if (DEBUG) console.warn('d6 hero compile:', e); }
     if (dead) return false;
+    await yieldTask(); if (dead) return false;
     cab.render(renderer);
-    post.warm({ fx: HIGH });
+    await yieldTask(); if (dead) return false;
+    if (post.ao.enabled) { mbPass.blur = true; mbPass.alloc(); mbPass.blur = false; if (mbPass.tmp) { renderer.setRenderTarget(mbPass.tmp); renderer.setRenderTarget(null); } } // motion-blur scratch target
     frame(performance.now());
+    stage = 1;
+    startTextures();
+    if (enhanceMode !== 'manual') idle(() => { if (!dead) enhance(); });
     return true;
   })();
+
+  // after ready: compile the rich layers, warm frames at p 0.5 and 1 in one task (the canvas only shows the last one), fade in
+  let enhP = null;
+  function enhance() {
+    return enhP ||= (async () => {
+      if (!(await ready) || dead) return false;
+      stage = 2;
+      if (RICH) {
+        try { await compileRich(); } catch (e) { if (DEBUG) console.warn('d6 hero compile:', e); }
+        if (dead) return false;
+        await yieldTask(); if (dead) return false;
+        const keep = prog, now = performance.now();
+        enh = 1;
+        for (const v of [0.5, 1, 0]) { prog = v; frame(now); }
+        prog = keep; enh = 0; enhT0 = now; frame(now); post.resetMotion();
+      } else enhT0 = performance.now();
+      stage = 3;
+      await new Promise(r => setTimeout(r, FADE_MS));
+      return !dead;
+    })();
+  }
 
   return {
     ready, renderer, scene, camera: cam, post,
     fx: { atmo, streak, mirror, lens: lensU, glass: glassU, dust: dustU, cones, moonFill },   // look tunables (QA)
-    setProgress(p) { prog = Math.min(1, Math.max(0, +p || 0)); },
+    enhance,                                                                       // mirror, streaks, dust (auto after ready unless enhance: 'manual')
+    setProgress(p) { const v = Math.min(1, Math.max(0, +p || 0)); if (v !== prog) { prog = v; moveT = performance.now(); } },
     setTarget(rect, radius) { if (!rect) { autoTarget = true; } else { target = { x: rect.x ?? rect.left, y: rect.y ?? rect.top, w: rect.w ?? rect.width, h: rect.h ?? rect.height }; autoTarget = false; } if (radius !== undefined) targetRad = radius; solve(); },
     screenRect() { pose(prog, clock); return screenRect(); },
     setPointer(x, y) { ptrX = Math.max(-1, Math.min(1, x)); ptrY = Math.max(-1, Math.min(1, y)); },
@@ -378,16 +527,25 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
     setMedia(el) { const t = screens.setMedia(el); hand.uniforms.tStill.value = t; solve(); return t; },
     // live feed on screen i (0 left, 1 centre cab feed, 2 right); null restores the procedural feed
     setScreenMedia(i, el, opts) { return screens.setScreenMedia(i, el, opts); },
-    start() { if (running) return; running = true; lastT = 0; post.resetMotion(); raf = requestAnimationFrame(loop); },
+    start() { if (running || dead) return; running = true; lastT = 0; post.resetMotion(); raf = requestAnimationFrame(loop); },
     stop() { running = false; cancelAnimationFrame(raf); },
-    renderOnce() { frame(performance.now()); },
+    renderOnce() { if (!dead) frame(performance.now()); },
     resize,
-    stats() { const i = renderer.info; return { calls: i.render.calls, triangles: i.render.triangles, pixelRatio: pr, frames, programs: i.programs?.length }; },
+    stats() { const i = renderer.info; return { calls: i.render.calls, triangles: i.render.triangles, pixelRatio: pr, dpr: DPR, frames, programs: i.programs?.length, stage, enh, coverage: cov, rich: RICH }; },
     dispose() {
+      if (dead) return;
       running = false; dead = true; cancelAnimationFrame(raf);
-      texApi?.dispose?.(); room.dispose(); outside.dispose(); cab.dispose(); screens.dispose(); mirror?.dispose(); atmo?.dispose(); streak?.dispose(); post.dof.dispose?.();
+      try { texApi?.dispose?.(); } catch (_) { /* best effort */ }
+      room.dispose(); outside.dispose(); cab.dispose(); screens.dispose(); mirror?.dispose(); atmo?.dispose(); streak?.dispose(); post.dof.dispose?.();
       for (const o of [...cones.children, dust, ...backRoom.children].filter(Boolean)) { o.geometry?.dispose(); o.material?.dispose(); }
-      room.glass?.material?.dispose?.(); post.composer.dispose?.();
+      room.glass?.material?.dispose?.();
+      // passes: their own dispose where they have one, plus every target / material they hold (D5 passes miss some)
+      for (const pass of post.composer.passes) {
+        try { pass.dispose?.(); } catch (_) { /* already gone */ }
+        for (const k of Object.keys(pass)) { const v = pass[k]; for (const x of Array.isArray(v) ? v : [v]) if (x?.isWebGLRenderTarget || x?.isMaterial) x.dispose(); }
+      }
+      post.composer.dispose?.();
+      tmpRT.dispose(); fsGeo.dispose(); depthMats?.forEach(m => m.dispose());
       renderer.dispose(); if (!cvIn) canvas.remove();
     }
   };

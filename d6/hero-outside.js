@@ -3,7 +3,7 @@
 // The room floor sits 1 m above the site; the camera looks along -z.
 import { createMachines } from '../d5/machines.js';
 import { NOISE, rng } from './hero-glsl.js';
-import { texBinder } from './hero-model-kit.js';
+import { texBinder, placeholders } from './hero-model-kit.js';
 import { buildSite } from './hero-model-site.js';
 
 export const G0 = -1.0;
@@ -25,7 +25,7 @@ function makeNoise(seed) {
 export function buildOutside({ THREE, scene, high, quality }) {
   if (high === undefined) high = quality !== 'low';
   const group = new THREE.Group(); group.name = 'hero-outside'; scene.add(group);
-  const tb = texBinder();
+  const tb = texBinder(THREE);
   const fbm = makeNoise(19);
   const bump = (x, z, cx, cz, rx, rz, h) => { const d = ((x - cx) / rx) ** 2 + ((z - cz) / rz) ** 2; return h * Math.exp(-d * 2.2); };
   const hgt = (x, z) => {
@@ -43,9 +43,11 @@ export function buildOutside({ THREE, scene, high, quality }) {
   { const p = tg.attributes.position, uv = tg.attributes.uv; for (let i = 0; i < p.count; i++) { p.setY(i, G0 + hgt(p.getX(i), p.getZ(i))); uv.setXY(i, p.getX(i) / TEX_DIRT, -p.getZ(i) / TEX_DIRT); } tg.computeVertexNormals(); }
   tg.userData.texScale = TEX_DIRT;
   const tm = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.96 });
+  const terrK = { value: 0 }; // 0 until dirt_ground lands (a white placeholder is bound until then)
   tm.onBeforeCompile = sh => {
+    sh.uniforms.terrK = terrK;
     sh.vertexShader = 'varying vec3 vW;\n' + sh.vertexShader.replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvW=(modelMatrix*vec4(transformed,1.)).xyz;');
-    sh.fragmentShader = 'varying vec3 vW;\n' + NOISE + sh.fragmentShader
+    sh.fragmentShader = 'uniform float terrK; varying vec3 vW;\n' + NOISE + sh.fragmentShader
       .replace('#include <color_fragment>', `#include <color_fragment>
         vec3 tcol=diffuseColor.rgb;
         float n1=fbm2(vW.xz*.18), n2=vn2(vW.xz*2.3+7.), n3=vn2(vW.xz*11.), tr=.5+.5*sin(vW.x*3.2+n1*4.);
@@ -54,7 +56,7 @@ export function buildOutside({ THREE, scene, high, quality }) {
         dirt=mix(dirt, vec3(.14,.11,.09), smoothstep(.55,.85,fbm2(vW.xz*.06+3.))*.6);   // wet / dark patches
         diffuseColor.rgb=dirt;
         #ifdef USE_MAP
-        diffuseColor.rgb*=mix(vec3(1.), tcol*2.2, .75);
+        diffuseColor.rgb*=mix(vec3(1.), tcol*2.2, .75*terrK);
         #endif
         float wash=smoothstep(-34.,-50.,vW.z)*smoothstep(-110.,-70.,vW.z)*smoothstep(95.,30.,abs(vW.x))*(.55+.6*fbm2(vW.xz*.05+9.));
         float bh=n2*.35+n3*.1+tr*.08*smoothstep(-20.,-60.,vW.z);`)
@@ -67,7 +69,7 @@ export function buildOutside({ THREE, scene, high, quality }) {
   };
   tm.customProgramCacheKey = () => 'd6hero-terrain';
   const terrain = new THREE.Mesh(tg, tm); terrain.receiveShadow = true; group.add(terrain);
-  tb.bind(tm, 'dirt_ground', { maps: ['map', 'normalMap', 'aoMap'], normalScale: 0.35, ao: 0.6 }); // no roughness map: moonlit glints alias at distance
+  tb.bind(tm, 'dirt_ground', { maps: ['map', 'normalMap', 'aoMap'], normalScale: 0.35, ao: 0.6, onApply: set => { if (set.map) terrK.value = 1; } }); // no roughness map: moonlit glints alias at distance
 
   // ridgelines: two strips of silhouette hills, far
   const ridge = (R, a0, a1, base, amp, seed, col) => {
@@ -127,18 +129,18 @@ export function buildOutside({ THREE, scene, high, quality }) {
   for (const k of ['paint', 'metal', 'glass']) { MAT[k].envMap = night; }
   MAT.paint.envMapIntensity = 0.5; MAT.metal.envMapIntensity = 0.9; MAT.glass.envMapIntensity = 1.4;
   MAT.glow.color.setRGB(4, 4, 4);
-  const paintU = { value: null }; // excavator_paint, triplanar in object space (D5 machine geometry carries no UVs)
+  const paintU = { value: placeholders(THREE).map }, paintK = { value: 0 }; // excavator_paint, triplanar in object space (D5 machine geometry carries no UVs)
   for (const k of ['paint', 'rough', 'metal']) { // night read: mostly silhouettes, the CAT yellow only hinted
     const m = MAT[k], prev = m.onBeforeCompile;
-    m.onBeforeCompile = (sh, r) => { prev(sh, r); sh.uniforms.tPaint = paintU;
-      sh.fragmentShader = (k === 'paint' ? 'uniform sampler2D tPaint;\n' : '') + sh.fragmentShader.replace('#include <roughnessmap_fragment>',
-      (k === 'paint' && paintU.value ? `{ vec3 an=abs(normalize(vMN)); an/=an.x+an.y+an.z+1e-4; vec3 q=vMObj*.5;
+    m.onBeforeCompile = (sh, r) => { prev(sh, r); if (k === 'paint') { sh.uniforms.tPaint = paintU; sh.uniforms.paintK = paintK; }
+      sh.fragmentShader = (k === 'paint' ? 'uniform sampler2D tPaint; uniform float paintK;\n' : '') + sh.fragmentShader.replace('#include <roughnessmap_fragment>',
+      (k === 'paint' ? `{ vec3 an=abs(normalize(vMN)); an/=an.x+an.y+an.z+1e-4; vec3 q=vMObj*.5;
         vec3 tp=texture2D(tPaint,q.zy).rgb*an.x+texture2D(tPaint,q.xz).rgb*an.y+texture2D(tPaint,q.xy).rgb*an.z;
-        diffuseColor.rgb*=mix(1., dot(tp,vec3(.3,.59,.11))*2.2, .7); }\n` : '') +
+        diffuseColor.rgb*=mix(1., dot(tp,vec3(.3,.59,.11))*2.2, .7*paintK); }\n` : '') +
       'diffuseColor.rgb = mix(vec3(dot(diffuseColor.rgb, vec3(.3,.59,.11))), diffuseColor.rgb, .14) * .34;\n#include <roughnessmap_fragment>'); };
-    m.customProgramCacheKey = () => 'd6night-' + k + (k === 'paint' && paintU.value ? '-tex' : '');
+    m.customProgramCacheKey = () => 'd6night-' + k;
   }
-  tb.bind(null, 'excavator_paint', { custom: set => { const t = set.map; if (!t || paintU.value === t) return; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.needsUpdate = true; paintU.value = t; MAT.paint.needsUpdate = true; } });
+  tb.bind(null, 'excavator_paint', { custom: set => { const t = set.map; if (!t || paintU.value === t) return; paintU.value = t; paintK.value = 1; } }); // ref swap only
   const place = (o, x, z, ry) => { o.position.set(x, G0 + hgt(x, z) - 0.05, z); o.rotation.y = ry; group.add(o); return o; };
   const exA = yard.exA, dozer = yard.dozer;
   place(exA.g, 12, -50, Math.PI * 0.95); exA.g.scale.setScalar(1.55);

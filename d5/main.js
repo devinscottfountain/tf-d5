@@ -41,6 +41,9 @@ scene.background = new THREE.Color(0x010103);
 const cam = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.1, 9000);
 // post: motion blur -> DOF -> bloom -> auto exposure + ACES -> SMAA -> lens (CA, grain, vignette)
 const post = createPost({ THREE, renderer, scene, cam }), { dof, lens, bloom } = post;
+// Mars mode: UnrealBloom's blurs use sigma = kernel radius, so each mip's kernel is close to a box and a lone bright pixel (a star,
+// the thin crescent) blooms into a soft square. A proper Gaussian (sigma = radius / 2.6) keeps the glow round. Default D5 keeps its look.
+if (MM) (bloom.separableBlurMaterials || []).forEach(m => { const c = m.uniforms.gaussianCoefficients?.value; if (!c) return; const n = c.length, sg = n / 2.6; for (let i = 0; i < n; i++) c[i] = 0.39894 * Math.exp(-0.5 * i * i / (sg * sg)) / sg; });
 window.__d5 = { renderer, post, dof, lens, quality: QUALITY };
 addEventListener('resize', () => post.setSize(innerWidth, innerHeight));
 
@@ -642,13 +645,17 @@ function marsOff() {
   if (veil) css(veil, 'opacity', '0');
 }
 if (MM) marsOff(); // hidden until the track arrives
+// Exit: over the track's last MM_OUT viewport the image (and HUD/overlays) fades to black, and once the after section's top
+// reaches the bottom of the viewport the canvas is hidden and nothing renders, so no seam and no sky band above a short closing section.
+const MM_OUT = 0.4;
 function marsGate() {
-  const r = near && track.getBoundingClientRect();
-  const fade = r ? clamp01(1 - r.top / innerHeight) : 0, on = booted && fade > 0.001 && r.bottom > 0;
+  const r = near && track.getBoundingClientRect(), end = r ? (after ? after.getBoundingClientRect().top : r.bottom) : 0;
+  const fade = r ? clamp01(1 - r.top / innerHeight) : 0, out = r ? clamp01((end - innerHeight) / (MM_OUT * innerHeight)) : 0;
+  const on = booted && fade > 0.001 && out > 0.001 && r.bottom > 0;
   if (!on) { if (mmOn) marsOff(); return false; }
   prog = Math.min(1, Math.max(MM_P0, -r.top / Math.max(1, r.height - innerHeight)));
   if (!mmOn) { mmOn = true; sm = prog; smV = 0; post.resetMotion(); css(host, 'visibility', 'visible'); for (const el of fadeEls) css(el, 'visibility', 'visible'); } // arriving mid-track: start there, no fly-through
-  mmFade = fade; return true;
+  mmFade = fade * sstep(out, 0, 1); return true;
 }
 // Mars mode: [data-behind] overlays are masked by the planet's disc, so the copy reads as sitting behind Mars
 const behind = MM ? ovs.filter(o => o.el.hasAttribute('data-behind')) : [], mpv = new THREE.Vector3();
@@ -658,11 +665,51 @@ function maskBehind(inSpace) {
     cam.updateMatrixWorld(); mpv.copy(MARS).project(cam); const d = cam.position.distanceTo(MARS);
     if (mpv.z < 1 && d > 6.2) { r = Math.round(Math.tan(Math.asin(6.05 / d)) / Math.tan(cam.fov * Math.PI / 360) * innerHeight); x = (mpv.x * 0.5 + 0.5) * innerWidth; y = (0.5 - mpv.y * 0.5) * innerHeight; } // r in half px
   }
+  window.__d5.mars.disc = r < 0 ? null : { x, y, r: r / 2 }; // QA hook
   for (const o of behind) {
     if (!o.vq) continue; const b = o.el.getBoundingClientRect();
     const m = r < 0 ? 'none' : `radial-gradient(circle at ${Math.round(x - b.left)}px ${Math.round(y - b.top)}px, transparent ${r / 2}px, #000 ${r / 2 + 1.5}px)`;
     css(o.el, 'webkitMaskImage', m); css(o.el, 'maskImage', m);
   }
+}
+// Mars mode: while the [data-behind] title is up, Mars is framed so its disc sits on the title's middle word gap, and is kept
+// small enough that it can only eclipse the facing ends of the two words beside that gap, never a whole word. Size: the camera
+// backs off along its line to Mars (same lens, same look, same phase; only the planet gets smaller). Position: a view offset
+// on the projection. It lets go as the title leaves (sm 0.15 -> 0.27, the title is gone by 0.155) into the D5 arrival framing.
+const titleEl = behind.length ? behind[0].el : null, mcv = new THREE.Vector3();
+let gap = null, gapKey = '', framed = false;
+if (titleEl && document.fonts) document.fonts.ready.then(() => (gapKey = ''));
+function measureGap() {
+  const key = innerWidth + ',' + innerHeight + ',' + titleEl.offsetWidth + ',' + titleEl.offsetHeight + ',' + titleEl.textContent.length;
+  if (key === gapKey) return gap; gapKey = key; gap = null;
+  const b = titleEl.getBoundingClientRect(), words = [], tw = document.createTreeWalker(titleEl, NodeFilter.SHOW_TEXT), rg = document.createRange();
+  for (let n = tw.nextNode(); n; n = tw.nextNode()) for (const m of n.data.matchAll(/\S+/g)) {
+    rg.setStart(n, m.index); rg.setEnd(n, m.index + m[0].length); const w = rg.getClientRects()[0];
+    if (w && w.width > 0) words.push({ l: w.left - b.left, r: w.right - b.left, cy: (w.top + w.bottom) / 2 - b.top, h: w.height });
+  }
+  const lines = new Set(words.map(w => Math.round(w.cy / Math.max(1, w.h * 0.5)))).size, step = words.length ? words[0].h * 0.75 : 0;
+  for (let i = 1; i < words.length; i++) {
+    const a = words[i - 1], c = words[i]; if (Math.abs(a.cy - c.cy) > a.h * 0.5 || c.l < a.r) continue; // same line only
+    const x = (a.r + c.l) / 2, y = (a.cy + c.cy) / 2, score = Math.abs(x - b.width / 2) + Math.abs(y - b.height / 2);
+    let rMax = (c.l - a.r) / 2 + 0.5 * Math.min(a.r - a.l, c.r - c.l); if (lines > 1) rMax = Math.min(rMax, step);
+    if (!gap || score < gap.score) gap = { x, y, rMax, score };
+  }
+  return gap;
+}
+function frameBehind(inSpace) {
+  const k = inSpace && titleEl ? 1 - sstep(sm, 0.15, 0.27) : 0, g = k > 0 && measureGap();
+  if (!g) { if (framed) { framed = false; cam.clearViewOffset(); } return; }
+  const W = innerWidth, H = innerHeight, th = Math.tan(cam.fov * Math.PI / 360);
+  cam.updateMatrixWorld(); mcv.copy(MARS).applyMatrix4(cam.matrixWorldInverse); const d = mcv.length();
+  if (mcv.z > -6.2 || d < 6.2) { if (framed) { framed = false; cam.clearViewOffset(); } return; }
+  const rNat = Math.tan(Math.asin(6.05 / d)) / th * H / 2, rT = rNat + (Math.min(rNat, g.rMax) - rNat) * k; // disc radius, px
+  if (rT < rNat) { // back off: pos (sky, dust and sun follow it) and the camera, along the line from Mars
+    const f = 6.05 / Math.sin(Math.atan(rT * 2 * th / H)) / d;
+    pos.sub(MARS).multiplyScalar(f).add(MARS); cam.position.sub(MARS).multiplyScalar(f).add(MARS); cam.updateMatrixWorld();
+  }
+  const nx = mcv.x / -mcv.z / (th * cam.aspect), ny = mcv.y / -mcv.z / th; // un-offset NDC of the planet's centre (the back-off keeps its direction)
+  const b = titleEl.getBoundingClientRect(), sx = (b.left + g.x - (W / 2 + nx * W / 2)) * k, sy = (b.top + g.y - (H / 2 - ny * H / 2)) * k;
+  cam.setViewOffset(W, H, -sx, -sy, W, H); framed = true;
 }
 renderer.setAnimationLoop(() => {
   if (!visible || (!booted && !skip)) return; // under the veil nothing draws until the boot warm-up is done
@@ -754,6 +801,7 @@ renderer.setAnimationLoop(() => {
   cam.up.copy(camUp);
   if (Math.abs(cam.fov - fov) > 0.01) { cam.fov = fov; cam.updateProjectionMatrix(); }
   cam.position.copy(pos); cam.lookAt(look);
+  if (titleEl) frameBehind(mode === 'space');
   if (behind.length) maskBehind(mode === 'space');
   // dust: smoothed camera velocity drives streak length (a short virtual shutter)
   if (hasLast && dt > 0) { velTmp.copy(pos).sub(lastPos).divideScalar(dt); if (velTmp.length() > 4000) velTmp.set(0, 0, 0); camVel.lerp(velTmp, Math.min(1, dt * 6)); }
@@ -765,6 +813,8 @@ renderer.setAnimationLoop(() => {
   // Earth holds Austin under the opening frame until the pull out lands, then spins on from there
   if (introOn) spinOff = SPIN_LAND - t * EARTH_SPIN;
   planetArg.t = t; planetArg.spin = spinOff; planets.update(planetArg);
+  // Mars mode: the night-side dome lights are sub-pixel from far out and read as specks inside the dark disc, so they only come up on the dive
+  if (MM) planets.mars.material.uniforms.uDomes.value = 1 - sstep(pos.distanceTo(MARS), 14, 30);
   if (sky) { sky.update(pos); sky.group.visible = !inCol && !inSite; }
 
   // sun + streak: off on the ground, cresting the limb as the pull out lands

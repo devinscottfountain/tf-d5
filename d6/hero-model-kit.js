@@ -63,11 +63,20 @@ export function sweep(THREE, shape, a, b, up = [0, 1, 0], curve = 3) {
   return g.applyMatrix4(new THREE.Matrix4().makeBasis(x, y, z).setPosition(A));
 }
 
-// texture binder: bind(material, role, opts) now, apply(tex) whenever textures stream in
-export function texBinder() {
+// texture binder: bind(material, role, opts) now, apply(tex) whenever textures stream in.
+// With THREE, every bound slot gets a 1x1 placeholder at bind time (white map / ORM, flat normal), so the program is final
+// from the first frame and streaming only swaps texture refs: no needsUpdate, no recompile, no re-upload.
+const PH = new WeakMap();
+export function placeholders(THREE) {
+  let p = PH.get(THREE); if (p) return p;
+  const mk = (r, g, b, srgb) => { const t = new THREE.DataTexture(new Uint8Array([r, g, b, 255]), 1, 1); t.wrapS = t.wrapT = THREE.RepeatWrapping; if (srgb) t.colorSpace = THREE.SRGBColorSpace; t.needsUpdate = true; return t; };
+  p = { map: mk(255, 255, 255, true), normalMap: mk(128, 128, 255), roughnessMap: mk(255, 255, 255), aoMap: mk(255, 255, 255), metalnessMap: mk(255, 255, 255) };
+  PH.set(THREE, p); return p;
+}
+export function texBinder(THREE) {
   const list = [];
   const MAPS = ['map', 'normalMap', 'roughnessMap', 'aoMap'];
-  const hooked = new WeakSet();
+  const ph = THREE ? placeholders(THREE) : null;
   function apply(tex) {
     if (!tex || typeof tex.get !== 'function') return;
     for (const b of list) {
@@ -76,16 +85,19 @@ export function texBinder() {
       let changed = false;
       for (const k of b.maps || MAPS) {
         const t = set[k]; if (!t || b.mat[k] === t) continue;
-        if (t.wrapS !== 1000 || t.wrapT !== 1000) { t.wrapS = t.wrapT = 1000; t.needsUpdate = true; } // THREE.RepeatWrapping
-        b.mat[k] = t; changed = true;
+        b.mat[k] = t; changed = true;   // streamer uploads with RepeatWrapping already: a ref swap, nothing else
         if (k === 'map' && b.color !== undefined) b.mat.color.set(b.color);
         if (k === 'normalMap' && b.normalScale) b.mat.normalScale.set(b.normalScale, b.normalScale);
         if (k === 'roughnessMap' && b.roughness !== undefined) b.mat.roughness = b.roughness;
         if (k === 'aoMap') b.mat.aoMapIntensity = b.ao ?? 0.8;
       }
-      if (changed) b.mat.needsUpdate = true;
+      if (changed) { if (!ph) b.mat.needsUpdate = true; b.onApply?.(set); } // no placeholders: the program has to change
     }
-    if (tex.onReady && !hooked.has(tex)) { hooked.add(tex); tex.onReady(() => apply(tex)); }
   }
-  return { bind(mat, role, o = {}) { list.push({ mat, role, ...o }); return mat; }, apply, list };
+  function bind(mat, role, o = {}) {
+    list.push({ mat, role, ...o });
+    if (mat && ph) for (const k of o.maps || MAPS) if (!mat[k]) mat[k] = ph[k];
+    return mat;
+  }
+  return { bind, apply, list };
 }

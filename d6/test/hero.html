@@ -20,7 +20,8 @@ import { createHero, SERIES_B } from '../hero3d.js';
 const qs = new URLSearchParams(location.search);
 const host = document.getElementById('host');
 if (qs.has('noui')) document.body.classList.add('noui');
-const hero = createHero({ THREE, host, quality: qs.get('q') || 'high', still: qs.get('still') || SERIES_B });
+// ?enh=manual: no auto enhance; ?lite / ?lite=0 force the tablet path either way; ?lean: still-frame DONE right at ready (else after enhance)
+const hero = createHero({ THREE, host, quality: qs.get('q') || 'high', still: qs.get('still') || SERIES_B, enhance: qs.get('enh') === 'manual' ? 'manual' : 'auto', lite: qs.has('lite') ? qs.get('lite') !== '0' : undefined });
 window.HERO = hero;
 const card = document.getElementById('card'), tgt = document.getElementById('tgt'), info = document.getElementById('info');
 document.getElementById('cimg').src = qs.get('still') || SERIES_B; document.getElementById('cimg').crossOrigin = 'anonymous';
@@ -44,7 +45,9 @@ window.setP = p => { P = p; document.getElementById('p').value = p; apply(); };
 const t0 = performance.now();
 hero.ready.then(() => {
   window.READY_MS = performance.now() - t0;
-  if (!qs.has('still-frame')) hero.start(); window.DONE = true;
+  if (!qs.has('still-frame')) { hero.start(); window.DONE = true; }
+  else if (qs.has('lean') || qs.get('enh') === 'manual' || !hero.enhance) window.DONE = true;
+  else hero.enhance().then(() => { window.ENH_MS = performance.now() - t0; window.DONE = true; });
   setInterval(() => { const s = hero.stats(), r = hero.screenRect(); info.textContent = `calls ${s.calls} tris ${s.triangles} pr ${s.pixelRatio} | screen ${r.x.toFixed(1)},${r.y.toFixed(1)} ${r.w.toFixed(1)}x${r.h.toFixed(1)}`; }, 500);
 });
 </script></body></html>

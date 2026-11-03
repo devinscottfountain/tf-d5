@@ -231,10 +231,10 @@ export function createScreens({ THREE, renderer, high, stillUrl, cab }) {
   const still = new THREE.Texture(); still.colorSpace = THREE.NoColorSpace; still.generateMipmaps = true; still.minFilter = THREE.LinearMipmapLinearFilter;
   const ui = tex(cabUI(SW, SH));
   const centre = new THREE.ShaderMaterial({
-    uniforms: { ...aces, ...panelU(), time, tCab: { value: cab.texture }, tUI: { value: ui }, tStill: { value: still }, uMix: { value: 0 }, uUI: { value: 1 }, uLevel: { value: 0.95 },
+    uniforms: { ...aces, ...panelU(), time, tCab: { value: cab.texture }, tUI: { value: ui }, tStill: { value: still }, uMix: { value: 0 }, uFeed: { value: 1 }, uUI: { value: 1 }, uLevel: { value: 0.95 },
       uCover: { value: new THREE.Vector4(1, 1, 0, 0) } },
     vertexShader: VS, fragmentShader: `${INV_ACES}
-      uniform sampler2D tCab, tUI, tStill; uniform float time, uMix, uUI, uLevel; uniform vec4 uCover; varying vec2 vUv; ${PANEL}
+      uniform sampler2D tCab, tUI, tStill; uniform float time, uMix, uFeed, uUI, uLevel; uniform vec4 uCover; varying vec2 vUv; ${PANEL}
       float hs(vec2 p){ return fract(sin(dot(p,vec2(12.9898,78.233)))*43758.5453); }
       void main(){
         vec3 cab=texture2D(tCab,vUv).rgb; cab=1.-exp(-cab*1.35);                        // the cab camera's own exposure
@@ -244,7 +244,7 @@ export function createScreens({ THREE, renderer, high, stillUrl, cab }) {
         cab=mix(cab, media(), uMedia);                                                  // real cab footage replaces the render
         vec4 ui=texture2D(tUI,vUv); vec3 feed=mix(cab, ui.rgb, ui.a*uUI);
         vec3 s=texture2D(tStill, vUv*uCover.xy+uCover.zw).rgb;
-        vec3 c=mix(feed*uLevel, s, uMix);
+        vec3 c=mix(feed*uLevel*uFeed, s, uMix);                                         // feed dips to black, then the still rises: never a double exposure
         gl_FragColor=vec4(panel(invACES(srgbDec(clamp(c,0.,1.)))),1.); }`
   });
   [left, right, centre].forEach(m => { m.toneMapped = false; m.fog = false; });
@@ -266,10 +266,21 @@ export function createScreens({ THREE, renderer, high, stillUrl, cab }) {
   }
   const mats = [left, centre, right], aspects = [1.8, 1.8, 1.8], media = [null, null, null], owned = new Set();
   const elAspect = el => (el.videoWidth || el.naturalWidth || el.width || 16) / (el.videoHeight || el.naturalHeight || el.height || 9);
+  // video: a plain Texture flagged as video (no texStorage, no mips) with its own frame-callback loop that stops on
+  // dispose (three's VideoTexture keeps re-arming requestVideoFrameCallback forever); no rVFC: polled in tick()
+  const polled = new Set();
   function mediaTex(el) { // raw sRGB bytes (decoded in the shaders); video: no mipmaps
-    const isV = el.tagName === 'VIDEO', t = isV ? new THREE.VideoTexture(el) : el.tagName === 'CANVAS' ? new THREE.CanvasTexture(el) : new THREE.Texture(el);
+    const isV = el.tagName === 'VIDEO', t = isV ? new THREE.Texture(el) : el.tagName === 'CANVAS' ? new THREE.CanvasTexture(el) : new THREE.Texture(el);
     t.colorSpace = THREE.NoColorSpace; t.generateMipmaps = !isV; t.minFilter = isV ? THREE.LinearFilter : THREE.LinearMipmapLinearFilter;
-    t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy()); t.needsUpdate = true; owned.add(t); return t;
+    t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy()); owned.add(t);
+    if (!isV) { t.needsUpdate = true; return t; }
+    t.isVideoTexture = true; t.update = () => {};
+    let live = true; const rv = 'requestVideoFrameCallback' in el;
+    const onFrame = () => { if (!live) return; t.needsUpdate = true; el.requestVideoFrameCallback(onFrame); };
+    if (rv) el.requestVideoFrameCallback(onFrame); else polled.add(t);
+    if (el.readyState >= 2) t.needsUpdate = true;
+    t.addEventListener('dispose', () => { live = false; polled.delete(t); });
+    return t;
   }
   const whenSized = (el, fn) => { if (el.tagName === 'VIDEO' && !el.videoWidth) el.addEventListener('loadedmetadata', fn, { once: true }); else if (el.tagName === 'IMG' && !el.naturalWidth) el.addEventListener('load', fn, { once: true }); };
   function fitMedia(i) { const m = media[i]; if (m) cover(aspects[i], mats[i].uniforms.uMCover.value, elAspect(m.el)); }
@@ -301,6 +312,7 @@ export function createScreens({ THREE, renderer, high, stillUrl, cab }) {
     setSubpixel(v) { for (const m of mats) m.uniforms.uSub.value = v; },
     setLevels(l, c, r) { left.uniforms.uLevel.value = l; centre.uniforms.uLevel.value = c; right.uniforms.uLevel.value = r; },
     setExposure(e) { aces.uExp.value = e; },
-    dispose() { owned.forEach(t => t.dispose()); [left, right, centre].forEach(m => { for (const k in m.uniforms) { const v = m.uniforms[k].value; if (v && v.isTexture && v !== cab.texture) v.dispose(); } m.dispose(); }); }
+    tick() { for (const t of polled) if (t.image.readyState >= 2) t.needsUpdate = true; },
+    dispose() { polled.clear(); owned.forEach(t => t.dispose()); [left, right, centre].forEach(m => { for (const k in m.uniforms) { const v = m.uniforms[k].value; if (v && v.isTexture && v !== cab.texture) v.dispose(); } m.dispose(); }); }
   };
 }

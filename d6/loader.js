@@ -68,10 +68,19 @@ export function runLoader({ THREE, el, reduced = false, minMs = 1200, maxMs = 20
       .fromTo(mark.pivot.scale, { x: 0.7, y: 0.7, z: 0.7 }, { x: 1, y: 1, z: 1, duration: 0.8, ease: 'back.out(1.6)' }, 0);
     else intro.from(flat, { rotateY: -360, duration: 1.1, ease: 'expo.out' }, 0);
   }
-  const wait = ms => new Promise(r => setTimeout(r, Math.max(0, ms)));
+  // deadlines resolve from a timer, from rAF, or from a check() after any gate settles: a long sync task (hero build) can
+  // starve setTimeout, so the cap is also judged right after the gates and on every frame
+  const checks = [];
+  const deadline = at => new Promise(r => {
+    let done = false, raf = 0;
+    const hit = () => { if (done || performance.now() < at) return false; done = true; cancelAnimationFrame(raf); r(); return true; };
+    const tick = () => { if (!hit()) raf = requestAnimationFrame(tick); };
+    setTimeout(hit, Math.max(0, at - performance.now())); raf = requestAnimationFrame(tick); checks.push(hit);
+  });
+  const check = () => checks.forEach(f => f());
   // the minimum also leaves the spin time to land when the script arrives late
-  const minP = wait(Math.max(minMs, reduced ? 0 : t0 + 900) - performance.now());
-  const maxP = wait(Math.max(maxMs, t0 + (reduced ? 300 : 1100)) - performance.now());
+  const minP = deadline(Math.max(minMs, reduced ? 0 : t0 + 900));
+  const maxP = deadline(Math.max(maxMs, t0 + (reduced ? 300 : 1100)));
   let gates = [];
   const done = new Promise(resolve => {
     // gate() promises are collected before the next microtask settles; give callers one tick to add them
@@ -93,5 +102,5 @@ export function runLoader({ THREE, el, reduced = false, minMs = 1200, maxMs = 20
       onExit?.(out);
     });
   });
-  return { gate: p => gates.push(p.catch(() => {})), done };
+  return { gate: p => gates.push(p.catch(() => {}).then(v => { check(); return v; })), done };
 }
