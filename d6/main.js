@@ -304,7 +304,7 @@ function init() {
     solApi = m.createSolutions({ THREE, host: solHost, topoUrl: new URL('./assets/topo.bin', import.meta.url).href, quality: QUALITY });
     D6.solutions = solApi;
     solApi.onTelemetry?.(onTele);
-    try { solApi.onGame?.(onGame); } catch (e) { console.warn('d6 solutions onGame:', e); } // canvas clicks cover it too
+    if (solApi.onGame) solApi.onGame(e => { if (!e || e.type === 'point') onGame(); }); else solHost.addEventListener('click', onGame);
     if (geo) solApi.setScene(geo);
     return solApi.ready;
   }).catch(e => console.warn('d6 solutions:', e)));
@@ -321,14 +321,13 @@ function init() {
     if (d.blade != null) css(blade, 'transform', `translateY(${(-6 * Math.max(-1, Math.min(1, d.blade))).toFixed(2)}px) rotate(${(8 * Math.max(-1, Math.min(1, d.blade))).toFixed(2)}deg)`);
   }
 
-  // control-mode hint: until the first click on the ground (the game's own event when it has one, else any click on the canvas)
+  // control-mode hint: until the user's first ground point (solutions onGame 'point'; a canvas click is the fallback)
   const coarse = matchMedia('(pointer: coarse)').matches, hint = document.createElement('div');
   hint.className = 'd6-hint'; hint.setAttribute('aria-hidden', 'true');
   hint.textContent = coarse ? 'Tap ground to plot a dig zone · Tap first point to close' : 'Click ground to plot a dig zone · Click first point to close';
-  hud.appendChild(hint);
+  tabsEl.appendChild(hint); // under the tabs, right aligned: clear of the ground band the machines use
   let hintDone = false;
   function onGame() { if (!hintDone && hudOn) { hintDone = true; hint.classList.remove('is-on'); } }
-  solHost.addEventListener('click', onGame);
 
   // tabs: click animates the scene and scrolls to that mode's stretch of the pin
   let curMode = 0, hudOn = false, clickLock = null;
@@ -342,12 +341,11 @@ function init() {
     const l = smooth(); l ? l.scrollTo(y, { duration: dur }) : scrollTo({ top: y, behavior: RM ? 'auto' : 'smooth' });
   }));
 
-  const scene = { topo: 0, morph: 0, mode: 0, modeT: 0, flatten: 0, mapY: null }, last = {};
-  // map placement (canvas px): its top sits ~596 design px above the OUR MISSION label, lower right behind the copy;
-  // it rises with the copy and stays where the copy came to rest when the copy moves on
-  const mLabel = q('.d6-mission-label', mission);
-  let restLabel = 0;
-  const measureMission = () => { restLabel = 0.12 * innerHeight + (parseFloat(getComputedStyle(mission).paddingTop) || 0) + (mLabel?.offsetTop || 0); };
+  const scene = { topo: 0, morph: 0, mode: 0, modeT: 0, flatten: 0, missionTop: null }, last = {};
+  // map placement: solutions places the map from the mission copy top (canvas px); it rises with the copy and stays
+  // where the copy came to rest when the copy moves on
+  let restMission = 0;
+  const measureMission = () => { restMission = 0.12 * innerHeight + (parseFloat(getComputedStyle(mission).paddingTop) || 0); };
   // framing inputs for the WebGL layer, in canvas px as they sit while the stage is pinned (stage and canvas share 0,0):
   // bottom of the tab cards (the scene keeps its machines below it) and the control HUD cards (kept clear in control)
   let geo = null, geoKey = '';
@@ -358,12 +356,12 @@ function init() {
     const key = Math.round(g.groundTop) + '|' + g.hud.map(r => (r ? Math.round(r.l) + ',' + Math.round(r.t) + ',' + Math.round(r.r) : '')).join(';');
     if (key !== geoKey) { geoKey = key; geo = g; if (solApi) solApi.setScene(g); D6.solGeo = g; }
   }
-  function solFrame(labelTop, exitPx) {
+  function solFrame(missionTop, exitPx) {
     const topo = clamp01(missionST.progress), morph = clamp01(enterST.progress), sp = solST.progress;
     let modeF = Math.min(sp * 3, 2.9999), mode = Math.floor(modeF), modeT = mode === 2 ? clamp01(sp * 3 - 2) : modeF - mode;
     if (clickLock) { if (performance.now() > clickLock.until) clickLock = null; else { mode = clickLock.mode; modeT = 0.06; } }
     scene.topo = topo; scene.morph = morph; scene.mode = mode; scene.modeT = modeT; scene.flatten = mode === 2 ? sstep(0, 0.55, modeT) : 0;
-    scene.mapY = Math.round(Math.max(labelTop, restLabel) - 596 * innerWidth / 1600);
+    scene.missionTop = Math.round(Math.max(missionTop, restMission));
     setActive(mode);
     const on = mode === 1 && morph >= 0.999 && exitPx <= 0;
     if (on !== hudOn) { hudOn = on; hud.classList.toggle('is-on', on); hint.classList.toggle('is-on', on && !hintDone); }
@@ -380,7 +378,7 @@ function init() {
     if (solApi) {
       if (op > 0 && !solRunning) { solRunning = true; solApi.start?.(); }
       else if (op <= 0 && solRunning) { solRunning = false; solApi.stop?.(); }
-      if (solRunning && (last.topo !== scene.topo || last.morph !== scene.morph || last.mode !== scene.mode || last.modeT !== scene.modeT || last.mapY !== scene.mapY)) {
+      if (solRunning && (last.topo !== scene.topo || last.morph !== scene.morph || last.mode !== scene.mode || last.modeT !== scene.modeT || last.missionTop !== scene.missionTop)) {
         Object.assign(last, scene); solApi.setScene(scene);
       }
     }
@@ -495,7 +493,7 @@ function init() {
     // all layout reads first, then this frame's style writes (no forced layout mid-frame)
     if (solRunning || !geo) measureSolGeo();
     const p = heroST.progress, sr = stage.getBoundingClientRect(), marsTop = marsTrack.getBoundingClientRect().top;
-    const introBottom = intro.getBoundingClientRect().bottom, labelTop = mLabel ? mLabel.getBoundingClientRect().top : 0;
+    const introBottom = intro.getBoundingClientRect().bottom;
     const afterTop = after ? after.getBoundingClientRect().top : 1e9, exitPx = scrollY - solST.end;
     const mr = missionIn.getBoundingClientRect(), morphNow = enterST.progress; // the mission copy under the nav also gets the shade
     // 3D hero lifecycle: released while Mars is near, rebuilt as the stage comes back within ~1.5 viewports
@@ -506,7 +504,7 @@ function init() {
     kbFrame(sr.bottom > 0 && sr.top < innerHeight);
     navShadeFrame((sr.bottom > innerHeight * 0.15 && p > 0.12) || (mr.top < innerHeight * 0.12 && mr.bottom > 0 && morphNow < 0.3));
     for (const v of vids) vidOn(v, v.classList.contains('d6-hero-video') ? !heroOn && sr.bottom > 0 && p < 0.8 : sr.bottom > 0 && p > 0.3);
-    solFrame(labelTop, exitPx); marsFrame(marsTop, exitPx, afterTop); railFrame();
+    solFrame(mr.top, exitPx); marsFrame(marsTop, exitPx, afterTop); railFrame();
   }
   gsap.ticker.add(frame);
   let rz = 0;
