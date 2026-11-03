@@ -335,7 +335,7 @@ function init() {
   const coarse = matchMedia('(pointer: coarse)').matches, hint = document.createElement('div');
   hint.className = 'd6-hint'; hint.setAttribute('aria-hidden', 'true');
   hint.textContent = coarse ? 'Tap ground to plot a dig zone · Tap first point to close' : 'Click ground to plot a dig zone · Click first point to close';
-  tabsEl.appendChild(hint); // under the tabs, right aligned: clear of the ground band the machines use
+  tabsEl.appendChild(hint); // under the tabs, left aligned: empty terrain there in every control frame
   let hintDone = false;
   function onGame() { if (!hintDone && hudOn) { hintDone = true; hint.classList.remove('is-on'); } }
 
@@ -504,7 +504,7 @@ function init() {
   // ---------- frame ----------
   const after = q('.d6-after');
   measure(); measureRail(); measureMission();
-  let released = false;
+  let released = false, stageClear = false; const grain = q('.d6-stage .d6-grain');
   function frame() {
     // all layout reads first, then this frame's style writes (no forced layout mid-frame)
     if (solRunning || !geo) measureSolGeo();
@@ -516,6 +516,14 @@ function init() {
     if (HERO3D && D6.t.heroRelease) released = true;
     if (HERO3D && released && !hero && !heroBuilding && marsTop > innerHeight * 2.5 && introBottom > -1.5 * innerHeight) buildHero(true);
     if (sr.bottom > 0) heroFrame(p);
+    // once the card has taken over, nothing else in the stage paints: the sticky stage's black (and the dimmed photo
+    // layers) would otherwise cover the topo map below the card while the stage scrolls away
+    const cardOnly = p >= 0.9;
+    if (cardOnly !== stageClear) {
+      stageClear = cardOnly; css(stage, 'backgroundColor', cardOnly ? 'transparent' : '');
+      for (const el of [dim, shade, grain]) if (el) css(el, 'visibility', cardOnly ? 'hidden' : ''); // grain: stage wide, would show on the clear stage
+      if (!heroOn) css(media, 'visibility', cardOnly ? 'hidden' : 'visible');
+    }
     heroRunFrame(p, sr);
     kbFrame(sr.bottom > 0 && sr.top < innerHeight);
     for (const v of vids) vidOn(v, v.classList.contains('d6-hero-video') ? !heroOn && sr.bottom > 0 && p < 0.8 : sr.bottom > 0 && p > 0.3);

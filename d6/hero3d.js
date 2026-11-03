@@ -308,6 +308,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
   const sr = { x: 0, y: 0, w: 0, h: 0 };
   const coverage = r => Math.max(0, Math.min(W, r.x + r.w) - Math.max(0, r.x)) * Math.max(0, Math.min(H, r.y + r.h) - Math.max(0, r.y)) / (W * H);
   const lampCol = new THREE.Color(1.0, 0.68, 0.38), tmpC = new THREE.Color();
+  const siteGlow = ['glow', 'window', 'amber'].map(k => outside.site?.M?.[k]).filter(Boolean).map(m => [m, m.color.clone()]);   // trailer / pickup lights by the H1
   const pu = { dt: 0, t: 0, focus: 0, aperture: 0, maxblur: 0, ca: 0 };
   let lastT = 0, cabAcc = 0, frames = 0, ftAcc = 0, ftN = 0, reflW = 0, reflH = 0, cov = 0;
   let enh = 0, enhT0 = 0, moveT = 0, prWant = pr;
@@ -344,9 +345,10 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
     moonFill.intensity = (HIGH ? 0.55 : 0.4) * (1 - 0.4 * near);
 
     // atmosphere + beams + dust
-    const ca = copyA ?? Math.max(0, 1 - p / COPY_OUT);
-    const lampK = (1 - 0.5 * end) * LAMP_K * (1 - LAMP_COPY * ca);
-    if (outside.lampHead) outside.lampHead.material.color.copy(outside.LAMP_ON).multiplyScalar(1 - LAMP_COPY * ca);
+    const ca = copyA ?? Math.max(0, 1 - p / COPY_OUT), lampDn = 1 - LAMP_COPY * sstep(0, 0.3, ca);   // full hold-down until the copy is nearly gone
+    const lampK = (1 - 0.5 * end) * LAMP_K * lampDn;
+    if (outside.lampHead) outside.lampHead.material.color.copy(outside.LAMP_ON).multiplyScalar(lampDn);
+    for (const [m, c] of siteGlow) m.color.copy(c).multiplyScalar(lampDn);
     if (atmo) {
       const au = atmo.uniforms; au.time.value = clock;
       for (let i = 0; i < spots.length && i < 4; i++) { spots[i].getWorldPosition(cv); au.lampP.value[i].set(cv.x, cv.y, cv.z, i === 0 ? 0 : 0.1 * lampK); au.lampC.value[i].copy(lampCol); }   // tower 0: no visible source, so no glow (its light stays)
