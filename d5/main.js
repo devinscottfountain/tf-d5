@@ -672,27 +672,50 @@ function maskBehind(inSpace) {
     css(o.el, 'webkitMaskImage', m); css(o.el, 'maskImage', m);
   }
 }
-// Mars mode: while the [data-behind] title is up, Mars is framed so its disc sits on the title's middle word gap, and is kept
-// small enough that it can only eclipse the facing ends of the two words beside that gap, never a whole word. Size: the camera
-// backs off along its line to Mars (same lens, same look, same phase; only the planet gets smaller). Position: a view offset
-// on the projection. It lets go as the title leaves (sm 0.15 -> 0.27, the title is gone by 0.155) into the D5 arrival framing.
+// Mars mode: while the [data-behind] title is up, Mars is held big (MM_R of the viewport height, about its natural size as the
+// title leaves) and the title opens a gap for it: the words split in two halves around the middle word gap with a spacer between,
+// sized so the disc only bites MM_BITE of the facing letters' glyph boxes. Wide screens: one line, "One day [Mars] on Mars", centred
+// as a whole. Too narrow for that: two lines with the planet between them, the gap centre kept where the one-line title sat.
+// Size: the camera moves along its line to Mars (same lens, look and phase; only the distance changes). Position: a view offset on
+// the projection. It lets go as the title leaves (sm 0.15 -> 0.27, the title is gone by 0.155) into the D5 arrival framing.
 const titleEl = behind.length ? behind[0].el : null, mcv = new THREE.Vector3();
-let gap = null, gapKey = '', framed = false;
+const MM_R = 0.14, MM_BITE = 0.18; // disc radius / viewport height; limb overlap into each facing letter, fraction of the narrower glyph
+let gap = null, gapKey = '', framed = false, tParts = null;
 if (titleEl && document.fonts) document.fonts.ready.then(() => (gapKey = ''));
+function splitTitle() { // once: [left half][spacer][right half], split at the word gap nearest the middle of the text
+  const words = titleEl.textContent.trim().split(/\s+/); if (words.length < 2) return null;
+  let i = 1, best = Infinity, tot = words.join(' ').length;
+  for (let j = 1, n = 0; j < words.length; j++) { n += words[j - 1].length + 1; const d = Math.abs(n - tot / 2); if (d < best) { best = d; i = j; } }
+  const mk = (t, cl) => { const e = document.createElement('span'); e.className = cl; if (t != null) e.textContent = t; return e; };
+  const L = mk(words.slice(0, i).join(' ') + ' ', 'd5-tw'), S = mk(null, 'd5-tgap'), R = mk(words.slice(i).join(' '), 'd5-tw');
+  S.setAttribute('aria-hidden', 'true'); S.style.display = 'inline-block'; S.style.width = '0px'; S.style.height = '1px';
+  titleEl.replaceChildren(L, S, R); return { L, S, R };
+}
+function glyph(span, last) { // client rect of the first or last non-space character of a span's text
+  const n = span.firstChild, t = n.data; let i = last ? t.length - 1 : 0; while (t[i] === ' ') i += last ? -1 : 1;
+  const rg = document.createRange(); rg.setStart(n, i); rg.setEnd(n, i + 1); return rg.getClientRects()[0];
+}
 function measureGap() {
-  const key = innerWidth + ',' + innerHeight + ',' + titleEl.offsetWidth + ',' + titleEl.offsetHeight + ',' + titleEl.textContent.length;
+  const key = innerWidth + ',' + innerHeight;
   if (key === gapKey) return gap; gapKey = key; gap = null;
-  const b = titleEl.getBoundingClientRect(), words = [], tw = document.createTreeWalker(titleEl, NodeFilter.SHOW_TEXT), rg = document.createRange();
-  for (let n = tw.nextNode(); n; n = tw.nextNode()) for (const m of n.data.matchAll(/\S+/g)) {
-    rg.setStart(n, m.index); rg.setEnd(n, m.index + m[0].length); const w = rg.getClientRects()[0];
-    if (w && w.width > 0) words.push({ l: w.left - b.left, r: w.right - b.left, cy: (w.top + w.bottom) / 2 - b.top, h: w.height });
-  }
-  const lines = new Set(words.map(w => Math.round(w.cy / Math.max(1, w.h * 0.5)))).size, step = words.length ? words[0].h * 0.75 : 0;
-  for (let i = 1; i < words.length; i++) {
-    const a = words[i - 1], c = words[i]; if (Math.abs(a.cy - c.cy) > a.h * 0.5 || c.l < a.r) continue; // same line only
-    const x = (a.r + c.l) / 2, y = (a.cy + c.cy) / 2, score = Math.abs(x - b.width / 2) + Math.abs(y - b.height / 2);
-    let rMax = (c.l - a.r) / 2 + 0.5 * Math.min(a.r - a.l, c.r - c.l); if (lines > 1) rMax = Math.min(rMax, step);
-    if (!gap || score < gap.score) gap = { x, y, rMax, score };
+  if (!tParts) tParts = splitTitle(); if (!tParts) return null;
+  const { L, S, R } = tParts, H = innerHeight, rD = MM_R * H, st = titleEl.style;
+  // one line first: back to the page's own layout, then open the gap to fit the disc
+  st.top = ''; st.whiteSpace = ''; L.style.display = R.style.display = ''; S.style.display = 'inline-block'; S.style.width = '0px'; S.style.height = '1px';
+  const b0 = titleEl.getBoundingClientRect(), cy0 = b0.top + b0.height / 2;
+  let a = glyph(L, true), c = glyph(R, false), bite = MM_BITE * Math.min(a.width, c.width), want = 2 * rD - 2 * bite;
+  for (let k = 0; k < 2; k++) { S.style.width = Math.max(0, parseFloat(S.style.width) + want - (c.left - a.right)) + 'px'; a = glyph(L, true); c = glyph(R, false); } // letter-spacing and the space advance: correct against the measured gap
+  const lb = L.getBoundingClientRect(), rb = R.getBoundingClientRect(), fits = rb.right - lb.left <= innerWidth * 0.94 && Math.abs(a.top - c.top) < a.height * 0.5;
+  if (fits) {
+    const b = titleEl.getBoundingClientRect();
+    gap = { x: (a.right + c.left) / 2 - b.left, y: (a.top + a.bottom + c.top + c.bottom) / 4 - b.top, r: rD };
+  } else { // two lines, the disc between them: its top bites the first line's glyph boxes and its bottom the second's
+    st.whiteSpace = 'nowrap'; L.style.display = R.style.display = 'block'; S.style.display = 'block'; S.style.width = 'auto'; S.style.height = '0px';
+    let l1 = L.getBoundingClientRect(), l2 = R.getBoundingClientRect(); const fs = parseFloat(getComputedStyle(titleEl).fontSize), bv = MM_BITE * 0.7 * fs;
+    S.style.height = Math.max(0, 2 * rD - 2 * bv - (glyph(R, false).top - glyph(L, true).bottom)) + 'px';
+    l1 = glyph(L, true); l2 = glyph(R, false); const mid = (l1.bottom + l2.top) / 2;
+    st.top = (titleEl.getBoundingClientRect().top + cy0 - mid) + 'px'; // the gap centre (the planet) sits where the one-line title's centre was
+    const b = titleEl.getBoundingClientRect(); gap = { x: b.width / 2, y: (glyph(L, true).bottom + glyph(R, false).top) / 2 - b.top, r: rD };
   }
   return gap;
 }
@@ -702,12 +725,12 @@ function frameBehind(inSpace) {
   const W = innerWidth, H = innerHeight, th = Math.tan(cam.fov * Math.PI / 360);
   cam.updateMatrixWorld(); mcv.copy(MARS).applyMatrix4(cam.matrixWorldInverse); const d = mcv.length();
   if (mcv.z > -6.2 || d < 6.2) { if (framed) { framed = false; cam.clearViewOffset(); } return; }
-  const rNat = Math.tan(Math.asin(6.05 / d)) / th * H / 2, rT = rNat + (Math.min(rNat, g.rMax) - rNat) * k; // disc radius, px
-  if (rT < rNat) { // back off: pos (sky, dust and sun follow it) and the camera, along the line from Mars
-    const f = 6.05 / Math.sin(Math.atan(rT * 2 * th / H)) / d;
+  const rNat = Math.tan(Math.asin(6.05 / d)) / th * H / 2, rT = rNat + (g.r - rNat) * k; // disc radius, px
+  if (Math.abs(rT - rNat) > 0.01) { // move in or out: pos (sky, dust and sun follow it) and the camera, along the line from Mars
+    const f = Math.max(6.6 / d, 6.05 / Math.sin(Math.atan(rT * 2 * th / H)) / d);
     pos.sub(MARS).multiplyScalar(f).add(MARS); cam.position.sub(MARS).multiplyScalar(f).add(MARS); cam.updateMatrixWorld();
   }
-  const nx = mcv.x / -mcv.z / (th * cam.aspect), ny = mcv.y / -mcv.z / th; // un-offset NDC of the planet's centre (the back-off keeps its direction)
+  const nx = mcv.x / -mcv.z / (th * cam.aspect), ny = mcv.y / -mcv.z / th; // un-offset NDC of the planet's centre (the move keeps its direction)
   const b = titleEl.getBoundingClientRect(), sx = (b.left + g.x - (W / 2 + nx * W / 2)) * k, sy = (b.top + g.y - (H / 2 - ny * H / 2)) * k;
   cam.setViewOffset(W, H, -sx, -sy, W, H); framed = true;
 }
