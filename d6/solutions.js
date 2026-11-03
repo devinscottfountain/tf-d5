@@ -29,8 +29,12 @@ const easeIO = t => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 const io2 = t => { t = clamp01(t); return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; };
 const DEG = Math.PI / 180;
 
-// Figma map: 1774.5 x 1195.6 design px, frame offset x = -312 in the 1600 frame; its top sits ~226 px above the mission copy
-const MAP_W = 1774.5, MAP_X = -312, MAP_ABOVE = 226, MAP_SNAP = 16;
+// Figma map: 1774.5 x 1195.6 design px. Placed right and low so its bright side sits clear of the copy (Tim's frame 3):
+// left edge at x = -120 of the 1600 frame, its top ~46 px above the mission copy
+const MAP_W = 1774.5, MAP_X = -120, MAP_ABOVE = 46, MAP_SNAP = 16;
+// the mission copy (H2, CTA, both paragraphs) in map units on desktop: the map stays at <= 0.15 under it
+const MAP_CAP = [200 + 172 - MAP_X - 20, MAP_ABOVE - 10, 200 + 1197 - MAP_X + 20, MAP_ABOVE + 300]; // x0, y0, x1, y1
+const AMP_C = 1.5; // control terrain wave amplitude (frame 5)
 const MSCALE = 1.4; // machine scale (model metres -> world)
 const PLAN_S = 1.3; // planning machines read larger (frame 4)
 const PR_MAX = 1.5;
@@ -133,25 +137,25 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
   grid.cutAttr = cutAttr; grid.zoneAttr = zoneAttr;
 
   const U = {
-    uApp: { value: 0 }, uAmp: { value: 0 }, uPlanZ: { value: 0 }, uGameZ: { value: 0 }, uS2: { value: 1 }, uS4: { value: 0 }, uSize: { value: 0.12 }, uPx: { value: 1000 },
+    uApp: { value: 0 }, uAmp: { value: 0 }, uCutK: { value: 1 }, uPlanZ: { value: 0 }, uGameZ: { value: 0 }, uS2: { value: 1 }, uS4: { value: 0 }, uSize: { value: 0.12 }, uPx: { value: 1000 },
     uTopY: { value: 2 }, uFadeW: { value: 0.14 }, uFar: { value: 1e4 }, uCtrl: { value: 0 }, uHalf: { value: new THREE.Vector2(GW / 2, GD / 2) }, uPR: PRU,
   };
   const pMat = new THREE.ShaderMaterial({
     uniforms: U, transparent: true, depthWrite: false,
     vertexShader: /* glsl */ `
       attribute vec4 aSeed; attribute float aCut; attribute vec2 aZone;
-      uniform float uApp, uAmp, uPlanZ, uGameZ, uS2, uS4, uSize, uPx, uFar, uCtrl, uPR, uTopY, uFadeW;
+      uniform float uApp, uAmp, uCutK, uPlanZ, uGameZ, uS2, uS4, uSize, uPx, uFar, uCtrl, uPR, uTopY, uFadeW;
       uniform vec2 uHalf;
       varying vec3 vCol; varying float vA;
       ${H_GLSL}
       void main(){
-        float h = hF(position.xz)*uAmp - aCut;
+        float h = hF(position.xz)*uAmp - aCut*uCutK;
         vec4 mv = modelViewMatrix*vec4(position.x, h, position.z, 1.);
         gl_Position = projectionMatrix*mv;
         // colour: cyan to white in plan, height ramp in control
-        float hn = clamp((h + 2.5) / 9., 0., 1.);
+        float hn = clamp((h + 3.5) / 13., 0., 1.);
         vec3 cHi = vec3(.42, .75, .9), cW = vec3(.86, .95, 1.);
-        vec3 plan = mix(cHi, cW, aSeed.x*aSeed.x);
+        vec3 plan = mix(vec3(.4, .7, .86), vec3(.72, .89, .98), aSeed.x*aSeed.x); // faint cyan, as frame 4
         vec3 ctrl = mix(vec3(.1, .3, .44), vec3(.55, .88, 1.), hn);
         ctrl = mix(ctrl, cW, step(.9, aSeed.x)*.55);
         vec3 gc = mix(plan, ctrl, uCtrl);
@@ -188,12 +192,18 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
   // Fades as in Figma: ~0.6 white strokes, transparent at x 583 -> opaque at x 1774, black fade up from the bottom.
   // Morph: each contour vertex lifts off as a dot and eases (power2.inOut, staggered by x) onto its nearest
   // lattice node (16 design px); the line it came from dims to a ghost, then both fade as the grid takes over.
-  const MU = { uMapO: { value: new THREE.Vector2() }, uMapK: { value: 1 }, uRes: RES, uPR: PRU, uTopo: { value: 0 }, uMorph: { value: 0 }, uW: { value: 0.75 }, uLineA: { value: 1 }, uGhost: { value: 0.32 }, uDotA: { value: 1 }, uDot: { value: 1.7 } };
+  const MU = { uCap: { value: 1 }, uMapO: { value: new THREE.Vector2() }, uMapK: { value: 1 }, uRes: RES, uPR: PRU, uTopo: { value: 0 }, uMorph: { value: 0 }, uW: { value: 0.75 }, uLineA: { value: 1 }, uGhost: { value: 0.32 }, uDotA: { value: 1 }, uDot: { value: 1.7 } };
   const MAP_GLSL = /* glsl */ `
-    uniform vec2 uMapO, uRes; uniform float uMapK, uPR, uMorph;
+    uniform vec2 uMapO, uRes; uniform float uMapK, uPR, uMorph, uCap;
     vec2 scr(vec2 m){ return (uMapO + m*uMapK)*uPR; }
     vec4 clip(vec2 s){ return vec4(s.x / uRes.x*2. - 1., 1. - s.y / uRes.y*2., 0., 1.); }
-    float mapA(vec2 m){ float ax = clamp((m.x - 583.) / ${(MAP_W - 583).toFixed(1)}, 0., 1.); return ax*smoothstep(-80., 300., m.y)*(1. - smoothstep(660., 940., m.y)); }
+    // left fade: 0 at x <= 583, full by ~1100; capped to .25 (x .6 stroke = .15) under the copy box
+    float mapA(vec2 m){
+      float ax = smoothstep(583., 1100., m.x)*smoothstep(-80., 300., m.y)*(1. - smoothstep(660., 940., m.y));
+      float box = smoothstep(${MAP_CAP[0].toFixed(1)} - 60., ${MAP_CAP[0].toFixed(1)}, m.x)*(1. - smoothstep(${MAP_CAP[2].toFixed(1)}, ${MAP_CAP[2].toFixed(1)} + 60., m.x))
+        *smoothstep(${MAP_CAP[1].toFixed(1)} - 50., ${MAP_CAP[1].toFixed(1)}, m.y)*(1. - smoothstep(${MAP_CAP[3].toFixed(1)}, ${MAP_CAP[3].toFixed(1)} + 70., m.y));
+      return min(ax, mix(1., .25, box*uCap));
+    }
     float mU(float x, float j){ return clamp((uMorph - (.02 + .2*(x / ${MAP_W.toFixed(1)}) + .03*j)) / .14, 0., 1.); }
     float io2(float u){ return u < .5 ? 2.*u*u : 1. - (-2.*u + 2.)*(-2.*u + 2.)*.5; }`;
   const lMat = new THREE.ShaderMaterial({
@@ -287,6 +297,12 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
 
   // ------------------------------------------------------------------ control game
   const game = createGame({ THREE, scene, canvas, camera, exc: gameExc, grid, hField, MSCALE, mkLine, mkHandles, segBuffers });
+  // clicks never land under the HUD cards (canvas px = viewport px: the canvas fills its fixed host)
+  game.blocked = (x, y) => {
+    const r = canvas.getBoundingClientRect(), px = x - r.left, py = y - r.top, m = 14;
+    return FR.hud.some(h => h && px > h.l - m && px < h.r + m && py > h.t - m && py < h.b + m) || (FR.gt != null && py < FR.gt + 8);
+  };
+  let gOut = 0, gReset = true, tyS = 0; // control rig presence (tweens out when control is left), eased camera height
 
   // ------------------------------------------------------------------ camera states
   // tx, tz: look target; w: visible width (world) at the target; pitch, yaw (rad); fov; ox, oy: NDC offset of the target.
@@ -468,6 +484,7 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
   // the bright right half stays on screen.
   function mapPlace(topo, morph) {
     const desk = cw >= 768, k = desk ? cw / 1600 : cw / 820;
+    MU.uCap.value = desk ? 1 : 0;
     const ox = desk ? MAP_X * k : cw + 24 - MAP_W * k;
     let top;
     if (S.missionTop != null) top = S.missionTop - (desk ? MAP_ABOVE : 140) * k;
@@ -497,7 +514,12 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
     const wP = clamp01(1 - Math.abs(mF)), wC = clamp01(1 - Math.abs(mF - 1)), wE = clamp01(1 - Math.abs(mF - 2));
     const mApp = sm((morph - 0.72) / 0.28);
     const toCtrl = sm(Math.min(mF, 1)), toExec = sm(mF - 1);
-    const amp = toCtrl * (1 - clamp01(effFlat)) * mApp;
+    const amp = toCtrl * (1 - clamp01(effFlat)) * mApp * AMP_C;
+    // control rig (dig game machine, zone, dug points): tweens out as soon as control is left, gone by modeT ~0.15
+    // in exec, then resets so the next visit starts on a fresh demo
+    if (mode === 1) { gOut = Math.min(1, gOut + dt / 0.5); gReset = false; }
+    else { gOut = Math.max(0, gOut - dt / 0.35); if (mode === 2) gOut = Math.min(gOut, 1 - sm(effT / 0.15)); }
+    if (gOut <= 0 && !gReset) { gReset = true; game.reset(); }
 
     // map: lines draw in with topo; vertices snap to the lattice over morph 0..0.4
     mapPlace(topo, morph);
@@ -507,36 +529,39 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
     if (lines) { lines.visible = topo > 0.001 && mapOut > 0.003; mdots.visible = morph > 0.02 && mapOut > 0.003; }
 
     // dot field
-    U.uApp.value = sm((morph - 0.42) / 0.5); U.uAmp.value = amp; U.uCtrl.value = toCtrl * (1 - clamp01(effFlat));
+    U.uApp.value = sm((morph - 0.42) / 0.5); U.uAmp.value = amp; U.uCtrl.value = toCtrl * (1 - clamp01(effFlat)); U.uCutK.value = gOut;
     U.uS4.value = toExec; U.uS2.value = Math.max(1 - toCtrl, toExec);
-    U.uPlanZ.value = wP * mApp; U.uGameZ.value = wC * mApp;
+    U.uPlanZ.value = wP * mApp; U.uGameZ.value = wC * mApp * gOut;
     U.uSize.value = lerp(lerp(0.17, 0.11, toCtrl), 0.2, toExec);
     U.uFar.value = lerp(1e4, lerp(150, 120, toExec), toCtrl);
     // mask: nothing above the tab cards (their bottom - 40 px, soft 70 px), following the stage as it scrolls in
     const scrollIn = (1 - morph) * ch, gt = FR.gt != null ? FR.gt : ch * 0.45;
     U.uTopY.value = 1 - ((gt - 40 + scrollIn) / ch) * 2; U.uFadeW.value = (70 / ch) * 2;
+    // machines fade out above the same line (40 px soft): nothing shows through the tab cards
+    kit.clip.value.set((ch - (gt - 40 + scrollIn) + 40) * PRU.value, 40 * PRU.value);
     points.visible = morph > 0.3 && !!lines;
 
     // camera
     easeFits(dt);
     if (mF <= 1) blendC(cm, F.plan, F.ctrl, sm(mF)); else blendC(cm, F.ctrl, F.exec, sm(mF - 1));
-    // control target follows the game, drift with the pointer
-    const hold = game.drawing ? 0 : 1; // no drift while a zone is being placed
-    smx += (mx * hold - smx) * (1 - Math.exp(-dt * 3)); smy += (my * hold - smy) * (1 - Math.exp(-dt * 3));
+    // control: fixed framing on the game's home; a little pointer drift until someone plays, then it freezes where
+    // it is so points never slide under the cursor
+    if (!(game.user || game.drawing)) { smx += (mx - smx) * (1 - Math.exp(-dt * 3)); smy += (my - smy) * (1 - Math.exp(-dt * 3)); }
     cm.tx += (game.focus.x - C_CTRL.tx) * wC; cm.tz += (game.focus.z - C_CTRL.tz) * wC;
-    cm.yaw += smx * 0.12 * wC * hold + (effT - 0.5) * 0.08 * wP + (effT - 0.5) * 0.1 * wC;
+    cm.yaw += smx * 0.12 * wC + (effT - 0.5) * 0.08 * wP + (effT - 0.5) * 0.1 * wC;
     cm.pitch += -smy * 0.05 * wC;
     if (FR.gt == null && cw / ch < 1) cm.w *= Math.max(0.55, cw / ch);
     // dive from the map view into the plan, mostly hidden below the tab mask, done by morph ~0.85
     const cb = clamp01((morph - 0.3) / 0.55), camB = cb < 0.5 ? 8 * cb ** 4 : 1 - Math.pow(-2 * cb + 2, 4) / 2;
     blendC(cs, C_MAP, cm, camB);
-    // control: aim at the terrain height under the excavator so it keeps its place in the band over the hills
-    const dist = aim(camera, cs, hField(game.pos.x, game.pos.z) * amp * wC * camB);
+    // control: aim at the terrain height under the machine's home so it keeps its place in the band over the hills
+    tyS += (hField(game.home.x, game.home.z) * amp * wC * camB - tyS) * (1 - Math.exp(-dt * 6));
+    const dist = aim(camera, cs, tyS);
     U.uFar.value *= Math.max(1, dist / 80); // tall viewports frame from further back: keep the terrain
     U.uPx.value = ch * PRU.value / (2 * Math.tan(cs.fov * DEG / 2));
 
-    // plan machines + zones
-    const pa = wP * mApp;
+    // plan machines + zones: short crossfades so the plan and control machines barely overlap
+    const pa = sm((wP - 0.35) / 0.65) * mApp;
     for (const P of PLAN) {
       placeMachine(P.m, P.x, P.z, P.yaw, amp, pa);
       if (pa > 0.004) { const a = P.arm, s = Math.sin(t * 0.6 + P.x) * 0.06; P.m.setArm(a[0] + s, a[1] - s, a[2], a[3] + Math.sin(t * 0.35 + P.z) * 0.25); }
@@ -545,7 +570,8 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
     pzLine.uniforms.uOpacity.value = 0.9 * pa; pzHandle.uniforms.uOpacity.value = pa; pzFill.opacity = 0.3 * pa;
 
     // game
-    game.update(dt, { active: wC > 0.85 && mApp > 0.99, vis: wC * mApp, amp });
+    // armed (pointer live) once control is the target; active once the tilt has landed (queued clicks replay then)
+    game.update(dt, { armed: mode === 1 && mApp > 0.99, active: mode === 1 && wC > 0.97 && mApp > 0.99, vis: sm((wC - 0.35) / 0.65) * mApp * gOut, amp });
 
     // exec machines drive in: all on screen by 30% of the mode, parked by 70%, then hold
     for (const E of EXEC) {

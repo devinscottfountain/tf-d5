@@ -201,10 +201,11 @@ export function filmLens(THREE, lens) {
   Object.assign(u, {
     barrel: { value: 0.035 }, vig: { value: 0.55 }, grade: { value: 1 }, tStreak: { value: null }, streak: { value: 0 }, tHal: { value: null }, hal: { value: 0 },
     slope: { value: new THREE.Vector3(1.03, 1.0, 0.96) }, offset: { value: new THREE.Vector3(-0.003, 0.002, 0.007) }, power: { value: new THREE.Vector3(1.0, 1.0, 1.0) },
-    warm: { value: new THREE.Vector3(1.0, 0.82, 0.62) }, contrast: { value: 0.3 }, sat: { value: 1.02 }
+    warm: { value: new THREE.Vector3(1.0, 0.82, 0.62) }, contrast: { value: 0.3 }, sat: { value: 1.02 },
+    lead: { value: new THREE.Vector4(0.835, 0.5, 0.14, 0.08) }, leadK: { value: 0 }   // soft dark pool behind the hero lead copy (uv centre, radii)
   });
-  lens.material.fragmentShader = `uniform sampler2D tDiffuse, tStreak, tHal; uniform float ca, time, grain, barrel, vig, grade, streak, hal, contrast, sat;
-    uniform vec3 slope, offset, power, warm; uniform vec2 res; varying vec2 vUv;
+  lens.material.fragmentShader = `uniform sampler2D tDiffuse, tStreak, tHal; uniform float ca, time, grain, barrel, vig, grade, streak, hal, contrast, sat, leadK;
+    uniform vec3 slope, offset, power, warm; uniform vec4 lead; uniform vec2 res; varying vec2 vUv;
     float h12(vec2 p){ vec3 q=fract(vec3(p.xyx)*.1031); q+=dot(q,q.yzx+33.33); return fract((q.x+q.y)*q.z); }
     void main(){
       vec2 c=vUv-.5; float r2=dot(c,c);
@@ -220,6 +221,7 @@ export function filmLens(THREE, lens) {
       g=clamp(g,0.,1.); g=mix(g, g*g*(3.-2.*g), contrast);                                   // S-curve: deeper shadows, soft shoulder
       g=mix(vec3(dot(g,vec3(.2126,.7152,.0722))), g, sat);
       col=mix(col, clamp(g,0.,1.), grade);
+      if(leadK>0.){ float d=length((vUv-lead.xy)/lead.zw); col*=1.-leadK*(1.-smoothstep(.45,1.,d)); }   // light pools out of the copy, not a box
       col*=mix(1., smoothstep(.8,.1,r2*1.55)*.85+.15*(1.-r2), vig);                     // vignette: soft cos^4-ish falloff
       vec2 fp=floor(vUv*res); float t=floor(time*24.);                                    // 24 fps grain
       float n=h12(fp+t*17.13)+h12(fp*.5+t*3.7)-1.;                                        // two grain sizes

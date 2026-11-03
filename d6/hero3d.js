@@ -33,6 +33,9 @@ const SITE_FOCUS = 46;                              // m, the excavator / dozer 
 const REFL_LAYER = 1;                               // objects only the window reflection sees
 const FADE_MS = 500;                                // enhance fade-in
 const LAMP_K = 1;                                   // tower lamp glow (atmosphere + beams)
+const LAMP_COPY = 0.3;                              // lamp glow / head / beam held down this much while the hero copy is up
+const COPY_OUT = 0.42 / 0.85;                       // hero p where main.js has faded the copy out (page p 0.42 / P_CARD 0.85)
+const LEAD_DARK = 0.34;                             // in-frame falloff behind the lead copy (tone-mapped, scaled by copy opacity)
 // texture roles the hero's materials actually bind (night_sky_hdr, rock_ridge, rubber_track, tyre_track_decal are not used)
 const HERO_ROLES = ['concrete_floor', 'desk_laminate', 'black_plastic', 'brushed_metal', 'ceiling_panel', 'carpet', 'fabric_chair', 'glass_smudge', 'dirt_ground', 'gravel', 'excavator_paint', 'rusty_metal'];
 
@@ -256,6 +259,8 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
     pEnd.copy(ctr).addScaledVector(N, d).addScaledVector(R, -nx * d / P00).addScaledVector(Up, -ny * d / P11);
     qEnd.setFromRotationMatrix(m4.makeBasis(R, Up, N));
     m4.lookAt(p0, new V3(...LOOK0), new V3(0, 1, 0)); q0.setFromRotationMatrix(m4);
+    { const v = W / 100, x0 = 72.25 * v, y0 = 29.125 * v, x1 = 94.75 * v, y1 = y0 + 3.54 * v;   // .d6-lead box (3 lines), d6.css
+      lensU.lead.value.set((x0 + x1) / 2 / W, 1 - (y0 + y1) / 2 / H, ((x1 - x0) / 2 + 3 * v) / W, ((y1 - y0) / 2 + 3.2 * v) / H); }
     screens.cover(room.centreW / room.centreH, screens.centre.uniforms.uCover.value);
     screens.cover(ta, hand.uniforms.cover.value);
     monList.forEach((m, i) => { const w = m.w ?? 0.8, h = m.h ?? room.centreH; screens.setScreen?.(i, w / h, i === 1 ? 1920 * w / 0.8 : 1920); });
@@ -263,7 +268,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
   screens.onAspect = () => { if (!dead) solve(); };
 
   // ---------------------------------------------------------------- camera: slider dolly + gimbal, operator wobble, rack focus, breathing
-  let prog = 0, ptrX = 0, ptrY = 0, sx = 0, sy = 0, clock = 0;
+  let prog = 0, ptrX = 0, ptrY = 0, sx = 0, sy = 0, clock = 0, copyA = null;   // copyA: null = derived from p (main.js copyFrame)
   const c1 = new V3(), c2 = new V3(), D1 = new V3(0, -0.05, -0.55), D2 = new V3(0, 0.07, 0.75), dq = new Q(), eu = new THREE.Euler(), tv = new V3(), fwd = new V3();
   const nP = noise1(3), nY = noise1(5), nR = noise1(8), nX = noise1(13), nZ = noise1(21);
   const bez = (a, b, c, d, t, out) => { const u = 1 - t; return out.set(0, 0, 0).addScaledVector(a, u * u * u).addScaledVector(b, 3 * u * u * t).addScaledVector(c, 3 * u * t * t).addScaledVector(d, t * t * t); };
@@ -339,14 +344,16 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
     moonFill.intensity = (HIGH ? 0.55 : 0.4) * (1 - 0.4 * near);
 
     // atmosphere + beams + dust
-    const lampK = (1 - 0.5 * end) * LAMP_K;
+    const ca = copyA ?? Math.max(0, 1 - p / COPY_OUT);
+    const lampK = (1 - 0.5 * end) * LAMP_K * (1 - LAMP_COPY * ca);
+    if (outside.lampHead) outside.lampHead.material.color.copy(outside.LAMP_ON).multiplyScalar(1 - LAMP_COPY * ca);
     if (atmo) {
       const au = atmo.uniforms; au.time.value = clock;
-      for (let i = 0; i < spots.length && i < 4; i++) { spots[i].getWorldPosition(cv); au.lampP.value[i].set(cv.x, cv.y, cv.z, 0.1 * lampK); au.lampC.value[i].copy(lampCol); }
+      for (let i = 0; i < spots.length && i < 4; i++) { spots[i].getWorldPosition(cv); au.lampP.value[i].set(cv.x, cv.y, cv.z, i === 0 ? 0 : 0.1 * lampK); au.lampC.value[i].copy(lampCol); }   // tower 0: no visible source, so no glow (its light stays)
       tmpC.copy(mons.centre?.light?.color ?? spill.cab).lerp(spill.left, 0.4); au.roomC.value.copy(tmpC).multiplyScalar(0.0022 * (1 - sstep(0.4, 0.62, p)) * glare * lit); // screen-light haze: follows what the screen shows, gone before it is the picture
       mons.centre.screen.getWorldPosition(au.roomP.value); au.roomP.value.z += 0.35;
     }
-    for (const c of cones.children) c.material.uniforms.uCol.value.setRGB(1.0, 0.7, 0.4).multiplyScalar(0.04 * lampK);
+    cones.children.forEach((c, i) => c.material.uniforms.uCol.value.setRGB(1.0, 0.7, 0.4).multiplyScalar((i === 0 ? 0.45 : 1) * 0.04 * lampK));   // tower 0's beam faint: its heads are dark
 
     // lens: rack focus with shaped bokeh, fully sharp for the hand-off
     const dofK = HIGH ? 1 - sstep(0.88, 0.98, p) : 0;
@@ -359,6 +366,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
     }
     post.bloom.strength = (0.66 - 0.42 * sstep(0.55, 1, p)) * (0.3 + 0.7 * glare); post.bloom.radius = 0.55; post.bloom.threshold = 0.8;
     lensU.barrel.value = 0.035 * (1 - s); lensU.vig.value = 0.6 - 0.32 * s; lensU.grain.value = 0.032 - 0.016 * s;
+    lensU.leadK.value = W >= 768 ? LEAD_DARK * ca : 0;
     lensU.grade.value = 1 - end; lensU.hal.value = 0.12 * (1 - end) * glare; lensU.streak.value = 0.6 * (1 - end) * enh * glare;
     if (streak) { streak.enabled = lensU.streak.value > 0.002; streak.uniforms.minZ.value = Math.max(0.5, cam.position.z - GLASS_Z + 0.3); streak.uniforms.thr.value = 2.2; }
     pu.dt = dt; pu.t = clock; pu.focus = focusDist; pu.aperture = aperture; pu.maxblur = maxblur; pu.ca = 0.022 * (1 - s) + 0.004;
@@ -523,6 +531,8 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
     setTarget(rect, radius) { if (!rect) { autoTarget = true; } else { target = { x: rect.x ?? rect.left, y: rect.y ?? rect.top, w: rect.w ?? rect.width, h: rect.h ?? rect.height }; autoTarget = false; } if (radius !== undefined) targetRad = radius; solve(); },
     screenRect() { pose(prog, clock); return screenRect(); },
     setPointer(x, y) { ptrX = Math.max(-1, Math.min(1, x)); ptrY = Math.max(-1, Math.min(1, y)); },
+    // hero copy opacity 0..1 as the page draws it (lamp glow toned down and the lead falloff while it is up); null: derive from p
+    setCopyOpacity(a) { copyA = a == null ? null : Math.min(1, Math.max(0, +a || 0)); },
     // centre end frame (Series B): the 3D screen and the hand-off composite both use it
     setMedia(el) { const t = screens.setMedia(el); hand.uniforms.tStill.value = t; solve(); return t; },
     // live feed on screen i (0 left, 1 centre cab feed, 2 right); null restores the procedural feed

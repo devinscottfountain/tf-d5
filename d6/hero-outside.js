@@ -143,14 +143,20 @@ export function buildOutside({ THREE, scene, high, quality }) {
   tb.bind(null, 'excavator_paint', { custom: set => { const t = set.map; if (!t || paintU.value === t) return; paintU.value = t; paintK.value = 1; } }); // ref swap only
   const place = (o, x, z, ry) => { o.position.set(x, G0 + hgt(x, z) - 0.05, z); o.rotation.y = ry; group.add(o); return o; };
   const exA = yard.exA, dozer = yard.dozer;
-  place(exA.g, 12, -50, Math.PI * 0.95); exA.g.scale.setScalar(1.55);
+  // excavator pulled left of the lead copy (72-95 vw): the copy sits over dark ground and hills, not the lit house
+  const EX_X = +(globalThis.__EXX ?? 8.5);
+  place(exA.g, EX_X, -50, Math.PI * 0.95); exA.g.scale.setScalar(1.55);
   place(dozer, -8, -54, 0.3); dozer.scale.setScalar(1.2);
   const keep = [exA.g, dozer];
   if (high) { place(yard.trucks[0].g, -24, -70, -2.6); keep.push(yard.trucks[0].g); }
   // light towers: the head meshes' parents are the tower groups
   // towers framed off the copy (H1 left, lead right): one behind the excavator, one high on the right, both >= 120 px from text at 1280-1920 incl. parallax
   const towerSpots = [[8, -64, -0.6], [16, -40, 2.6]];
-  yard.towers[0].material.color.setRGB(1.4, 1.3, 1.15);
+  // one visible lamp (right): tower 0 still lights the dig but its heads face away from the room (dark lens backs, no glow)
+  const LAMP_ON = new THREE.Color(1.4, 1.3, 1.15);
+  yard.towers[1].material.color.copy(LAMP_ON);
+  yard.towers[0].material = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.018, 0.018, 0.02), side: THREE.DoubleSide });
+  const lampHead = yard.towers[1];
   const towers = towerSpots.map(([x, z, ry], i) => { const t = yard.towers[i].parent; place(t, x, z, ry); keep.push(t); return t; });
   scratch.traverse(o => { if (o.isMesh && !keep.some(k => isIn(o, k))) o.geometry.dispose(); });
   group.traverse(o => { if (o.isMesh) o.castShadow = o.receiveShadow = false; });
@@ -190,9 +196,9 @@ export function buildOutside({ THREE, scene, high, quality }) {
   }
   update(0);
   const api = {
-    group, update, spots, hemi, moon, skyU, hgt, site, cones: site.cones, city,
+    group, update, spots, lampHead, LAMP_ON, hemi, moon, skyU, hgt, site, cones: site.cones, city,
     applyHeroTextures: tex => tb.apply(tex),
-    dispose() { live.delete(api); site.dispose(); group.traverse(o => { if (o.geometry) o.geometry.dispose(); }); tm.dispose(); sky.material.dispose(); night.dispose(); city.material.dispose(); Object.values(MAT).forEach(m => m.dispose()); }
+    dispose() { live.delete(api); site.dispose(); group.traverse(o => { if (o.geometry) o.geometry.dispose(); }); tm.dispose(); sky.material.dispose(); night.dispose(); city.material.dispose(); Object.values(MAT).forEach(m => m.dispose()); yard.towers[0].material.dispose(); }
   };
   live.add(api);
   return api;

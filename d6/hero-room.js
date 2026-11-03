@@ -60,6 +60,10 @@ export function buildRoom({ THREE, scene, high, quality }) {
     strip: S({ color: 0x1a1b1e, roughness: 0.3, emissive: 0x0d0e10 }),
     sill: S({ color: 0x1b1c1f, roughness: 0.5, envMap: env, envMapIntensity: 0.6 }),
   };
+  // the glazing (mullions, frame, sill) takes no light from the site floods: 60 m out they only ever made a specular hot spot
+  // on a mullion that read as a second lamp next to the H1 (and slid into view under parallax)
+  const noFlood = sh => { sh.fragmentShader = sh.fragmentShader.replace('#include <lights_fragment_begin>', THREE.ShaderChunk.lights_fragment_begin.replace('getSpotLightInfo( spotLight, geometryPosition, directLight );', 'getSpotLightInfo( spotLight, geometryPosition, directLight ); directLight.color = vec3( 0.0 );')); };
+  for (const m of [M.mull, M.frame, M.sill]) { m.onBeforeCompile = noFlood; m.customProgramCacheKey = () => 'd6room-noflood'; }
   const tb = texBinder(THREE);
   tb.bind(M.desk, 'desk_laminate', { color: 0x1a1a1d }); tb.bind(M.edge, 'brushed_metal', { maps: ['normalMap', 'roughnessMap'] });
   tb.bind(M.stand, 'brushed_metal', { maps: ['normalMap', 'roughnessMap'] }); tb.bind(M.metal, 'brushed_metal', { maps: ['normalMap', 'roughnessMap'] });

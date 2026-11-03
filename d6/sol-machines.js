@@ -139,9 +139,22 @@ export function createMachineKit(THREE) {
   }
 
   // ------------------------------------------------------------------ materials per instance
+  // clip: every machine fades out above a screen line (x = its y in drawing-buffer px from the bottom, y = soft px),
+  // so nothing shows through the page's tab cards
+  const clip = { value: new THREE.Vector2(1e5, 1) };
+  const clipped = (mat, solid) => {
+    mat.onBeforeCompile = sh => {
+      sh.uniforms.uClip = clip;
+      sh.fragmentShader = 'uniform vec2 uClip;\n' + sh.fragmentShader.replace(/}\s*$/, solid
+        ? '  if (gl_FragCoord.y > uClip.x - uClip.y*.5) discard;\n}'
+        : '  gl_FragColor.a *= clamp((uClip.x - gl_FragCoord.y) / uClip.y, 0., 1.);\n}');
+    };
+    mat.customProgramCacheKey = () => (solid ? 'mclipS' : 'mclipL');
+    return mat;
+  };
   function mats() {
-    const solid = new THREE.MeshBasicMaterial({ color: 0x000000, polygonOffset: true, polygonOffsetFactor: 1.5, polygonOffsetUnits: 2 });
-    const line = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.92 });
+    const solid = clipped(new THREE.MeshBasicMaterial({ color: 0x000000, polygonOffset: true, polygonOffsetFactor: 1.5, polygonOffsetUnits: 2 }), true);
+    const line = clipped(new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.92 }), false);
     return { solid, line };
   }
   const node = (tpl, m) => {
@@ -152,11 +165,14 @@ export function createMachineKit(THREE) {
     }
     return g;
   };
+  // the black hidden-line occluder fades with the wireframe: no fill and no depth while a machine is mostly faded,
+  // so a machine crossfading in never darkens or cuts the zones under it
   const opacityFn = (root, m) => o => {
     root.visible = o > 0.004;
     m.line.opacity = 0.92 * o;
-    const tr = o < 0.999; if (m.solid.transparent !== tr) { m.solid.transparent = tr; m.solid.needsUpdate = true; }
-    m.solid.opacity = o;
+    const so = Math.min(1, Math.max(0, (o - 0.55) / 0.4)), tr = so < 0.999;
+    if (m.solid.transparent !== tr) { m.solid.transparent = tr; m.solid.needsUpdate = true; }
+    m.solid.opacity = so * so; m.solid.depthWrite = so > 0.6; m.solid.colorWrite = so > 0.004;
   };
 
   // ================================================================== EXCAVATOR (36 t class)
@@ -437,5 +453,5 @@ export function createMachineKit(THREE) {
     excT = bhT = rlT = null;
   }
 
-  return { excavator, backhoe, roller, disposeAll };
+  return { excavator, backhoe, roller, disposeAll, clip };
 }

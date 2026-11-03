@@ -93,7 +93,7 @@ function init() {
       if (gen !== heroGen) return false;
       measure(); stamp(again ? 'heroRebuild' : 'heroBuild');
       hero = m.createHero({ THREE, host, quality: QUALITY, still: sbImg.currentSrc || sbImg.src });
-      D6.heroApi = hero;
+      D6.heroApi = hero; copyOpLast = -1; // a rebuilt hero gets the copy opacity again
       hero.setTarget(cardR, cardRad); heroKey = rectKey(); stamp(again ? 'heroRebuilt' : 'heroBuilt');
       if (sbVid?.classList.contains('is-on')) hero.setMedia(sbVid);
       return hero.ready;
@@ -210,10 +210,12 @@ function init() {
     D6.heroRun = heroRun;
   }
 
+  let copyOpLast = -1;
   // hero copy leaves with opacity + a short lift (no blur: it smeared a ghost H1)
   function copyFrame(p) {
     const f = clamp01(p / 0.42);
     css(copy, 'opacity', (1 - f).toFixed(3));
+    if (hero && typeof hero.setCopyOpacity === 'function' && f !== copyOpLast) { copyOpLast = f; hero.setCopyOpacity(1 - f); } // lamps etc. can follow the H1
     css(copy, 'transform', f > 0.001 ? `translate3d(0,${(-24 * ease(f)).toFixed(2)}px,0)` : 'none');
     css(copy, 'visibility', f >= 1 ? 'hidden' : 'visible');
   }
@@ -228,8 +230,16 @@ function init() {
     if (on) gsap.fromTo(sbParts, { opacity: 0, y: RM ? 0 : 10 }, { opacity: 1, y: 0, duration: 0.6, stagger: 0.3, ease: 'power3.out' });
     else gsap.to(sbParts, { opacity: 0, duration: 0.25, ease: 'power2.out' });
     css(sbUi, 'pointerEvents', on ? 'auto' : 'none');
+    uiInert(!on);
   }
-  css(sbUi, 'pointerEvents', 'none');
+  // keyboard: the card UI is out of the tab order (and the a11y tree) until the card has settled
+  const sbFocusables = qa('a, button, [tabindex]', sbUi);
+  function uiInert(off) {
+    sbUi.inert = off; if (off) sbUi.setAttribute('aria-hidden', 'true'); else sbUi.removeAttribute('aria-hidden');
+    for (const el of sbFocusables) off ? el.setAttribute('tabindex', '-1') : el.removeAttribute('tabindex');
+    if (off && sbUi.contains(document.activeElement)) document.activeElement.blur();
+  }
+  css(sbUi, 'pointerEvents', 'none'); uiInert(true);
   // phones: no zoom morph; the photo eases in a touch and the full-width 4:5 card crossfades over it on its own rect
   function mobileFrame(p) {
     const zA = RM ? 0 : ease(clamp01(p / 0.6));
@@ -367,12 +377,12 @@ function init() {
     if (on !== hudOn) { hudOn = on; hud.classList.toggle('is-on', on); hint.classList.toggle('is-on', on && !hintDone); }
     const mo = 1 - sstep(0, 0.3, morph);
     css(missionIn, 'opacity', mo.toFixed(3)); css(missionIn, 'visibility', mo > 0 ? 'visible' : 'hidden');
-    // pin released: the copy and tabs hold their place and lift out first (~0.28 viewport), the canvas fades over
-    // ~0.42 viewport, and only then does Mars come in (marsFrame)
+    // pin released: the copy and tabs lift out (0..0.28 vh), the canvas fades to 0 and stops by EXIT.sol, then a pure
+    // black dead zone, then Mars fades in (marsFrame, from EXIT.mars)
     const H = innerHeight, cOut = exitPx > 0 ? sstep(0, 0.28 * H, exitPx) : 0;
     css(solStage, 'transform', exitPx > 0 ? `translate3d(0,${(exitPx - 24 * cOut).toFixed(1)}px,0)` : 'none');
     css(solStage, 'opacity', (1 - cOut).toFixed(3)); css(solStage, 'visibility', cOut >= 1 ? 'hidden' : 'visible');
-    const op = Math.min(sstep(0, 0.35, topo), 1 - (exitPx > 0 ? sstep(0, 0.42 * H, exitPx) : 0));
+    const op = Math.min(sstep(0, 0.35, topo), 1 - (exitPx > 0 ? sstep(0, EXIT.sol(), exitPx) : 0));
     css(solHost, 'opacity', op.toFixed(3)); css(solHost, 'visibility', op > 0 ? 'visible' : 'hidden');
     if (op > 0 && !solStarting) loadSolutions();
     if (solApi) {
@@ -385,8 +395,11 @@ function init() {
     D6.scene = scene;
   }
 
+  // solutions -> Mars hand-off, in px of scroll past the pin end: canvas 0 at sol, Mars from mars (>= 150 px of black between)
+  const EXIT = { sol: () => 0.34 * innerHeight, mars: () => 0.34 * innerHeight + Math.max(150, 0.17 * innerHeight), len: () => 0.3 * innerHeight };
+  D6.exit = EXIT;
   // ---------- Mars: D5 in mars mode, imported when its track is ~1.5 viewports away ----------
-  let marsP = null;
+  let marsP = null; const endEl = q('.d6-end');
   const loadMars = () => marsP || (marsP = (window.D5_CFG = Object.assign({ ahead: 1 }, window.D5_CFG, { mode: 'mars' }),
     import(new URL('../d5/main.js', import.meta.url).href).catch(e => console.warn('d6 mars:', e))));
   D6.loadMars = loadMars;
@@ -394,8 +407,11 @@ function init() {
     if (top < innerHeight * 2.5) { if (!marsP) loadMars(); releaseHero(); }
     // in after the solutions copy has gone (D5 keeps its own canvas dark until the track is near; this gates all of it);
     // hidden once the closing section covers the viewport (D5 stops drawing there too)
-    const op = afterTop <= 0 ? 0 : sstep(0.3 * innerHeight, 0.6 * innerHeight, exitPx);
+    const m0 = EXIT.mars(), op = afterTop <= 0 ? 0 : sstep(m0, m0 + EXIT.len(), exitPx);
     css(marsLayer, 'opacity', op.toFixed(3)); css(marsLayer, 'visibility', op > 0 ? 'visible' : 'hidden');
+    // closing section: its top rule stays hidden while it rises over the fading Mars layer, drawn once it has landed
+    if (endEl) css(endEl, 'borderTopColor', afterTop <= 0.5 ? '' : 'transparent'); // '' = the authored rgba(255,255,255,.1)
+    return op;
   }
 
   // ---------- right rail: Earth stretch until the Mars track, Mars stretch after ----------
@@ -502,9 +518,10 @@ function init() {
     if (sr.bottom > 0) heroFrame(p);
     heroRunFrame(p, sr);
     kbFrame(sr.bottom > 0 && sr.top < innerHeight);
-    navShadeFrame((sr.bottom > innerHeight * 0.15 && p > 0.12) || (mr.top < innerHeight * 0.12 && mr.bottom > 0 && morphNow < 0.3));
     for (const v of vids) vidOn(v, v.classList.contains('d6-hero-video') ? !heroOn && sr.bottom > 0 && p < 0.8 : sr.bottom > 0 && p > 0.3);
-    solFrame(mr.top, exitPx); marsFrame(marsTop, exitPx, afterTop); railFrame();
+    solFrame(mr.top, exitPx); const marsOp = marsFrame(marsTop, exitPx, afterTop); railFrame();
+    // nav shade: over the hero / Series B media, the mission copy passing under it, and the Mars layer (colony is bright)
+    navShadeFrame((sr.bottom > innerHeight * 0.15 && p > 0.12) || (mr.top < innerHeight * 0.12 && mr.bottom > 0 && morphNow < 0.3) || (marsOp > 0 && afterTop > innerHeight * 0.15));
   }
   gsap.ticker.add(frame);
   let rz = 0;
