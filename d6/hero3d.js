@@ -36,8 +36,9 @@ const LAMP_K = 1;                                   // tower lamp glow (atmosphe
 const LAMP_COPY = 0.3;                              // lamp glow / head / beam held down this much while the hero copy is up
 const COPY_OUT = 0.42 / 0.85;                       // hero p where main.js has faded the copy out (page p 0.42 / P_CARD 0.85)
 const LEAD_DARK = 0.34;                             // in-frame falloff behind the lead copy (tone-mapped, scaled by copy opacity)
-// texture roles the hero's materials actually bind (night_sky_hdr, rock_ridge, rubber_track, tyre_track_decal are not used)
-const HERO_ROLES = ['concrete_floor', 'desk_laminate', 'black_plastic', 'brushed_metal', 'ceiling_panel', 'carpet', 'fabric_chair', 'glass_smudge', 'dirt_ground', 'gravel', 'excavator_paint', 'rusty_metal'];
+// texture roles the hero's materials actually bind (night_sky_hdr, rubber_track, tyre_track_decal are not used)
+// order = stream order: what fills the first frame (ground, ridge, machine, desk) before the room detail
+const HERO_ROLES = ['dirt_ground', 'dirt_tracks', 'desk_laminate', 'excavator_paint', 'rock_ridge', 'glass_smudge', 'black_plastic', 'brushed_metal', 'concrete_floor', 'gravel', 'rusty_metal', 'fabric_chair', 'carpet', 'ceiling_panel'];
 
 const coarsePointer = () => {
   try { return matchMedia('(pointer: coarse)').matches || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent)); } catch (_) { return false; }

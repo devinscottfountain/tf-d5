@@ -8,6 +8,8 @@ import { buildSite } from './hero-model-site.js';
 
 export const G0 = -1.0;
 const TEX_DIRT = 4; // metres per dirt_ground tile
+const RIDGE_TEX = 36; // metres per rock_ridge tile on the far ridges (strata read at 500-900 m)
+const RIDGE_MEAN = [0.212, 0.092, 0.034]; // linear mean of rock_ridge_c (cliff_side), divided out of the ridge tint
 
 const live = new Set();
 // assign streamed textures by role to every live outside (no-op for roles not loaded yet)
@@ -44,12 +46,22 @@ export function buildOutside({ THREE, scene, high, quality }) {
   tg.userData.texScale = TEX_DIRT;
   const tm = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.96 });
   const terrK = { value: 0 }; // 0 until dirt_ground lands (a white placeholder is bound until then)
+  // dirt_tracks (rutted, tracked mud) over the worked ground: placeholders bound now so the program is final, trkK flips on landing
+  const PHT = placeholders(THREE), trkU = { tTrkC: { value: PHT.map }, tTrkN: { value: PHT.normalMap }, trkK: { value: 0 } };
   tm.onBeforeCompile = sh => {
-    sh.uniforms.terrK = terrK;
+    sh.uniforms.terrK = terrK; Object.assign(sh.uniforms, trkU);
     sh.vertexShader = 'varying vec3 vW;\n' + sh.vertexShader.replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvW=(modelMatrix*vec4(transformed,1.)).xyz;');
-    sh.fragmentShader = 'uniform float terrK; varying vec3 vW;\n' + NOISE + sh.fragmentShader
+    sh.fragmentShader = 'uniform float terrK, trkK; uniform sampler2D tTrkC, tTrkN; varying vec3 vW;\n' + NOISE + `
+      float trkMask(vec2 p){                                                              // where machines have worked the ground
+        float pad=1.-smoothstep(.55,1.,length((p-vec2(2.,-50.))/vec2(38.,12.)));          // the pad around the dig
+        float road=(1.-smoothstep(2.5,5.5,abs(p.x-(-6.+.2*(p.y+44.)+3.*sin(p.y*.08)))))*smoothstep(-33.,-40.,p.y)*smoothstep(-96.,-76.,p.y); // haul road to the berm
+        return clamp(max(pad,road)*(.5+.7*fbm2(p*.09+5.)),0.,1.); }
+` + sh.fragmentShader
       .replace('#include <color_fragment>', `#include <color_fragment>
         vec3 tcol=diffuseColor.rgb;
+        vec2 tuv=vec2(vW.x+1.6*sin(vW.z*.045), -vW.z)/2.25;                              // ruts run along z (toward the dig), gently snaking
+        float wk=trkMask(vW.xz)*trkK;
+        tcol=mix(tcol, texture2D(tTrkC,tuv).rgb, wk);
         float n1=fbm2(vW.xz*.18), n2=vn2(vW.xz*2.3+7.), n3=vn2(vW.xz*11.), tr=.5+.5*sin(vW.x*3.2+n1*4.);
         vec3 dirt=mix(vec3(.26,.19,.14), vec3(.4,.31,.23), n1);
         dirt*=.78+.3*n2+.12*(n3-.5);
@@ -59,8 +71,11 @@ export function buildOutside({ THREE, scene, high, quality }) {
         diffuseColor.rgb*=mix(vec3(1.), tcol*2.2, .75*terrK);
         #endif
         float wash=smoothstep(-34.,-50.,vW.z)*smoothstep(-110.,-70.,vW.z)*smoothstep(95.,30.,abs(vW.x))*(.55+.6*fbm2(vW.xz*.05+9.));
-        float bh=n2*.35+n3*.1+tr*.08*smoothstep(-20.,-60.,vW.z);`)
+        float bh=n2*.35+n3*.1+tr*.08*smoothstep(-20.,-60.,vW.z)*(1.-wk);`)
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+        #ifdef USE_NORMALMAP_TANGENTSPACE
+        { vec3 tn=texture2D(tTrkN,tuv).xyz*2.-1.; normal=normalize(normal+tbn*vec3(tn.xy*.8*wk,0.)); } // tuv shares the dirt uv frame (u = x, v = -z)
+        #endif
         { vec3 sp=-vViewPosition, sx=dFdx(sp), sy=dFdy(sp), r1=cross(sy,normal), r2=cross(normal,sx); float det=dot(sx,r1);
           vec2 dh=vec2(dFdx(bh),dFdy(bh)); normal=normalize(abs(det)*normal-sign(det)*(dh.x*r1+dh.y*r2)); }`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
@@ -70,18 +85,24 @@ export function buildOutside({ THREE, scene, high, quality }) {
   tm.customProgramCacheKey = () => 'd6hero-terrain';
   const terrain = new THREE.Mesh(tg, tm); terrain.receiveShadow = true; group.add(terrain);
   tb.bind(tm, 'dirt_ground', { maps: ['map', 'normalMap', 'aoMap'], normalScale: 0.35, ao: 0.6, onApply: set => { if (set.map) terrK.value = 1; } }); // no roughness map: moonlit glints alias at distance
+  tb.bind(null, 'dirt_tracks', { custom: set => { if (!set.map || trkU.tTrkC.value === set.map) return; trkU.tTrkC.value = set.map; if (set.normalMap) trkU.tTrkN.value = set.normalMap; trkU.trkK.value = 1; } }); // ref swap only
 
   // ridgelines: two strips of silhouette hills, far
   const ridge = (R, a0, a1, base, amp, seed, col) => {
-    const n = 220, f = makeNoise(seed), P = [], I = [], top = [];
+    const n = 220, f = makeNoise(seed), P = [], I = [], UV = [], top = [], S = RIDGE_TEX;
     for (let i = 0; i <= n; i++) {
       const a = a0 + (a1 - a0) * i / n, x = Math.sin(a) * R, z = -Math.cos(a) * R;
       const h = base + amp * (f(i * 0.035, seed) * 1.2 + 0.25 * f(i * 0.2, 7)) + amp * 0.9 * Math.exp(-(((a + 0.55) / 0.22) ** 2));
       P.push(x, -40, z, x, G0 + h * 0.55, z, x, G0 + h, z); top.push([x, G0 + h, z, a]);
+      const u = a * R / S; UV.push(u, -40 / S, u, (G0 + h * 0.55) / S, u, (G0 + h) / S); // rock_ridge strata: u along the arc, v up, in metres / S
       if (i < n) { const k = i * 3; I.push(k, k + 3, k + 1, k + 1, k + 3, k + 4, k + 1, k + 4, k + 2, k + 2, k + 4, k + 5); }
     }
-    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); g.setIndex(I); g.computeVertexNormals();
-    const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: col, roughness: 1 })); m.userData.top = top; group.add(m); return m;
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(UV, 2)); g.setIndex(I); g.computeVertexNormals();
+    g.userData.texScale = S;
+    const mat = new THREE.MeshStandardMaterial({ color: col, roughness: 1 });
+    // the scan's mean colour is divided out, so the ridge keeps its blue-hour tone and only gains the strata / ledges
+    const c = new THREE.Color(col); tb.bind(mat, 'rock_ridge', { maps: ['map', 'normalMap'], color: new THREE.Color(c.r / RIDGE_MEAN[0], c.g / RIDGE_MEAN[1], c.b / RIDGE_MEAN[2]), normalScale: 1.2 });
+    const m = new THREE.Mesh(g, mat); m.userData.top = top; group.add(m); return m;
   };
   ridge(520, -1.3, 1.3, 14, 26, 4, 0x1a1d26);
   const r2 = ridge(900, -1.25, 1.25, 30, 55, 9, 0x141822);

@@ -4,12 +4,16 @@
 // texture (R = ao, G = roughness, B = metalness, three.js convention). Special roles:
 //   glass_smudge      { roughnessMap, dirtMap }  same texture: R = dirt mask, G = roughness
 //   tyre_track_decal  { map (RGBA, alpha = decal mask; use transparent + depthWrite false), normalMap }, v = travel direction
+//   dirt_tracks       { map, normalMap } rutted, tracked mud in the dirt_ground palette, ruts run along v (texScale 2.25).
+//                     The terrain blends it over worked ground; high tier only.
+// A set only carries the maps its materials sample (rusty_metal, brushed_metal: normal + ORM; excavator_paint: colour),
+// so no bytes go to maps nobody binds.
 //   night_sky_hdr     { map: equirect (HDR on high, LDR on low), envMap: PMREM of it, intensity } for scene.environment
 // texScale = metres covered by one UV repeat (number, or [u, v]).
 
 export const TEX_ROLES = [
   'concrete_floor', 'desk_laminate', 'black_plastic', 'brushed_metal', 'ceiling_panel', 'carpet', 'fabric_chair', 'glass_smudge',
-  'night_sky_hdr', 'dirt_ground', 'gravel', 'excavator_paint', 'tyre_track_decal', 'rock_ridge', 'rubber_track', 'rusty_metal',
+  'night_sky_hdr', 'dirt_ground', 'dirt_tracks', 'gravel', 'excavator_paint', 'tyre_track_decal', 'rock_ridge', 'rubber_track', 'rusty_metal',
 ];
 
 // [texScale, high set, low set | null]; set = colour / normal / orm dirs ('1k' | '512' | '256')
@@ -17,13 +21,14 @@ const P = (c, n, o) => ({ c, n, o });
 const M = {
   concrete_floor: [2, P('1k', '1k', '512'), P('512', '512', '256')],
   dirt_ground: [4, P('1k', '1k', '512'), P('512', '512', '256')],
-  gravel: [1.5, P('1k', '1k', '512'), P('512', '512', '256')],
-  excavator_paint: [2, P('1k', '1k', '512'), P('512', '512', '256')],
-  rock_ridge: [6, P('1k', '1k', '512'), null],
-  rusty_metal: [2, P('1k', '1k', '512'), null],
-  desk_laminate: [1, P('512', '512', '256'), P('512', '512', '256')],
+  dirt_tracks: [2.25, P('512', '512', null), null],
+  gravel: [1.5, P('1k', '1k', '512'), P('512', null, '256')],
+  excavator_paint: [2, P('1k', null, null), P('512', null, null)],
+  rock_ridge: [6, P('512', '512', null), null],
+  rusty_metal: [2, P(null, '1k', '512'), null],
+  desk_laminate: [1, P('1k', '1k', '512'), P('512', '512', '256')],
   black_plastic: [0.25, P('512', '512', '256'), P('512', '512', '256')],
-  brushed_metal: [0.5, P('512', '512', '256'), null],
+  brushed_metal: [0.5, P(null, '512', '256'), null],
   ceiling_panel: [1.2, P('512', '512', '512'), null],
   carpet: [1, P('512', '512', '512'), null],
   fabric_chair: [0.12, P('512', '512', '512'), null],
@@ -46,7 +51,7 @@ export function texFiles(quality = 'high') {
 // roles: subset to stream (default all); the hero passes only the roles its materials bind
 export function loadHeroTextures({ THREE, renderer, quality = 'high', base, roles = TEX_ROLES } = {}) {
   const lo = quality === 'low';
-  const want = TEX_ROLES.filter(r => roles.includes(r));
+  const want = [...new Set(roles)].filter(r => TEX_ROLES.includes(r)); // caller's order is the stream order
   let root = String(base || new URL('./assets/tex/', import.meta.url)); if (!root.endsWith('/')) root += '/';
   const sets = new Map(), listeners = new Set(), owned = [];
   let disposed = false;
