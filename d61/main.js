@@ -553,6 +553,8 @@ function init() {
     tPrev?.classList.toggle('is-off', tIdx === 0); tNext?.classList.toggle('is-off', tIdx === cards.length - 1);
     tPrev?.setAttribute('aria-disabled', String(tIdx === 0)); tNext?.setAttribute('aria-disabled', String(tIdx === cards.length - 1));
     const x = tTarget(tIdx);
+    // cards pushed past the left content edge fade out instead of leaving a sliver cut by the clip
+    cards.forEach(c => c.classList.toggle('is-out', c.offsetLeft - cards[0].offsetLeft + x < -2));
     gsap.killTweensOf(tO);
     if (instant || RM) tSet(x); else gsap.to(tO, { x, duration: 0.9, ease: 'expo.out', onUpdate: () => tSet(tO.x) });
     tVids();
