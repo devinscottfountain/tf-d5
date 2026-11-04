@@ -591,7 +591,7 @@ const ovs = qa('[data-w]').filter(el => !el.closest('.d5-after') && (!MM || [...
 // beats: the page's copy blocks (.d61-mbeat[data-beat="2"|"3"]) ride the same overlay fades. A data-w on one overrides its window;
 // several blocks in one beat come in one after another.
 if (MBEATS) { const nb = {}; qa('.d61-mbeat[data-beat]').forEach(el => { const k = el.dataset.beat, i = nb[k] = (nb[k] ?? -1) + 1;
-  const [a, b] = el.dataset.w ? el.dataset.w.split(',').map(Number) : k === '2' ? [0.21 + 0.05 * i, 0.41] : [0.6 + 0.04 * i, 9]; ovs.push({ el, a, b }); }); }
+  const [a, b] = el.dataset.w ? el.dataset.w.split(',').map(Number) : k === '2' ? [0.19 + 0.055 * i, 0.41] : [0.6 + 0.04 * i, 9]; ovs.push({ el, a, b }); }); }
 const WIN = { 'd5-hero': [-1, 0.06], 'd5-mission': [0.43, 0.55], 'd5-belt': [0.8, 9] };
 if (!MM) ovs.forEach(o => { const w = WIN[o.el.classList[0]]; if (w) [o.a, o.b] = w; });
 const win = (p, a, b, f = 0.035) => Math.min(THREE.MathUtils.smoothstep(p, a - f, a + f), 1 - THREE.MathUtils.smoothstep(p, b - f, b + f));
