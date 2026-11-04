@@ -98,8 +98,16 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
     } catch (e) { if (DEBUG) console.warn('d61 footer: model not loaded, placeholder', e); }
     return placeholder();
   }
+  // sunrise hooks on the modeller's anchors: greenery backlight and dome glass reflections rise with the glow
+  let leafBase = null, glassEnv0 = 1, sunE = 0;
+  function hooks() {
+    const a = content?.anchors; if (!a) return;
+    if (a.foliage?.value) { if (!content.update) a.foliage.value.copy(leafBase); a.foliage.value.multiplyScalar(0.3 + 0.7 * sunE); }
+    if (a.glass) a.glass.envMapIntensity = glassEnv0 * (0.75 + 0.4 * sunE);
+  }
   function mount(c) {
     content = c; root = c.root; scene.add(root);
+    leafBase = c.anchors?.foliage?.value?.clone?.() ?? null; glassEnv0 = c.anchors?.glass?.envMapIntensity ?? 1;
     for (const l of c.lights || []) if (!l.parent) scene.add(l);
   }
 
@@ -135,7 +143,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
   const finU = {
     tSrc: { value: rtA.texture }, tB0: { value: rtL[0].texture }, tB1: { value: rtL[1].texture }, tB2: { value: rtL[2].texture }, tB3: { value: rtL[3].texture }, tB4: { value: rtL[LV - 1].texture },
     uBw: { value: new THREE.Vector4(0.4, 0.3, 0.17, 0.09) }, uBw4: { value: 0.04 }, uBloom: { value: 0.5 }, uExp: { value: 1 }, uGrain: { value: HIGH ? 0.05 : 0.035 }, uTime: { value: 0 },
-    uVig: { value: 0.55 }, uLow: { value: 0.72 }, uTop: { value: 0.1 }, uLogo: { value: new THREE.Vector4() }, uHalo: { value: 0 }, uHaloC: { value: new THREE.Color(0.06, 0.022, 0.009) }, uRes: { value: new THREE.Vector2() }
+    uVig: { value: 0.55 }, uLow: { value: 0.78 }, uTop: { value: 0.1 }, uLogo: { value: new THREE.Vector4() }, uHalo: { value: 0 }, uHaloC: { value: new THREE.Color(0.06, 0.022, 0.009) }, uRes: { value: new THREE.Vector2() }
   };
   const finMat = fsMat(FINAL_FRAG, finU, LV > 4 ? { B5: '' } : {});
   function pass(mat, target) { fs.material = mat; renderer.setRenderTarget(target); renderer.render(fsScene, fsCam); }
@@ -187,7 +195,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
   // ---------------------------------------------------------------- sunrise + shimmer state for a given p and time
   const tune = { glow: 1, haze: 1, sigma: 1, key: 1, bloom: 1, exposure: 1 };   // QA multipliers
   function light(p, t) {
-    const e = ease(p), rest = sstep(0.82, 1, p);
+    const e = ease(p), rest = sstep(0.82, 1, p); sunE = e;
     // at rest: slow breathing on the glow (two incommensurate noises, about 10 s), dust drifts
     const breath = 1 + rest * (0.07 * nG(t * 0.09) + 0.035 * nH(t * 0.23));
     const el = (SUN_EL[0] + (SUN_EL[1] - SUN_EL[0]) * e) * Math.PI / 180;
@@ -199,7 +207,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
     glowLight.position.set(Math.sin(SUN_AZ) * 1000, 150 + 80 * e, -Math.cos(SUN_AZ) * 1000);   // the bright sky patch, not the sun: high enough that the dusty ground does not mirror it
     glowLight.target.position.set(0, 0, 0);
     glowLight.color.copy(glowColLow).lerp(glowCol, e); glowLight.intensity = (0.12 + 0.6 * e * breath) * tune.key;
-    hemi.intensity = 0.18 + 0.12 * e;
+    hemi.intensity = 0.12 + 0.08 * e;
     // haze: denser and darker before the sun, warmer as it rises (the inscatter is the sky's own light)
     atmosU.uSigma.value = (1 / 3200) * (1.15 - 0.2 * e) * tune.sigma; atmosU.uHazeK.value = (0.32 + 0.16 * e) * tune.haze; atmosU.uDrift.value = (HIGH ? 0.6 : 0.4) * (0.5 + 0.5 * rest);
     finU.uExp.value = (1.0 + 0.08 * e) * tune.exposure;
@@ -224,6 +232,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
     pose(clock);
     light(prog, clock);
     content?.update?.(clock);
+    hooks();
     bakeEnv(false);
     // scene (HDR, MSAA) -> aerial perspective
     renderer.setRenderTarget(rtScene); renderer.render(scene, cam);
