@@ -71,7 +71,7 @@ export function buildOutside({ THREE, scene, high, quality }) {
         diffuseColor.rgb*=mix(vec3(1.), tcol*2.2, .75*terrK);
         #endif
         float wash=smoothstep(-34.,-50.,vW.z)*smoothstep(-110.,-70.,vW.z)*smoothstep(95.,30.,abs(vW.x))*(.55+.6*fbm2(vW.xz*.05+9.));
-        float bh=n2*.35+n3*.1+tr*.08*smoothstep(-20.,-60.,vW.z)*(1.-wk);`)
+        float bh=(n2*.35+n3*.1)*(1.-.7*terrK)+tr*.08*smoothstep(-20.,-60.,vW.z)*(1.-wk); // once the scans land their normals carry the grain (screen-space bump blocks up at grazing angles)`)
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
         #ifdef USE_NORMALMAP_TANGENTSPACE
         { vec3 tn=texture2D(tTrkN,tuv).xyz*2.-1.; normal=normalize(normal+tbn*vec3(tn.xy*1.2*wk,0.)); } // tuv shares the dirt uv frame (u = x, v = -z)
