@@ -59,7 +59,7 @@ export function buildOutside({ THREE, scene, high, quality }) {
 ` + sh.fragmentShader
       .replace('#include <color_fragment>', `#include <color_fragment>
         vec3 tcol=diffuseColor.rgb;
-        vec2 tuv=vec2(vW.x+1.6*sin(vW.z*.045), -vW.z)/2.25;                              // ruts run along z (toward the dig), gently snaking
+        vec2 tuv=vec2(vW.x+1.6*sin(vW.z*.045), -vW.z)/3.;                                // ruts run along z (toward the dig), gently snaking
         float wk=trkMask(vW.xz)*trkK;
         tcol=mix(tcol, texture2D(tTrkC,tuv).rgb, wk);
         float n1=fbm2(vW.xz*.18), n2=vn2(vW.xz*2.3+7.), n3=vn2(vW.xz*11.), tr=.5+.5*sin(vW.x*3.2+n1*4.);
@@ -74,7 +74,7 @@ export function buildOutside({ THREE, scene, high, quality }) {
         float bh=n2*.35+n3*.1+tr*.08*smoothstep(-20.,-60.,vW.z)*(1.-wk);`)
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
         #ifdef USE_NORMALMAP_TANGENTSPACE
-        { vec3 tn=texture2D(tTrkN,tuv).xyz*2.-1.; normal=normalize(normal+tbn*vec3(tn.xy*.8*wk,0.)); } // tuv shares the dirt uv frame (u = x, v = -z)
+        { vec3 tn=texture2D(tTrkN,tuv).xyz*2.-1.; normal=normalize(normal+tbn*vec3(tn.xy*1.2*wk,0.)); } // tuv shares the dirt uv frame (u = x, v = -z)
         #endif
         { vec3 sp=-vViewPosition, sx=dFdx(sp), sy=dFdy(sp), r1=cross(sy,normal), r2=cross(normal,sx); float det=dot(sx,r1);
           vec2 dh=vec2(dFdx(bh),dFdy(bh)); normal=normalize(abs(det)*normal-sign(det)*(dh.x*r1+dh.y*r2)); }`)

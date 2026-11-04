@@ -4,7 +4,7 @@
 #   scan_dir: <polyhaven_id>_{diff,nor_gl,arm}.webp, downsized in-browser from the 2k JPGs (diff / nor 1024, arm 512;
 #   muddy_tracks all 512).
 # Roles written:
-#   dirt_tracks      muddy_tracks (Amal Kumar), regraded to the brown_mud_dry palette, ruts along v. 512 c / n.
+#   dirt_tracks      muddy_tracks (Amal Kumar), regraded to the brown_mud_dry palette (darker, more contrast), ruts along v. 512 c / n.
 #   excavator_paint  green_metal_rust (Rob Tuytel), repainted CAT yellow, rust runs / pits kept as dark grime. c only
 #                    (the night machine shader reads luminance of the colour map, nothing else).
 #   desk_laminate    black_oak_veneer (Jenelle van Heerden) at 1k colour / normal, 512 ORM from the real arm map.
@@ -54,13 +54,14 @@ def match(lin, ref_mean, ref_std_l, keep_sat=1.0):
     return np.clip(chroma * np.clip(k, 0.002, None)[..., None], 0, 1)
 
 
-def stats(rel):
-    a = s2l(load(os.path.join(out, rel))); return a.reshape(-1, 3).mean(0), luma(a).std()
+# reference stats (linear mean RGB, luminance std) of the 2026-11-02 sets these replace or sit next to, so reruns are idempotent
+REF = {'dirt_ground': ([0.191, 0.121, 0.060], 0.096), 'excavator_paint': ([0.679, 0.328, 0.016], 0.091), 'desk_laminate': ([0.144, 0.121, 0.096], 0.012)}
+def stats(role): m, sd = REF[role]; return np.array(m, np.float32), sd
 
 
 # ---------- dirt_tracks: muddy ruts in the brown_mud_dry palette, slightly darker (compacted, damp)
-dm, ds = stats('1k/dirt_ground_c.webp')
-c = match(s2l(load(f'{src}/muddy_tracks_diff.webp')), dm * 0.82, ds * 0.9, 1.1)
+dm, ds = stats('dirt_ground')
+c = match(s2l(load(f'{src}/muddy_tracks_diff.webp')), dm * 0.8, ds * 1.5, 1.1)   # ruts must survive grazing-angle mips: extra contrast
 webp(l2s(c), '512/dirt_tracks_c.webp', 80)
 webp(nresize(load(f'{src}/muddy_tracks_nor_gl.webp'), 512), '512/dirt_tracks_n.webp', 80)
 
@@ -75,16 +76,16 @@ Lb = np.clip(1 - 1.8 * np.abs(Ln - 1), 0.08, 1.2) ** 1.5            # any depart
 Lb = Lb / Lb.mean()
 col = yellow * Lb[..., None]
 col = col * (1 - rust[..., None]) + grime * rust[..., None]
-em, es = stats('1k/excavator_paint_c.webp')
+em, es = stats('excavator_paint')
 col = col * (luma(em) / luma(col).mean())
-print('excavator luma mean', luma(col).mean().round(3), 'std', luma(col).std().round(3), '(was', luma(em).round(3), es.round(3), ')')
+print('excavator luma mean', luma(col).mean().round(3), 'std', luma(col).std().round(3), '(was', round(float(luma(em)), 3), es, ')')
 webp(l2s(col), '1k/excavator_paint_c.webp', 80)
 for f in ('512/excavator_paint_c.webp',):
     webp(l2s(resize(col, 512)), f, 80)
 
 # ---------- desk_laminate: black oak veneer at 1k with its own arm (metal forced 0)
 d = s2l(load(f'{src}/black_oak_veneer_diff.webp'))
-dkm, dks = stats('512/desk_laminate_c.webp')
+dkm, dks = stats('desk_laminate')
 d = match(d, dkm, max(dks, luma(d).std() * (luma(dkm) / luma(d).mean())), 1.0)
 webp(l2s(d), '1k/desk_laminate_c.webp', 88)
 webp(l2s(resize(d, 512)), '512/desk_laminate_c.webp', 90)

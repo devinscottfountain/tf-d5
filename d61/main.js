@@ -616,8 +616,16 @@ function init() {
     foot = m.createFooter({ THREE, host: footHost, quality: QUALITY, base: new URL('./', import.meta.url).href });
     D6.footer = foot; stamp('footBuilt');
     return foot.ready;
-  }).then(() => stamp('footReady')).catch(e => { footFail = true; try { foot?.dispose(); } catch (_) { /* gone */ } foot = null; console.warn('d61 footer:', e); }));
+  }).then(() => { stamp('footReady'); footLogo(); }).catch(e => { footFail = true; try { foot?.dispose(); } catch (_) { /* gone */ } foot = null; console.warn('d61 footer:', e); }));
   D6.loadFooter = loadFooter;
+  // the halo sits behind the logotype: its layout box (offsets, so the reveal transform does not skew it) in host px
+  const footLogoEl = q('.d61-foot-logo');
+  function footLogo() {
+    if (!foot?.setLogoRect || !footLogoEl) return;
+    let x = 0, y = 0, el = footLogoEl;
+    while (el && el !== footEl) { x += el.offsetLeft; y += el.offsetTop; el = el.offsetParent; }
+    try { foot.setLogoRect({ x: x - footHost.offsetLeft, y: y - footHost.offsetTop, w: footLogoEl.offsetWidth, h: footLogoEl.offsetHeight }); } catch (_) { /* footer gone */ }
+  }
   let rmDrawn = -1, rmT = 0;
   function footFrame(r) {
     if (!r || footFail) return;
@@ -720,7 +728,7 @@ function init() {
   let rz = 0;
   addEventListener('resize', () => { cancelAnimationFrame(rz); rz = requestAnimationFrame(() => {
     if (hero) { hero.resize(); heroKey = ''; } measure(); measureRail(); measureMission(); solApi?.resize?.();
-    tGo(tIdx, true); try { foot?.resize?.(); } catch (_) { /* footer gone */ }
+    tGo(tIdx, true); try { foot?.resize?.(); } catch (_) { /* footer gone */ } footLogo();
   }); });
   addEventListener('pointermove', e => { if (hero && heroRun && e.pointerType === 'mouse') hero.setPointer(e.clientX / innerWidth * 2 - 1, e.clientY / innerHeight * 2 - 1); }, { passive: true });
   ST.addEventListener('refresh', () => { measure(); measureRail(); measureMission(); });

@@ -4,7 +4,7 @@
 // texture (R = ao, G = roughness, B = metalness, three.js convention). Special roles:
 //   glass_smudge      { roughnessMap, dirtMap }  same texture: R = dirt mask, G = roughness
 //   tyre_track_decal  { map (RGBA, alpha = decal mask; use transparent + depthWrite false), normalMap }, v = travel direction
-//   dirt_tracks       { map, normalMap } rutted, tracked mud in the dirt_ground palette, ruts run along v (texScale 2.25).
+//   dirt_tracks       { map, normalMap } rutted, tracked mud in the dirt_ground palette, ruts run along v (texScale 3: dozer-scale ruts).
 //                     The terrain blends it over worked ground; high tier only.
 // A set only carries the maps its materials sample (rusty_metal, brushed_metal: normal + ORM; excavator_paint: colour),
 // so no bytes go to maps nobody binds.
@@ -21,7 +21,7 @@ const P = (c, n, o) => ({ c, n, o });
 const M = {
   concrete_floor: [2, P('1k', '1k', '512'), P('512', '512', '256')],
   dirt_ground: [4, P('1k', '1k', '512'), P('512', '512', '256')],
-  dirt_tracks: [2.25, P('512', '512', null), null],
+  dirt_tracks: [3, P('512', '512', null), null],
   gravel: [1.5, P('1k', '1k', '512'), P('512', null, '256')],
   excavator_paint: [2, P('1k', null, null), P('512', null, null)],
   rock_ridge: [6, P('512', '512', null), null],
