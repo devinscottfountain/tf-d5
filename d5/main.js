@@ -13,7 +13,7 @@ const q = (s, r = document) => r.querySelector(s), qa = (s, r = document) => [..
 const CFG = window.D5_CFG || {}, MM = CFG.mode === 'mars', AHEAD = CFG.ahead ?? 1; // AHEAD: viewports before the track to wake up
 // D6.1 flags (Mars mode only): look 'lit' = front-left lit full disc + rim halo; beats = title / SpaceX lines / colony line on one track;
 // onProgress(p, beat) runs every frame the track is live.
-const LIT = MM && CFG.look === 'lit', BEATS = MM && !!CFG.beats, onProg = MM && typeof CFG.onProgress === 'function' ? CFG.onProgress : null;
+const LIT = MM && CFG.look === 'lit', MBEATS = MM && !!CFG.beats, onProg = MM && typeof CFG.onProgress === 'function' ? CFG.onProgress : null;
 const host = q('.d5-canvas') || (MM ? document.body.appendChild(Object.assign(document.createElement('div'), { className: 'd5-canvas' })) : null);
 
 // ---------- renderer + bloom (the Expanse look is mostly glow against black) ----------
@@ -479,8 +479,8 @@ function pchip(xs, ys, m0, mN) {
 // Each shot is [scroll, position, look target, lens]. Position rides a centripetal spline; scroll maps to distance
 // along it through a monotone curve, so it slows near each planet (the copy reads) and runs between them without
 // ever stopping. The look direction is its own monotone curve over the same scroll, so turns are gentle and never reverse.
-const CA = BEATS ? 0.5 : MM ? 0.4 : 0.58; // the entry flash: everything after this is the Jezero timelapse
-const SHOTS = (BEATS ? [
+const CA = MBEATS ? 0.5 : MM ? 0.4 : 0.58; // the entry flash: everything after this is the Jezero timelapse
+const SHOTS = (MBEATS ? [
   // beats: the title (gap framing, see frameBehind), then a long hold on the whole disc for the two SpaceX lines (frameBeat sets the
   // size; the path only drifts a few degrees round the planet so it stays alive), then the same push and dive into the flash.
   [-0.15, M3(MARS, [92, 26, 132]), MARS, 28],
@@ -590,7 +590,7 @@ if (!MM) ScrollTrigger.create({ trigger: track, start: 'top top', end: 'bottom b
 const ovs = qa('[data-w]').filter(el => !el.closest('.d5-after') && (!MM || [...el.classList].some(c => c.startsWith('d5')))).map(el => { const [a, b] = el.dataset.w.split(',').map(Number); return { el, a, b }; });
 // beats: the page's copy blocks (.d61-mbeat[data-beat="2"|"3"]) ride the same overlay fades. A data-w on one overrides its window;
 // several blocks in one beat come in one after another.
-if (BEATS) { const nb = {}; qa('.d61-mbeat[data-beat]').forEach(el => { const k = el.dataset.beat, i = nb[k] = (nb[k] ?? -1) + 1;
+if (MBEATS) { const nb = {}; qa('.d61-mbeat[data-beat]').forEach(el => { const k = el.dataset.beat, i = nb[k] = (nb[k] ?? -1) + 1;
   const [a, b] = el.dataset.w ? el.dataset.w.split(',').map(Number) : k === '2' ? [0.21 + 0.05 * i, 0.41] : [0.6 + 0.04 * i, 9]; ovs.push({ el, a, b }); }); }
 const WIN = { 'd5-hero': [-1, 0.06], 'd5-mission': [0.43, 0.55], 'd5-belt': [0.8, 9] };
 if (!MM) ovs.forEach(o => { const w = WIN[o.el.classList[0]]; if (w) [o.a, o.b] = w; });
@@ -763,9 +763,9 @@ function frameBeat(inSpace) {
 // lit look: a key light fixed in camera space (front, left, a little high), so whatever the path does the disc reads full and lit
 // from the upper left. Mars turns slowly with scroll, Valles Marineris across the face on the hold. A halo card behind the
 // planet adds the soft glow off the lit limb; the atmosphere shell keeps its own scattered rim.
-const LIT_DIR = new THREE.Vector3(-0.62, 0.42, 0.66).normalize(), litL = new THREE.Vector3(), litQ = new THREE.Quaternion();
+const LIT_DIR = new THREE.Vector3(-0.78, 0.42, 0.46).normalize(), litL = new THREE.Vector3(), litQ = new THREE.Quaternion();
 const halo = LIT ? new THREE.Mesh(new THREE.PlaneGeometry(30, 30), new THREE.ShaderMaterial({
-  uniforms: { uR: { value: 6 }, uL2: { value: new THREE.Vector2(LIT_DIR.x, LIT_DIR.y).normalize() }, uI: { value: 1 } },
+  uniforms: { uR: { value: 6 }, uL2: { value: new THREE.Vector2(LIT_DIR.x, LIT_DIR.y).normalize() }, uI: { value: 1.5 } },
   vertexShader: 'varying vec2 vQ; void main(){ vQ = position.xy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.); }',
   fragmentShader: `uniform float uR, uI; uniform vec2 uL2; varying vec2 vQ;
   void main(){ float q = length(vQ), d = max(q / uR - 1., 0.); vec2 dir = vQ / max(q, 1e-4);
@@ -774,6 +774,7 @@ const halo = LIT ? new THREE.Mesh(new THREE.PlaneGeometry(30, 30), new THREE.Sha
     gl_FragColor = vec4(vec3(1.0, 0.52, 0.24) * g * mix(0.1, 1., side) * uI, 0.); }`,
   transparent: true, depthWrite: false, blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor
 })) : null;
+if (LIT) { const u = planets.marsAtmo.material.uniforms; u.uBetaR.value.multiplyScalar(0.25); u.uSunCol.value.set(1, 0.86, 0.66); u.uK.value = 15; } // dust only, warm: no blue haze over the far side
 if (halo) { halo.position.copy(MARS); halo.renderOrder = 3; halo.frustumCulled = false; scene.add(halo); spaceMeshes.push(halo); }
 function litMars(t) {
   mars.rotation.y = 0.26 + (sm - 0.28) * 0.45 + t * 0.002;
@@ -872,7 +873,7 @@ renderer.setAnimationLoop(() => {
   cam.up.copy(camUp);
   if (Math.abs(cam.fov - fov) > 0.01) { cam.fov = fov; cam.updateProjectionMatrix(); }
   cam.position.copy(pos); cam.lookAt(look);
-  if (BEATS) frameBeat(mode === 'space');
+  if (MBEATS) frameBeat(mode === 'space');
   if (titleEl) frameBehind(mode === 'space');
   if (behind.length) maskBehind(mode === 'space');
   // dust: smoothed camera velocity drives streak length (a short virtual shutter)

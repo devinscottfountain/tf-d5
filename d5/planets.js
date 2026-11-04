@@ -202,16 +202,17 @@ void main(){
   vec3 nt = texture2D(tNorm, vUv).rgb * 2. - 1.; nt.xy *= uRelief;
   nt.xy -= vec2(hx, hy) * uBump * (1.5 / 4096.) / st.x;      // gradient per texel, so the relief strength holds at every zoom
   vec3 N = perturb(p, normalize(nt), 1.);
-  float l = dot(alb, vec3(.3, .55, .15));
-  alb = max(mix(vec3(l), alb, 1.18), 0.) * vec3(1.04, 0.93, 0.86); // a touch richer and warmer, as in the reference renders
+  alb = pow(alb, vec3(1.2)) * 1.3; float l = dot(alb, vec3(.3, .55, .15));
+  alb = max(mix(vec3(l), alb, 1.12), 0.) * vec3(1.0, 0.94, 0.72);   // deeper butterscotch rust, as in the reference renders
   vec3 sunCol = sunTrans(mu, vec3(0.05, 0.085, 0.15));
   float m0 = max(dot(N, L), 0.) * smoothstep(-0.05, 0.1, mu), m1 = max(dot(p, V), 0.05);
   float val = mix(m0, 2. * m0 / (m0 + m1), 0.18);             // a little lunar-Lambert so the lit limb holds its colour
   vec3 col = alb * sunCol * val * uSunI;
   col += alb * vec3(0.95, 0.60, 0.36) * 0.05 * smoothstep(-0.4, 0.5, mu);    // dust-scattered fill: the far side stays a dark rust, never black
   col += vec3(0.9, 0.45, 0.25) * 0.03 * exp(-pow((mu + 0.02) / 0.12, 2.));    // warm terminator
-  float rim = pow(1. - m1, 3.) * smoothstep(-0.1, 0.5, mu);                  // limb haze on the lit side, meets the atmosphere shell
-  col += vec3(1.0, 0.62, 0.36) * rim * 0.22 * uSunI;
+  float rim = pow(1. - m1, 3.) * smoothstep(0.05, 0.6, mu);                   // limb haze on the lit side, meets the atmosphere shell
+  col += vec3(1.0, 0.55, 0.28) * rim * 0.1 * uSunI;
+  col += vec3(1.0, 0.78, 0.52) * pow(1. - m1, 7.) * smoothstep(0.15, 0.7, mu) * 0.9 * uSunI; // the bright lit limb
   gl_FragColor = vec4(col, 1.);
 }`;
 
@@ -340,7 +341,7 @@ export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS
     tMap: U('d5-mars.webp', true, dot1(150, 70, 40, true), true), tNorm: U('mars_normal.webp', false, dot1(128, 128, 255), true),
     uSun: sunVec(), uSunI: { value: 2.2 }, uRelief: { value: 1.25 }, uDomes: { value: 1 }
   };
-  if (look === 'lit') marsU.uBump = { value: 3.2 };
+  if (look === 'lit') marsU.uBump = { value: 11 };
   const mars = new THREE.Mesh(new THREE.SphereGeometry(R_MARS, look === 'lit' ? 256 : 192, look === 'lit' ? 128 : 96), // lit: the full limb is on show, keep it round when big
     new THREE.ShaderMaterial({ vertexShader: PLANET_VERT, fragmentShader: look === 'lit' ? MARS_LIT_FRAG : MARS_FRAG, uniforms: marsU }));
   mars.position.copy(MARS); scene.add(mars);
