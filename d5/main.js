@@ -591,7 +591,7 @@ const ovs = qa('[data-w]').filter(el => !el.closest('.d5-after') && (!MM || [...
 // beats: the page's copy blocks (.d61-mbeat[data-beat="2"|"3"]) ride the same overlay fades. A data-w on one overrides its window;
 // several blocks in one beat come in one after another.
 if (MBEATS) { const nb = {}; qa('.d61-mbeat[data-beat]').forEach(el => { const k = el.dataset.beat, i = nb[k] = (nb[k] ?? -1) + 1;
-  const [a, b] = el.dataset.w ? el.dataset.w.split(',').map(Number) : k === '2' ? [0.19 + 0.055 * i, 0.41] : [0.6 + 0.04 * i, 9]; ovs.push({ el, a, b }); }); }
+  const [a, b] = el.dataset.w ? el.dataset.w.split(',').map(Number) : k === '2' ? [0.19 + 0.055 * i, 0.41] : [0.6 + 0.04 * i, 9]; ovs.push({ el, a, b, clr: k === '2' }); }); }
 const WIN = { 'd5-hero': [-1, 0.06], 'd5-mission': [0.43, 0.55], 'd5-belt': [0.8, 9] };
 if (!MM) ovs.forEach(o => { const w = WIN[o.el.classList[0]]; if (w) [o.a, o.b] = w; });
 const win = (p, a, b, f = 0.035) => Math.min(THREE.MathUtils.smoothstep(p, a - f, a + f), 1 - THREE.MathUtils.smoothstep(p, b - f, b + f));
@@ -715,6 +715,7 @@ function measureGap() {
   const key = innerWidth + ',' + innerHeight;
   if (key === gapKey) return gap; gapKey = key; gap = null;
   if (!tParts) tParts = splitTitle(); if (!tParts) return null;
+  if (LIT || MBEATS) return (gap = measureGapInk());
   const { L, S, R } = tParts, H = innerHeight, rD = MM_R * H, st = titleEl.style;
   // one line first: back to the page's own layout, then open the gap to fit the disc
   st.top = ''; st.whiteSpace = ''; L.style.display = R.style.display = ''; S.style.display = 'inline-block'; S.style.width = '0px'; S.style.height = '1px';
@@ -735,6 +736,36 @@ function measureGap() {
   }
   return gap;
 }
+// D6.1 (lit / beats): the gap is measured on the ink (canvas glyph bounds), not the glyph boxes, and sized so every facing
+// glyph clears the rim glow (1.08 r) by MM_AIR px; the disc sits on the centre of that ink gap.
+const MM_AIR = () => (innerWidth < 768 ? 24 : 40);
+let inkCx = null;
+function inkM(text) {
+  const cs = getComputedStyle(titleEl); inkCx = inkCx || document.createElement('canvas').getContext('2d');
+  inkCx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`; return inkCx.measureText(text);
+}
+function measureGapInk() {
+  const { L, S, R } = tParts, H = innerHeight, rD = MM_R * H, st = titleEl.style, clear = rD * 1.08 + MM_AIR();
+  const lt = L.textContent.trim(), rt = R.textContent.trim(), mY = inkM(lt.slice(-1)), mO = inkM(rt[0]);
+  const inkR = () => glyph(L, true).left + mY.actualBoundingBoxRight, inkL = () => glyph(R, false).left - mO.actualBoundingBoxLeft;
+  st.top = ''; st.whiteSpace = ''; L.style.display = R.style.display = ''; S.style.display = 'inline-block'; S.style.width = '0px'; S.style.height = '1px';
+  const b0 = titleEl.getBoundingClientRect(), cy0 = b0.top + b0.height / 2;
+  for (let k = 0; k < 3; k++) S.style.width = Math.max(0, parseFloat(S.style.width) + 2 * clear - (inkL() - inkR())) + 'px';
+  const a = glyph(L, true), c = glyph(R, false), lb = L.getBoundingClientRect(), rb = R.getBoundingClientRect();
+  if (rb.right - lb.left <= innerWidth * 0.94 && Math.abs(a.top - c.top) < a.height * 0.5) {
+    const b = titleEl.getBoundingClientRect();
+    return { x: (inkR() + inkL()) / 2 - b.left, y: (a.top + a.bottom + c.top + c.bottom) / 4 - b.top, r: rD };
+  }
+  // two lines, the disc between them: line 1's lowest ink and line 2's highest ink each clear the rim
+  st.whiteSpace = 'nowrap'; L.style.display = R.style.display = 'block'; S.style.display = 'block'; S.style.width = 'auto'; S.style.height = '0px';
+  const m1 = inkM(lt), m2 = inkM(rt), base = (g, m) => g.top + m.fontBoundingBoxAscent;
+  const bot1 = () => base(glyph(L, true), m1) + m1.actualBoundingBoxDescent, top2 = () => base(glyph(R, false), m2) - m2.actualBoundingBoxAscent;
+  for (let k = 0; k < 2; k++) S.style.height = Math.max(0, parseFloat(S.style.height) + 2 * clear - (top2() - bot1())) + 'px';
+  const mid = (bot1() + top2()) / 2;
+  st.top = (titleEl.getBoundingClientRect().top + cy0 - mid) + 'px'; // the planet sits where the one-line title's centre was
+  const b = titleEl.getBoundingClientRect();
+  return { x: b.width / 2, y: (bot1() + top2()) / 2 - b.top, r: rD };
+}
 function frameBehind(inSpace) {
   const k = inSpace && titleEl ? 1 - sstep(sm, 0.15, 0.27) : 0, g = k > 0 && measureGap();
   if (!g) { if (framed) { framed = false; cam.clearViewOffset(); } return; }
@@ -750,13 +781,13 @@ function frameBehind(inSpace) {
   const b = titleEl.getBoundingClientRect(), sx = (b.left + g.x - (W / 2 + nx * W / 2)) * k, sy = (b.top + g.y - (H / 2 - ny * H / 2)) * k;
   cam.setViewOffset(W, H, -sx, -sy, W, H); framed = true;
 }
-// beats: the SpaceX hold. Mars sits centred at 0.27 of the viewport height (0.4 of the width on narrow screens), sized by moving the
+// beats: the SpaceX hold. Mars sits centred at 0.21 of the viewport height (0.4 of the width on narrow screens), sized by moving the
 // camera along its line to the planet as frameBehind does; the title's gap framing blends over it on the way in.
 const B2 = [0.13, 0.22, 0.38, 0.46]; // ramp in, held, ramp out
 function frameBeat(inSpace) {
   const k = inSpace ? sstep(sm, B2[0], B2[1]) * (1 - sstep(sm, B2[2], B2[3])) : 0; if (k <= 0) return;
   const H = innerHeight, th = Math.tan(cam.fov * Math.PI / 360), d = cam.position.distanceTo(MARS); if (d < 6.6) return;
-  const rNat = Math.tan(Math.asin(6.05 / d)) / th * H / 2, rT = rNat + (Math.min(0.27 * H, 0.4 * innerWidth) - rNat) * k;
+  const rNat = Math.tan(Math.asin(6.05 / d)) / th * H / 2, rT = rNat + (Math.min(0.21 * H, 0.4 * innerWidth) - rNat) * k;
   const f = Math.max(6.6 / d, 6.05 / Math.sin(Math.atan(rT * 2 * th / H)) / d);
   pos.sub(MARS).multiplyScalar(f).add(MARS); cam.position.sub(MARS).multiplyScalar(f).add(MARS); cam.updateMatrixWorld();
 }
@@ -782,6 +813,30 @@ function litMars(t) {
   planets.marsAtmo.material.uniforms.uSun.value.copy(litL);
   litQ.copy(mars.quaternion).invert(); mars.material.uniforms.uSun.value.copy(litL).applyQuaternion(litQ);
   const d = cam.position.distanceTo(MARS); halo.quaternion.copy(cam.quaternion); halo.material.uniforms.uR.value = 6 / Math.sqrt(Math.max(0.05, 1 - 36 / (d * d)));
+}
+// beats: the SpaceX lines always sit on black. Each block's line boxes (cached untransformed, per viewport) are pushed straight
+// out from the disc centre, as little as needed, until every line clears the rim glow (1.08 r) by 24 px.
+let clrKey = '';
+if (document.fonts) document.fonts.ready.then(() => (clrKey = ''));
+function clearDisc(o, ty) {
+  const d = window.__d5.mars && window.__d5.mars.disc;
+  if (o.vq && (clrKey !== innerWidth + ',' + innerHeight || !o.lines)) { // (re)measure: every clr block, with its current offsets taken out
+    clrKey = innerWidth + ',' + innerHeight;
+    for (const p of ovs) if (p.clr) { const rg = document.createRange(); rg.selectNodeContents(p.el); const dx = p.ax || 0, dy = p.ay || 0;
+      p.lines = [...rg.getClientRects()].filter(r => r.width > 1).map(r => [r.left - dx, r.top - dy, r.right - dx, r.bottom - dy]); }
+  }
+  let px = 0, py = 0;
+  if (d && o.lines && o.lines.length) {
+    const R = d.r * 1.08 + 24, far = (sx, sy) => o.lines.every(([l, t, r, b]) => { const nx = Math.max(l + sx - d.x, 0, d.x - r - sx), ny = Math.max(t + sy + ty - d.y, 0, d.y - b - sy - ty); return nx * nx + ny * ny >= R * R; });
+    if (!far(0, 0)) {
+      let cx = 0, cy = 0; for (const [l, t, r, b] of o.lines) { cx += (l + r) / 2; cy += (t + b) / 2; }
+      let ux = cx / o.lines.length - d.x, uy = cy / o.lines.length + ty - d.y; const n = Math.hypot(ux, uy) || 1; ux /= n; uy /= n;
+      let lo = 0, hi = 2 * R; for (let k = 0; k < 14; k++) { const m = (lo + hi) / 2; if (far(ux * m, uy * m)) hi = m; else lo = m; }
+      px = Math.round(ux * hi); py = Math.round(uy * hi);
+    }
+  }
+  const tf = `translate3d(${px}px,${Math.round((ty + py) * 100) / 100}px,0)`;
+  if (tf !== o.tf) { o.tf = tf; o.ax = px; o.ay = ty + py; o.el.style.transform = tf; }
 }
 renderer.setAnimationLoop(() => {
   if (!visible || (!booted && !skip)) return; // under the veil nothing draws until the boot warm-up is done
@@ -918,7 +973,7 @@ renderer.setAnimationLoop(() => {
   for (const o of ovs) {
     const w = win(sm, o.a, o.b), v = MM ? w * (1 - cover) * mmFade : w * (1 - cover), vq = q3(v), ty = Math.round((1 - w) * (sm < o.a ? 30 : -30) * 100);
     if (vq !== o.vq) { o.vq = vq; o.el.style.opacity = (vq / 1000).toFixed(3); css(o.el, 'visibility', v > 0.01 ? 'visible' : 'hidden'); }
-    if (ty !== o.ty) { o.ty = ty; o.el.style.transform = `translate3d(0,${ty / 100}px,0)`; }
+    if (o.clr) clearDisc(o, ty / 100); else if (ty !== o.ty) { o.ty = ty; o.el.style.transform = `translate3d(0,${ty / 100}px,0)`; }
   }
   // HUD: on the lot it is a site clock, on the way up an altimeter, in space the zone + AU readout
   if (introOn) {

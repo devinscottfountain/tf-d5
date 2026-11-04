@@ -41,7 +41,7 @@ export function buildTerrain({ THREE, group, M, high }) {
   const shapes = [rockGeo(3, 1), rockGeo(9, 1, 0.5), rockGeo(17, 1, 0.75)];
 
   // scatter: sparse near camera (calm under the type), denser mid-ground, clear of the settlement pad
-  const N = high ? 520 : 200, lists = [[], [], []];
+  const N = high ? 620 : 230, lists = [[], [], []];
   for (let t = 0, placed = 0; t < N * 4 && placed < N; t++) {
     const d = 22 + Math.pow(r(), 1.5) * 520, x = (r() * 2 - 1) * (d * 1.15 + 20), z = -d;
     if (d > 235 && d < 480 && x > -190 && x < 215) continue;
@@ -68,5 +68,52 @@ export function buildTerrain({ THREE, group, M, high }) {
   place(-7, -19, 1.4, 0.3, 1.0, 0.9, 47, 1);
   const boulders = new THREE.Mesh(mergeAll(THREE, bould), M.rock); boulders.userData.part = 'boulders'; boulders.userData.texScale = TS.mars_rock; group.add(boulders);
 
-  return { ground, rocks, boulders, meshes: [ground, ...rocks, boulders], dispose() { g.dispose(); shapes.forEach(s => s.dispose()); boulders.geometry.dispose(); } };
+  // ---------------------------------------------------------------- extra stones: mid boulders, fist-to-knee stones, pebble clusters
+  // Bedded on the local slope and sunk 25..45% so nothing floats. The band under the logotype and links (about 5.5..24 m
+  // out at 1440x900, 45..85% of frame height) only gets small, darkened stones: texture without highlights behind the type.
+  const calm = d => smoothstep(4.5, 6.5, d) * (1 - smoothstep(20, 28, d));
+  const pad = (x, d) => d > 235 && d < 480 && x > -190 && x < 215;
+  const up = new THREE.Vector3(0, 1, 0), nrm = new THREE.Vector3(), qa = new THREE.Quaternion(), qb = new THREE.Quaternion(), mtx = new THREE.Matrix4(), col = new THREE.Color();
+  const bed = (im, i, x, z, sx, sy, sz, bury, tone) => {
+    const e = 0.4, hx = height(x + e, z) - height(x - e, z), hz = height(x, z + e) - height(x, z - e);
+    nrm.set(-hx / (2 * e), 1, -hz / (2 * e)).normalize();
+    qa.setFromUnitVectors(up, nrm); qb.setFromAxisAngle(up, r() * 6.283); qa.multiply(qb);
+    im.setMatrixAt(i, mtx.compose(new THREE.Vector3(x, height(x, z) - sy * bury, z), qa, new THREE.Vector3(sx, sy, sz)));
+    im.setColorAt(i, col.setScalar(tone));
+  };
+  const scatter = (geo, n, fn) => {
+    const L = []; for (let t = 0; t < n * 6 && L.length < n; t++) { const o = fn(); if (o) L.push(o); }
+    const im = new THREE.InstancedMesh(geo, M.rock, L.length);
+    L.forEach((o, i) => bed(im, i, ...o)); im.instanceMatrix.needsUpdate = true; im.instanceColor.needsUpdate = true;
+    im.computeBoundingSphere(); im.userData.part = 'stones'; im.userData.texScale = TS.mars_rock; group.add(im); return im;
+  };
+  // per-area uniform in the ground plane within the frustum wedge: x spread grows with distance
+  const spot = (d0, d1, k = 1.25) => { const d = Math.sqrt(d0 * d0 + r() * (d1 * d1 - d0 * d0)), x = (r() * 2 - 1) * (d * k + 4); return [x, -d, d]; };
+
+  // mid boulders, 30..170 m: breaks up the plain before the settlement
+  const midGeo = rockGeo(71, 2, 0.6);
+  const mids = scatter(midGeo, high ? 14 : 7, () => { const [x, z, d] = spot(30, 170, 1.05); if (pad(x, d)) return null;
+    const s = 0.9 + r() * 1.4; return [x, z, s * (1 + r() * 0.5), s * (0.45 + r() * 0.3), s * (0.8 + r() * 0.4), 0.3 + r() * 0.15, 0.75 + r() * 0.3]; });
+
+  // fist- to knee-size stones, 2.5..90 m, thinner and smaller (and darker) in the calm band
+  const stoneGeo = (() => { const f = rng(83), gg = new THREE.DodecahedronGeometry(1, 0), p = gg.attributes.position;   // 36 tris, faceted like broken basalt
+    for (let i = 0; i < p.count; i++) { const v = new THREE.Vector3().fromBufferAttribute(p, i), k = 1 + 0.18 * fbm(v.x * 2 + 3, v.y * 2 + v.z, 2); p.setXYZ(i, v.x * k, Math.max(v.y * k * 0.65, -0.3), v.z * k); }
+    gg.computeVertexNormals(); return boxUV(THREE, gg, TS.mars_rock); })();
+  const stones = scatter(stoneGeo, high ? 900 : 260, () => { const [x, z, d] = spot(2.5, 90); const c = calm(d);
+    if (r() < c * 0.7) return null;
+    const s = (0.06 + Math.pow(r(), 2.2) * 0.42) * (1 - 0.6 * c);
+    return [x, z, s * (0.9 + r() * 0.5), s * (0.55 + r() * 0.4), s * (0.8 + r() * 0.5), 0.25 + r() * 0.2, (0.7 + r() * 0.4) * (1 - 0.35 * c)]; });
+
+  // pebble clusters: tight groups of 5..12 near the feet and in shallow hollows mid-ground
+  const pebGeo = (() => { const gg = new THREE.IcosahedronGeometry(1, 0), p = gg.attributes.position;
+    for (let i = 0; i < p.count; i++) p.setY(i, p.getY(i) * 0.6); gg.computeVertexNormals(); return boxUV(THREE, gg, TS.mars_rock); })();
+  const peb = []; for (let c = 0, nc = high ? 70 : 18; c < nc; c++) {
+    const [cx, cz, d] = spot(2.5, 45); const k = calm(d), n = 5 + Math.floor(r() * 8), rad = 0.25 + r() * 0.5;
+    for (let j = 0; j < n; j++) { const a = r() * 6.283, rr = Math.sqrt(r()) * rad, s = 0.025 + r() * 0.05;
+      peb.push([cx + Math.cos(a) * rr, cz + Math.sin(a) * rr, s * (1 + r() * 0.4), s, s * (0.8 + r() * 0.4), 0.3, (0.75 + r() * 0.35) * (1 - 0.3 * k)]); }
+  }
+  let pi = 0; const pebbles = scatter(pebGeo, peb.length, () => peb[pi++]);
+
+  const extra = [mids, stones, pebbles];
+  return { ground, rocks, boulders, extra, meshes: [ground, ...rocks, boulders, ...extra], dispose() { g.dispose(); shapes.forEach(s => s.dispose()); [midGeo, stoneGeo, pebGeo].forEach(x => x.dispose()); boulders.geometry.dispose(); } };
 }

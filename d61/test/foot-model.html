@@ -44,7 +44,7 @@ if (qs.get('comp')) {
   }
   let n = 0; const loop = t => { F.update?.(t / 1000); r.render(scene, cam); n++; requestAnimationFrame(loop); }; requestAnimationFrame(loop);
   r.render(scene, cam);
-  document.getElementById('info').textContent = `build ${tb.toFixed(0)} ms | tris ${F.stats.tris} | model calls ${F.stats.drawCalls} | frame calls ${r.info.render.calls} tris ${r.info.render.triangles}`;
+  document.getElementById('info').textContent = `build ${tb.toFixed(0)} ms | tris ${F.stats.tris} | model calls ${F.stats.drawCalls} | inst ${F.stats.instances} | frame calls ${r.info.render.calls} tris ${r.info.render.triangles}`;
   window.F = F; window.R = r; setTimeout(() => (window.DONE = true), +(qs.get('wait') || 3000));
 }
 </script></body></html>

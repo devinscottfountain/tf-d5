@@ -10,8 +10,9 @@ import { SKY_VERT, SKY_FRAG, EQ_FRAG, FS_VERT, ATMOS_FRAG, PRE_FRAG, BLUR_FRAG, 
 const MODEL = './foot-model.js';                     // modeller entry (exports buildFooterScene); placeholder until it loads
 const EYE = [0, 1.7, 0];
 const HORIZON = 0.3;                                 // horizon height in frame, from the top
-const VFOV = 30, HFOV_MIN = 40;                      // landscape lens; portrait widens to keep the settlement in frame
-const SUN_AZ = -0.07;                                // rad, sun a touch left of centre (Figma glow)
+const VFOV = 30, HFOV_MIN = 40;                      // landscape lens; narrow screens widen to keep the settlement in frame
+const PORTRAIT = { hfov: 30, horizon: 0.36 };       // phones: tighter crop on the settlement, horizon a touch lower
+const SUN_AZ = -0.1;                                 // rad, glow centred just right of the big dome (Figma)
 const SUN_EL = [-7.5, -1.6];                         // deg, p 0 -> 1: always below the ridge
 const ENV_STEP = 0.03, ENV_MS = 120;                 // environment rebake: p delta and min interval
 const LOGO = { x: 0.5, y: 0.595, w: 0.85, h: 0.267 }; // logotype box in the host (Figma 22952:8961), fractions, y from top
@@ -135,7 +136,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
   const fsMat = (frag, uniforms, defines = {}) => new THREE.ShaderMaterial({ uniforms, defines, vertexShader: FS_VERT, fragmentShader: frag, depthTest: false, depthWrite: false });
   const eqMat = fsMat(EQ_FRAG, skyU, skyDefs);
   const atmosU = { ...skyU, tColor: { value: rtScene.texture }, tDepth: { value: depthTex }, uInvProj: { value: new THREE.Matrix4() }, uCamWorld: { value: new THREE.Matrix4() }, uCamPos: { value: new V3() },
-    uSigma: { value: 1 / 2600 }, uHd: { value: 900 }, uDrift: { value: HIGH ? 0.6 : 0.4 }, uHazeK: { value: 1 }, uWind: { value: new THREE.Vector2(0.012, 0.004) } };
+    uSigma: { value: 1 / 2600 }, uHd: { value: 900 }, uDrift: { value: HIGH ? 0.6 : 0.4 }, uHazeK: { value: 1 }, uWind: { value: new THREE.Vector2(0.04, 0.012) } };
   const atmosMat = fsMat(ATMOS_FRAG, atmosU, skyDefs);
   const preMat = fsMat(PRE_FRAG, { tSrc: { value: rtA.texture }, uTexel: { value: new THREE.Vector2() }, uThr: { value: 0.55 }, uKnee: { value: 0.35 } });
   const blurMats = [];
@@ -143,7 +144,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
   const finU = {
     tSrc: { value: rtA.texture }, tB0: { value: rtL[0].texture }, tB1: { value: rtL[1].texture }, tB2: { value: rtL[2].texture }, tB3: { value: rtL[3].texture }, tB4: { value: rtL[LV - 1].texture },
     uBw: { value: new THREE.Vector4(0.4, 0.3, 0.17, 0.09) }, uBw4: { value: 0.04 }, uBloom: { value: 0.5 }, uExp: { value: 1 }, uGrain: { value: HIGH ? 0.05 : 0.035 }, uTime: { value: 0 },
-    uVig: { value: 0.55 }, uLow: { value: 0.78 }, uTop: { value: 0.1 }, uLogo: { value: new THREE.Vector4() }, uHalo: { value: 0 }, uHaloC: { value: new THREE.Color(0.06, 0.022, 0.009) }, uRes: { value: new THREE.Vector2() }
+    uVig: { value: 0.75 }, uLow: { value: 0.82 }, uTop: { value: 0.1 }, uLogo: { value: new THREE.Vector4() }, uHalo: { value: 0 }, uHaloC: { value: new THREE.Color(0.06, 0.022, 0.009) }, uRes: { value: new THREE.Vector2() }
   };
   const finMat = fsMat(FINAL_FRAG, finU, LV > 4 ? { B5: '' } : {});
   function pass(mat, target) { fs.material = mat; renderer.setRenderTarget(target); renderer.render(fsScene, fsCam); }
@@ -171,10 +172,12 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
     finU.uRes.value.set(w, h);
   }
   function layout() {
-    const a = W / H, hv = 2 * Math.atan(Math.tan(HFOV_MIN * Math.PI / 360) / a) * 180 / Math.PI;
-    lens.vfov = Math.min(80, Math.max(VFOV, hv));
-    // pitch down so the horizon (elevation 0) lands HORIZON from the top
-    lens.pitch = Math.atan((1 - 2 * HORIZON) * Math.tan(lens.vfov * Math.PI / 360));
+    const a = W / H, port = a < 0.85, hf = port ? PORTRAIT.hfov : HFOV_MIN;
+    const hv = 2 * Math.atan(Math.tan(hf * Math.PI / 360) / a) * 180 / Math.PI;
+    lens.vfov = Math.min(70, Math.max(VFOV, hv));
+    // pitch down so the horizon (elevation 0) lands this far from the top
+    lens.pitch = Math.atan((1 - 2 * (port ? PORTRAIT.horizon : HORIZON)) * Math.tan(lens.vfov * Math.PI / 360));
+    finU.uTop.value = port ? 0.05 : 0.1;
     cam.fov = lens.vfov; cam.aspect = a; cam.updateProjectionMatrix();
     setLogoU();
   }
@@ -196,8 +199,8 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
   const tune = { glow: 1, haze: 1, sigma: 1, key: 1, bloom: 1, exposure: 1 };   // QA multipliers
   function light(p, t) {
     const e = ease(p), rest = sstep(0.82, 1, p); sunE = e;
-    // at rest: slow breathing on the glow (two incommensurate noises, about 10 s), dust drifts
-    const breath = 1 + rest * (0.07 * nG(t * 0.09) + 0.035 * nH(t * 0.23));
+    // at rest: the glow breathes (two incommensurate noises, a swell every 5 to 8 s), dust drifts through the haze
+    const breath = 1 + rest * (0.17 * nG(t * 0.16) + 0.07 * nH(t * 0.41));
     const el = (SUN_EL[0] + (SUN_EL[1] - SUN_EL[0]) * e) * Math.PI / 180;
     sun.set(Math.sin(SUN_AZ) * Math.cos(el), Math.sin(el), -Math.cos(SUN_AZ) * Math.cos(el));
     const glow = (0.22 + 0.78 * e) * breath;
@@ -206,11 +209,11 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
     // key from the glow, just above the ridge: backlight, rims the glass, steel and the dome edges
     glowLight.position.set(Math.sin(SUN_AZ) * 1000, 150 + 80 * e, -Math.cos(SUN_AZ) * 1000);   // the bright sky patch, not the sun: high enough that the dusty ground does not mirror it
     glowLight.target.position.set(0, 0, 0);
-    glowLight.color.copy(glowColLow).lerp(glowCol, e); glowLight.intensity = (0.12 + 0.6 * e * breath) * tune.key;
-    hemi.intensity = 0.12 + 0.08 * e;
+    glowLight.color.copy(glowColLow).lerp(glowCol, e); glowLight.intensity = (0.08 + 0.5 * e * breath) * tune.key;
+    hemi.intensity = 0.05 + 0.04 * e;
     // haze: denser and darker before the sun, warmer as it rises (the inscatter is the sky's own light)
-    atmosU.uSigma.value = (1 / 3200) * (1.15 - 0.2 * e) * tune.sigma; atmosU.uHazeK.value = (0.32 + 0.16 * e) * tune.haze; atmosU.uDrift.value = (HIGH ? 0.6 : 0.4) * (0.5 + 0.5 * rest);
-    finU.uExp.value = (1.0 + 0.08 * e) * tune.exposure;
+    atmosU.uSigma.value = (1 / 3200) * (1.15 - 0.2 * e) * tune.sigma; atmosU.uHazeK.value = (0.32 + 0.16 * e) * tune.haze; atmosU.uDrift.value = (HIGH ? 0.9 : 0.7) * (0.4 + 0.6 * rest);
+    finU.uExp.value = (0.82 + 0.06 * e) * tune.exposure;
     finU.uBloom.value = (0.16 + 0.16 * e) * tune.bloom;
     finU.uHalo.value = (0.25 + 0.75 * e) * (1 + 1.5 * (breath - 1));   // breathes with the glow
   }
@@ -323,7 +326,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
     setLogoRect(r) { logo = r ? { x: r.x ?? r.left, y: r.y ?? r.top, w: r.w ?? r.width, h: r.h ?? r.height } : null; setLogoU(); },
     start() { if (running || dead) return; running = true; lastT = 0; if (!visHidden) raf = requestAnimationFrame(loop); },
     stop() { running = false; cancelAnimationFrame(raf); },
-    renderOnce() { if (!dead && stage) frame(performance.now()); },
+    renderOnce(t) { if (dead || !stage) return; if (t != null) { clock = +t; lastT = 0; } frame(performance.now()); },   // t: scene clock in s (QA stills)
     resize,
     stats() { const i = renderer.info; return { calls: i.render.calls, triangles: i.render.triangles, pixelRatio: pr, dpr: DPR, frames, programs: i.programs?.length, stage, timing, placeholder: !!content?.placeholder }; },
     dispose() {

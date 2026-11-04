@@ -23,14 +23,14 @@ vec3 skyRad(vec3 d, float stars){
   // night base: dusty, a little brighter and browner at the horizon
   vec3 c=mix(vec3(.0085,.0046,.0030), vec3(.0011,.0010,.0016), pow(smoothstep(0.,.55,hc),.5));
   // twilight band: wide in azimuth, thin in elevation; grows taller and wider as the sun comes up
-  float sw=.3+.14*uLift, H=.02+.016*uLift;
+  float sw=.19+.07*uLift, H=.018+.014*uLift;
   float band=exp(-az*az/(sw*sw))*exp(-hc/H);
-  float aur=exp(-az*az/(.012+.02*uLift))*exp(-hc/(H*.55));
+  float aur=exp(-az*az/(.008+.01*uLift))*exp(-hc/(H*.6));
   float fwd=hg(cg,.85)*exp(-hc/(H*1.4));
   vec3 warm=vec3(1.,.22,.05), amber=vec3(1.,.37,.1), core=vec3(1.,.5,.24);
   c+=uGlow*(warm*band*.5 + amber*aur*.8 + core*fwd*.25);
   // the antisolar sky stays dark; a faint warm skirt runs the whole horizon
-  c+=uGlow*vec3(.03,.011,.004)*exp(-hc/.04);
+  c+=uGlow*vec3(.012,.004,.0015)*exp(-hc/.03);
   // below the horizon (only ever seen past the ridge): fade out
   c*=h<0. ? exp(h*24.) : 1.;
 #ifdef STARS

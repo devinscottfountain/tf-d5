@@ -332,7 +332,7 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
   // The page passes groundTop (px from the canvas top to the bottom of its tab cards) and the HUD card rects.
   // Plan and exec fit their key points into the band below groundTop; control frames the excavator around
   // 62-65% of the viewport height, between (or above) the HUD cards. Fits are recomputed on change and eased in.
-  const FR = { gt: null, hud: [], key: '', snap: true };
+  const FR = { gt: null, hud: [], key: '', snap: true, pb: 0 }; // pb: extra bottom margin in px (D6.1 option, D6 leaves it 0)
   const fitCam = new THREE.PerspectiveCamera(30, 1, 0.5, 4000), fv = new THREE.Vector3(), bx = new THREE.Box3();
   const F = { plan: { ...C_PLAN }, ctrl: { ...C_CTRL }, exec: { ...C_EXEC } }, Fg = { plan: null, ctrl: null, exec: null };
   const KP = { plan: [], ctrl: [], exec: [] };
@@ -367,10 +367,10 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
   function refit() {
     if (FR.gt == null || !KP.plan.length) return;
     const nx = px => (px / cw) * 2 - 1, ny = px => 1 - (px / ch) * 2;
-    const mt = Math.max(16, ch * 0.035), mb = Math.max(14, ch * 0.035), mx = Math.max(16, cw * 0.05);
+    const mt = Math.max(16, ch * 0.035), mb = Math.max(14, ch * 0.035) + FR.pb, mx = Math.max(16, cw * 0.05);
     const full = { x0: nx(mx), x1: nx(cw - mx), y0: ny(ch - mb), y1: ny(FR.gt + mt) };
     Fg.plan = fitOne(C_PLAN, KP.plan, [{ ...full, minW: 0.8 }], [C_PLAN.yaw, 0.3, 0.6]);
-    Fg.exec = fitOne(C_EXEC, KP.exec, [{ ...full, y0: ny(ch - Math.max(22, ch * 0.03)), x0: nx(Math.max(12, cw * 0.03)), x1: nx(cw - Math.max(12, cw * 0.03)), y1: ny(FR.gt - 16) }]);
+    Fg.exec = fitOne(C_EXEC, KP.exec, [{ ...full, y0: ny(ch - Math.max(22, ch * 0.03) - FR.pb), x0: nx(Math.max(12, cw * 0.03)), x1: nx(cw - Math.max(12, cw * 0.03)), y1: ny(FR.gt - 16) }]);
     // control: the excavator centred near 63.5% vh, as large as the room between the tabs and the HUD allows
     const hud = FR.hud.filter(r => r && r.r - r.l > 2 && r.b - r.t > 2);
     // top: clear of the page's control hint (one mono line just under the tabs, right aligned) on desktop
@@ -397,7 +397,7 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
 
   function refitMaybe() {
     if (FR.gt == null) return;
-    const key = cw + 'x' + ch + '|' + Math.round(FR.gt / 2) + '|' + FR.hud.map(r => r ? [r.l, r.t, r.r, r.b].map(v => Math.round(v / 2)).join(',') : '').join(';');
+    const key = cw + 'x' + ch + '|' + Math.round(FR.gt / 2) + '|' + FR.pb + '|' + FR.hud.map(r => r ? [r.l, r.t, r.r, r.b].map(v => Math.round(v / 2)).join(',') : '').join(';');
     if (key !== FR.key) { FR.key = key; refit(); }
   }
 
@@ -617,7 +617,8 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
       if (o.topo != null) S.topo = o.topo; if (o.morph != null) S.morph = o.morph; if (o.mode != null) S.mode = o.mode | 0;
       if (o.modeT != null) S.modeT = o.modeT; if (o.flatten != null) S.flatten = o.flatten;
       if ('mapY' in o) S.mapY = o.mapY; if ('missionTop' in o) S.missionTop = o.missionTop;
-      if (o.groundTop != null || o.hud) { if (FR.gt == null) FR.snap = true; if (o.groundTop != null) FR.gt = o.groundTop; if (o.hud) FR.hud = o.hud; refitMaybe(); }
+      if (o.fitPad != null) FR.pb = Math.max(0, +o.fitPad || 0);
+      if (o.groundTop != null || o.hud || o.fitPad != null) { if (FR.gt == null) FR.snap = true; if (o.groundTop != null) FR.gt = o.groundTop; if (o.hud) FR.hud = o.hud; refitMaybe(); }
       if (changed && ov) ov = null;
     },
     setMode(i) { i = Math.max(0, Math.min(2, i | 0)); ov = { mode: i, t0: t, fromT: i === Math.round(mF) ? effT : 0, fromF: effFlat }; },

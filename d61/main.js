@@ -317,6 +317,9 @@ function init() {
     solApi.onTelemetry?.(onTele);
     if (solApi.onGame) solApi.onGame(e => { if (!e || e.type === 'point') onGame(); }); else solHost.addEventListener('click', onGame);
     if (geo) solApi.setScene(geo);
+    // dig game: no ground points in or just under the masked band (far ground near the horizon made zones that rose as walls)
+    const g0 = solApi.game, blk0 = g0 && typeof g0.blocked === 'function' ? g0.blocked : null;
+    if (g0) g0.blocked = (x, y) => (blk0 ? blk0(x, y) : false) || y - solHost.getBoundingClientRect().top < tabsBottom + Math.max(36, 0.07 * innerHeight) + 48;
     return solApi.ready;
   }).catch(e => console.warn('d6 solutions:', e)));
 
@@ -364,8 +367,12 @@ function init() {
     const s = solStage.getBoundingClientRect(), t = tabsEl.getBoundingClientRect();
     const rr = el => { const r = el && el.getBoundingClientRect(); return r && r.width > 1 ? { l: r.left - s.left, t: r.top - s.top, r: r.right - s.left, b: r.bottom - s.top } : null; };
     // 6.1: the scene is masked off above the cards (solMaskFrame), so its framing band starts a little lower than D6's
+    // groundTop + 64: the execution fit reaches 16 px above it, so its machines keep 48 px of air below the cards (Figma ~46)
     tabsBottom = t.bottom - s.top;
-    const g = { groundTop: tabsBottom + (mobile() ? 0.02 : 0.05) * innerHeight, hud: hudCards.map(rr) };
+    const mob = mobile(), hud = hudCards.map(rr);
+    // phones: the telemetry card is treated as a full-width shelf, so control frames the machine above it, not squeezed beside it
+    if (mob && hud[0]) { hud[0].l = 0; hud[0].r = s.width; }
+    const g = { groundTop: tabsBottom + (mob ? 40 : 64), hud, fitPad: Math.round(Math.max(mob ? 24 : 28, (mob ? 0.035 : 0.05) * innerHeight)) };
     const key = Math.round(g.groundTop) + '|' + g.hud.map(r => (r ? Math.round(r.l) + ',' + Math.round(r.t) + ',' + Math.round(r.r) : '')).join(';');
     if (key !== geoKey) { geoKey = key; geo = g; if (solApi) solApi.setScene(g); D6.solGeo = g; }
   }
@@ -439,8 +446,13 @@ function init() {
   const navShade = document.createElement('div');
   navShade.className = 'd6-nav-shade'; navShade.setAttribute('aria-hidden', 'true');
   q('.d6-nav').before(navShade);
-  let navShadeOn = false;
-  const navShadeFrame = on => { if (on !== navShadeOn) { navShadeOn = on; navShade.classList.toggle('is-on', on); } };
+  let navShadeOn = false, navFlow = false;
+  // 6.1: over the plain scrolling sections (mission copy, benefits, tech, CTA) the shade turns into a solid scrim under the nav
+  const navShadeFrame = (on, flow) => {
+    if (flow !== navFlow) { navFlow = flow; navShade.classList.toggle('is-flow', flow); }
+    on = on || flow; if (on !== navShadeOn) { navShadeOn = on; navShade.classList.toggle('is-on', on); }
+  };
+  const flowEls = [q('.d61-ben'), q('.d61-tech'), q('.d61-cta')].filter(Boolean);
 
   // ---------- clipping containers must never scroll (focusing a link inside used to shove the card up) ----------
   for (const el of [stage, sb, solStage, sbUi]) el?.addEventListener('scroll', () => { if (el.scrollTop || el.scrollLeft) { el.scrollTop = 0; el.scrollLeft = 0; } });
@@ -514,9 +526,10 @@ function init() {
   function solcFrame(marsOp, afterTop, marsTop, solcW) {
     if (!solc) return;
     const m = window.__d5?.mars, on = marsOp > 0 && !!m?.on;
-    const p = clamp01(m && m.p != null ? m.p : solcP);
+    const p = clamp01((m && m.p != null ? m.p : solcP) / 0.985); // the eased track progress tops out near 0.99: land on 0206
+    const pr = m && m.p != null ? m.p : solcP, entry = sstep(0.43, 0.47, pr) * (1 - sstep(0.53, 0.58, pr)); // out through the entry flash
     // in with the track, out under the closing section
-    const op = on ? clamp01((innerHeight - marsTop) / (0.6 * innerHeight)) * sstep(innerHeight * 0.2, innerHeight * 0.85, afterTop) : 0;
+    const op = on ? clamp01((innerHeight - marsTop) / (0.6 * innerHeight)) * sstep(innerHeight * 0.2, innerHeight * 0.85, afterTop) * (1 - entry) : 0;
     css(solc, 'opacity', op.toFixed(3)); css(solc, 'visibility', op > 0 ? 'visible' : 'hidden');
     if (op <= 0) return;
     txt(solcN, String(1 + Math.round(205 * p)).padStart(4, '0'));
@@ -527,7 +540,10 @@ function init() {
   const techEl = q('.d61-tech'), tvp = q('.d61-tech-vp'), ttrack = q('.d61-tech-track'), cards = qa('.d61-card');
   const tPrev = q('.d61-prev'), tNext = q('.d61-next');
   let tIdx = Math.max(0, cards.findIndex(c => c.classList.contains('is-active'))), tX = 0, tSeen = false; const tO = { x: 0 };
-  const tTarget = i => (cards[i] ? -(cards[i].offsetLeft - cards[0].offsetLeft) : 0);
+  // the active card aligns to the left content edge; clamped so the last card ends on the right content edge (no empty track)
+  const tMax = () => { if (!cards.length) return 0; const last = cards[cards.length - 1], ml = parseFloat(getComputedStyle(tvp).marginLeft) || 0;
+    return Math.max(0, last.offsetLeft + last.offsetWidth - cards[0].offsetLeft - (tvp.clientWidth - ml)); };
+  const tTarget = i => (cards[i] ? -Math.min(cards[i].offsetLeft - cards[0].offsetLeft, tMax()) : 0);
   const tSet = x => { tX = tO.x = x; ttrack.style.transform = `translate3d(${x.toFixed(1)}px,0,0)`; };
   function tGo(i, instant) {
     if (!cards.length) return;
@@ -571,7 +587,7 @@ function init() {
       gsap.killTweensOf(tO); drag.base = tX;
     }
     const now = performance.now(); drag.v = (e.clientX - drag.lx) / Math.max(1, now - drag.t); drag.lx = e.clientX; drag.t = now;
-    const min = tTarget(cards.length - 1), x = drag.base + dx, over = x > 0 ? x : x < min ? x - min : 0;
+    const min = -tMax(), x = drag.base + dx, over = x > 0 ? x : x < min ? x - min : 0;
     tSet(x - over * 0.65); // rubber band past the ends
   }, { passive: true });
   const dragEnd = e => {
@@ -583,7 +599,7 @@ function init() {
   };
   addEventListener('pointerup', dragEnd); addEventListener('pointercancel', dragEnd);
   tvp?.addEventListener('dragstart', e => e.preventDefault());
-  if (tvp) { tvp.setAttribute('tabindex', '0'); tvp.setAttribute('aria-roledescription', 'carousel'); tvp.setAttribute('aria-label', 'Our tech in action'); }
+  if (tvp) { tvp.setAttribute('tabindex', '0'); tvp.setAttribute('role', 'region'); tvp.setAttribute('aria-roledescription', 'carousel'); tvp.setAttribute('aria-label', 'Our tech in action'); }
   tGo(tIdx, true);
   function techFrame(r) {
     if (!r) return;
@@ -676,6 +692,7 @@ function init() {
     const introBottom = intro.getBoundingClientRect().bottom;
     const afterTop = after ? after.getBoundingClientRect().top : 1e9, exitPx = scrollY - solST.end;
     const mr = missionIn.getBoundingClientRect(), morphNow = enterST.progress; // the mission copy under the nav also gets the shade
+    const flowRs = flowEls.map(el => el.getBoundingClientRect()), navB = innerHeight * 0.14;
     const techR = techEl?.getBoundingClientRect(), footR = footEl?.getBoundingClientRect(), solcW = solc ? solc.clientWidth : 0;
     // 3D hero lifecycle: released while Mars is near, rebuilt as the stage comes back within ~1.5 viewports
     if (HERO3D && D6.t.heroRelease) released = true;
@@ -695,7 +712,8 @@ function init() {
     solFrame(mr.top, exitPx); solMaskFrame(morphNow); const marsOp = marsFrame(marsTop, exitPx, afterTop); railFrame();
     solcFrame(marsOp, afterTop, marsTop, solcW); techFrame(techR); footFrame(footR);
     // nav shade: over the hero / Series B media, the mission copy passing under it, and the Mars layer (colony is bright)
-    navShadeFrame((sr.bottom > innerHeight * 0.15 && p > 0.12) || (mr.top < innerHeight * 0.12 && mr.bottom > 0 && morphNow < 0.3) || (marsOp > 0 && afterTop > innerHeight * 0.15));
+    const flow = flowRs.some(r => r.top < navB && r.bottom > 0) || (mr.top < navB && mr.bottom > 40 && morphNow < 0.3);
+    navShadeFrame((sr.bottom > innerHeight * 0.15 && p > 0.12) || (marsOp > 0 && afterTop > innerHeight * 0.15), flow);
   }
   gsap.ticker.add(frame);
   let rz = 0;

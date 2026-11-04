@@ -119,14 +119,14 @@ export function buildFooterScene({ THREE, quality = 'high' } = {}) {
   }
 
   // stats
-  let tris = 0, calls = 0; root.traverse(o => { if (!o.isMesh) return; calls += o.material.transparent && o.material.side === THREE.DoubleSide ? 2 : 1;
+  let tris = 0, calls = 0, inst = 0; root.traverse(o => { if (!o.isMesh) return; if (o.isInstancedMesh) inst += o.count; calls += o.material.transparent && o.material.side === THREE.DoubleSide ? 2 : 1;
     const g = o.geometry, n = (g.index ? g.index.count : g.attributes.position.count) / 3; tris += n * (o.isInstancedMesh ? o.count : 1); });
 
   return {
     root, lights, update,
     applyTextures(tex) { tb.apply(tex); },
     anchors: { domes: colony.domes, rover: colony.rover, ships, glass: M.glass, foliage: leafU.uBack },
-    materials: M, stats: { tris: Math.round(tris), drawCalls: calls },
+    materials: M, stats: { tris: Math.round(tris), drawCalls: calls, instances: inst },
     dispose() { root.traverse(o => o.isMesh && o.geometry.dispose()); terrain.dispose(); Object.values(M).forEach(m => m.dispose()); black.dispose(); },
   };
 }
