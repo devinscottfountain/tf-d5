@@ -362,7 +362,7 @@ function init() {
   const measureMission = () => { restMission = 0.12 * innerHeight + (parseFloat(getComputedStyle(mission).paddingTop) || 0); };
   // framing inputs for the WebGL layer, in canvas px as they sit while the stage is pinned (stage and canvas share 0,0):
   // bottom of the tab cards (the scene keeps its machines below it) and the control HUD cards (kept clear in control)
-  let geo = null, geoKey = '', tabsBottom = 0;
+  let geo = null, geoKey = '', tabsBottom = 0, geoT = 0;
   function measureSolGeo() {
     const s = solStage.getBoundingClientRect(), t = tabsEl.getBoundingClientRect();
     const rr = el => { const r = el && el.getBoundingClientRect(); return r && r.width > 1 ? { l: r.left - s.left, t: r.top - s.top, r: r.right - s.left, b: r.bottom - s.top } : null; };
@@ -374,7 +374,8 @@ function init() {
     if (mob && hud[0]) { hud[0].l = 0; hud[0].r = s.width; }
     const g = { groundTop: tabsBottom + (mob ? 40 : 64), hud, fitPad: Math.round(Math.max(mob ? 24 : 28, (mob ? 0.035 : 0.05) * innerHeight)) };
     const key = Math.round(g.groundTop) + '|' + g.hud.map(r => (r ? Math.round(r.l) + ',' + Math.round(r.t) + ',' + Math.round(r.r) : '')).join(';');
-    if (key !== geoKey) { geoKey = key; geo = g; if (solApi) solApi.setScene(g); D6.solGeo = g; }
+    // each change refits three camera solves: while the cards slide in or a card grows, push at most every 250 ms (the last value always lands)
+    if (key !== geoKey) { const now = performance.now(); if (geo && solApi && now - geoT < 250) return; geoT = now; geoKey = key; geo = g; if (solApi) solApi.setScene(g); D6.solGeo = g; }
   }
   function solFrame(missionTop, exitPx) {
     const topo = clamp01(missionST.progress), morph = clamp01(enterST.progress), sp = solST.progress;

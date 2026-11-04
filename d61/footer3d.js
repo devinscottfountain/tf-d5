@@ -143,7 +143,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
   for (let i = 0; i < LV * 2; i++) blurMats.push(fsMat(BLUR_FRAG, { tSrc: { value: null }, uDir: { value: new THREE.Vector2() } }));
   const finU = {
     tSrc: { value: rtA.texture }, tB0: { value: rtL[0].texture }, tB1: { value: rtL[1].texture }, tB2: { value: rtL[2].texture }, tB3: { value: rtL[3].texture }, tB4: { value: rtL[LV - 1].texture },
-    uBw: { value: new THREE.Vector4(0.4, 0.3, 0.17, 0.09) }, uBw4: { value: 0.04 }, uBloom: { value: 0.5 }, uExp: { value: 1 }, uGrain: { value: HIGH ? 0.05 : 0.035 }, uTime: { value: 0 },
+    uBw: { value: new THREE.Vector4(0.46, 0.3, 0.15, 0.06) }, uBw4: { value: 0.03 }, uBloom: { value: 0.5 }, uExp: { value: 1 }, uGrain: { value: HIGH ? 0.05 : 0.035 }, uTime: { value: 0 },
     uVig: { value: 0.75 }, uLow: { value: 0.82 }, uTop: { value: 0.1 }, uLogo: { value: new THREE.Vector4() }, uHalo: { value: 0 }, uHaloC: { value: new THREE.Color(0.06, 0.022, 0.009) }, uRes: { value: new THREE.Vector2() }
   };
   const finMat = fsMat(FINAL_FRAG, finU, LV > 4 ? { B5: '' } : {});
@@ -177,7 +177,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
     lens.vfov = Math.min(70, Math.max(VFOV, hv));
     // pitch down so the horizon (elevation 0) lands this far from the top
     lens.pitch = Math.atan((1 - 2 * (port ? PORTRAIT.horizon : HORIZON)) * Math.tan(lens.vfov * Math.PI / 360));
-    finU.uTop.value = port ? 0.05 : 0.1;
+    finU.uTop.value = port ? 0.06 : 0.14;
     cam.fov = lens.vfov; cam.aspect = a; cam.updateProjectionMatrix();
     setLogoU();
   }

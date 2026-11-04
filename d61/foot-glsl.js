@@ -23,12 +23,12 @@ vec3 skyRad(vec3 d, float stars){
   // night base: dusty, a little brighter and browner at the horizon
   vec3 c=mix(vec3(.0085,.0046,.0030), vec3(.0011,.0010,.0016), pow(smoothstep(0.,.55,hc),.5));
   // twilight band: wide in azimuth, thin in elevation; grows taller and wider as the sun comes up
-  float sw=.19+.07*uLift, H=.018+.014*uLift;
+  float sw=.19+.07*uLift, H=.015+.01*uLift;
   float band=exp(-az*az/(sw*sw))*exp(-hc/H);
   float aur=exp(-az*az/(.008+.01*uLift))*exp(-hc/(H*.6));
   float fwd=hg(cg,.85)*exp(-hc/(H*1.4));
   vec3 warm=vec3(1.,.22,.05), amber=vec3(1.,.37,.1), core=vec3(1.,.5,.24);
-  c+=uGlow*(warm*band*.5 + amber*aur*.8 + core*fwd*.25);
+  c+=uGlow*(warm*band*.32 + amber*aur*1.35 + core*fwd*.3);
   // the antisolar sky stays dark; a faint warm skirt runs the whole horizon
   c+=uGlow*vec3(.012,.004,.0015)*exp(-hc/.03);
   // below the horizon (only ever seen past the ridge): fade out
@@ -139,7 +139,7 @@ void main(){
   c+=uHaloC*uHalo*exp(-dot(hq,hq)*1.6);
   c=aces(c*uExp);
   // grade: warm the shadows a hair, keep blacks black
-  c=pow(c,vec3(1.,1.04,1.1));
+  c=pow(c,vec3(1.,1.02,1.05));
   // vignette: edges (Figma ellipses), the lower half held down for the logotype and links, top melts into the page
   float yt=1.-vUv.y; vec2 e=(vUv-vec2(.5,.56))*vec2(1.,1.25);
   float v=mix(1.,1.-uVig,smoothstep(.3,.95,length(e)*1.3));
