@@ -1,0 +1,140 @@
+{
+ "regolith": {
+  "s": 4,
+  "hi": {
+   "c": "1k/regolith_c.webp",
+   "n": "1k/regolith_n.webp",
+   "orm": "512/regolith_orm.webp"
+  },
+  "lo": {
+   "c": "512/regolith_c.webp",
+   "n": "512/regolith_n.webp",
+   "orm": "256/regolith_orm.webp"
+  }
+ },
+ "mars_rock": {
+  "s": 3,
+  "hi": {
+   "c": "1k/mars_rock_c.webp",
+   "n": "1k/mars_rock_n.webp",
+   "orm": "512/mars_rock_orm.webp"
+  },
+  "lo": {
+   "c": "512/mars_rock_c.webp",
+   "n": "512/mars_rock_n.webp"
+  }
+ },
+ "dome_frame": {
+  "s": 0.5,
+  "hi": {
+   "c": "256/dome_frame_c.webp",
+   "n": "512/dome_frame_n.webp",
+   "orm": "256/dome_frame_orm.webp"
+  },
+  "lo": null
+ },
+ "foliage": {
+  "s": 0.6,
+  "hi": {
+   "c": "512/foliage_c.webp",
+   "n": "512/foliage_n.webp",
+   "orm": "256/foliage_orm.webp"
+  },
+  "lo": {
+   "c": "256/foliage_c.webp"
+  }
+ },
+ "habitat_panel": {
+  "s": [
+   2,
+   2
+  ],
+  "hi": {
+   "c": "512/habitat_panel_c.webp",
+   "n": "512/habitat_panel_n.webp",
+   "orm": "512/habitat_panel_orm.webp"
+  },
+  "lo": {
+   "c": "256/habitat_panel_c.webp"
+  }
+ },
+ "stainless": {
+  "s": [
+   1,
+   1.8
+  ],
+  "hi": {
+   "c": "512/stainless_c.webp",
+   "n": "512/stainless_n.webp",
+   "orm": "256/stainless_orm.webp"
+  },
+  "lo": {
+   "n": "256/stainless_n.webp"
+  }
+ },
+ "rover_paint": {
+  "s": 1,
+  "hi": {
+   "c": "512/rover_paint_c.webp",
+   "n": "512/rover_paint_n.webp",
+   "orm": "256/rover_paint_orm.webp"
+  },
+  "lo": null
+ },
+ "dome_glass": {
+  "s": 1.5,
+  "hi": {
+   "orm": "../../../d6/assets/tex/512/glass_smudge_orm.webp"
+  },
+  "lo": {
+   "orm": "../../../d6/assets/tex/512/glass_smudge_orm.webp"
+  }
+ },
+ "dusk_sky": {
+  "s": 1,
+  "hi": {
+   "hdr": "dusk_sky.hdr"
+  },
+  "lo": {
+   "ldr": "256/dusk_sky_ldr.webp",
+   "scale": 2
+  }
+ },
+ "_sizes": {
+  "1k/mars_rock_c.webp": 223670,
+  "1k/mars_rock_n.webp": 260252,
+  "1k/regolith_c.webp": 238152,
+  "1k/regolith_n.webp": 476280,
+  "256/dome_frame_c.webp": 4264,
+  "256/dome_frame_orm.webp": 5806,
+  "256/dusk_sky_ldr.webp": 850,
+  "256/foliage_c.webp": 10996,
+  "256/foliage_orm.webp": 8690,
+  "256/habitat_panel_c.webp": 5116,
+  "256/regolith_orm.webp": 3086,
+  "256/rover_paint_orm.webp": 11878,
+  "256/stainless_n.webp": 3214,
+  "256/stainless_orm.webp": 4112,
+  "512/dome_frame_n.webp": 23578,
+  "512/foliage_c.webp": 41492,
+  "512/foliage_n.webp": 33342,
+  "512/habitat_panel_c.webp": 22698,
+  "512/habitat_panel_n.webp": 22736,
+  "512/habitat_panel_orm.webp": 26296,
+  "512/mars_rock_c.webp": 42052,
+  "512/mars_rock_n.webp": 50616,
+  "512/mars_rock_orm.webp": 12956,
+  "512/regolith_c.webp": 43934,
+  "512/regolith_n.webp": 91384,
+  "512/regolith_orm.webp": 31992,
+  "512/rover_paint_c.webp": 52622,
+  "512/rover_paint_n.webp": 13274,
+  "512/stainless_c.webp": 7028,
+  "512/stainless_n.webp": 9554,
+  "dusk_sky.hdr": 48926
+ },
+ "_totals": {
+  "hi": 1604518,
+  "lo": 276168
+ }
+}
