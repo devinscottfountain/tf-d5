@@ -53,7 +53,7 @@ export function buildOutside({ THREE, scene, high, quality }) {
     sh.vertexShader = 'varying vec3 vW;\n' + sh.vertexShader.replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvW=(modelMatrix*vec4(transformed,1.)).xyz;');
     sh.fragmentShader = 'uniform float terrK, trkK; uniform sampler2D tTrkC, tTrkN; varying vec3 vW;\n' + NOISE + `
       float trkMask(vec2 p){                                                              // where machines have worked the ground
-        float pad=1.-smoothstep(.55,1.,length((p-vec2(2.,-50.))/vec2(38.,12.)));          // the pad around the dig
+        float pad=1.-smoothstep(.6,1.,length((p-vec2(4.,-42.))/vec2(56.,26.)));          // the worked yard: foreground to the berm
         float road=(1.-smoothstep(2.5,5.5,abs(p.x-(-6.+.2*(p.y+44.)+3.*sin(p.y*.08)))))*smoothstep(-33.,-40.,p.y)*smoothstep(-96.,-76.,p.y); // haul road to the berm
         return clamp(max(pad,road)*(.5+.7*fbm2(p*.09+5.)),0.,1.); }
 ` + sh.fragmentShader
