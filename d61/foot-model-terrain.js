@@ -87,22 +87,26 @@ export function buildTerrain({ THREE, group, M, high }) {
     L.forEach((o, i) => bed(im, i, ...o)); im.instanceMatrix.needsUpdate = true; im.instanceColor.needsUpdate = true;
     im.computeBoundingSphere(); im.userData.part = 'stones'; im.userData.texScale = TS.mars_rock; group.add(im); return im;
   };
-  // per-area uniform in the ground plane within the frustum wedge: x spread grows with distance
-  const spot = (d0, d1, k = 1.25) => { const d = Math.sqrt(d0 * d0 + r() * (d1 * d1 - d0 * d0)), x = (r() * 2 - 1) * (d * k + 4); return [x, -d, d]; };
+  // inside the view wedge (k = half-width / distance, 0.72 covers aspect up to ~2.7), weighted toward the camera
+  const spot = (d0, d1, k = 0.72, w = 1.7) => { const d = d0 + (d1 - d0) * Math.pow(r(), w), x = (r() * 2 - 1) * (d * k + 3); return [x, -d, d]; };
 
   // mid boulders, 30..170 m: breaks up the plain before the settlement
   const midGeo = rockGeo(71, 2, 0.6);
-  const mids = scatter(midGeo, high ? 14 : 7, () => { const [x, z, d] = spot(30, 170, 1.05); if (pad(x, d)) return null;
+  const mids = scatter(midGeo, high ? 14 : 7, () => { const [x, z, d] = spot(30, 170, 0.8, 1.2); if (pad(x, d)) return null;
     const s = 0.9 + r() * 1.4; return [x, z, s * (1 + r() * 0.5), s * (0.45 + r() * 0.3), s * (0.8 + r() * 0.4), 0.3 + r() * 0.15, 0.75 + r() * 0.3]; });
 
   // fist- to knee-size stones, 2.5..90 m, thinner and smaller (and darker) in the calm band
   const stoneGeo = (() => { const f = rng(83), gg = new THREE.DodecahedronGeometry(1, 0), p = gg.attributes.position;   // 36 tris, faceted like broken basalt
     for (let i = 0; i < p.count; i++) { const v = new THREE.Vector3().fromBufferAttribute(p, i), k = 1 + 0.18 * fbm(v.x * 2 + 3, v.y * 2 + v.z, 2); p.setXYZ(i, v.x * k, Math.max(v.y * k * 0.65, -0.3), v.z * k); }
     gg.computeVertexNormals(); return boxUV(THREE, gg, TS.mars_rock); })();
-  const stones = scatter(stoneGeo, high ? 900 : 260, () => { const [x, z, d] = spot(2.5, 90); const c = calm(d);
+  // near the feet (< 14 m, large on screen) they use the smooth det-1 rock shape, the faceted 36-tri stone beyond
+  const stoneFn = (d0, d1, near) => () => { const [x, z, d] = spot(d0, d1); const c = calm(d);
     if (r() < c * 0.7) return null;
-    const s = (0.06 + Math.pow(r(), 2.2) * 0.42) * (1 - 0.6 * c);
-    return [x, z, s * (0.9 + r() * 0.5), s * (0.55 + r() * 0.4), s * (0.8 + r() * 0.5), 0.25 + r() * 0.2, (0.7 + r() * 0.4) * (1 - 0.35 * c)]; });
+    const s = (0.06 + Math.pow(r(), 2.2) * (near ? 0.26 : 0.42)) * (1 - 0.6 * c);
+    return [x, z, s * (0.9 + r() * 0.5), s * (0.6 + r() * 0.35), s * (0.8 + r() * 0.5), 0.25 + r() * 0.2, (0.7 + r() * 0.35) * (1 - 0.35 * c)]; };
+  const nearGeo = rockGeo(83, 1, 0.7);
+  const nearStones = scatter(nearGeo, high ? 260 : 80, stoneFn(2.5, 14, true));
+  const stones = scatter(stoneGeo, high ? 700 : 200, stoneFn(14, 90, false));
 
   // pebble clusters: tight groups of 5..12 near the feet and in shallow hollows mid-ground
   const pebGeo = (() => { const gg = new THREE.IcosahedronGeometry(1, 0), p = gg.attributes.position;
@@ -114,6 +118,6 @@ export function buildTerrain({ THREE, group, M, high }) {
   }
   let pi = 0; const pebbles = scatter(pebGeo, peb.length, () => peb[pi++]);
 
-  const extra = [mids, stones, pebbles];
-  return { ground, rocks, boulders, extra, meshes: [ground, ...rocks, boulders, ...extra], dispose() { g.dispose(); shapes.forEach(s => s.dispose()); [midGeo, stoneGeo, pebGeo].forEach(x => x.dispose()); boulders.geometry.dispose(); } };
+  const extra = [mids, nearStones, stones, pebbles];
+  return { ground, rocks, boulders, extra, meshes: [ground, ...rocks, boulders, ...extra], dispose() { g.dispose(); shapes.forEach(s => s.dispose()); [midGeo, nearGeo, stoneGeo, pebGeo].forEach(x => x.dispose()); boulders.geometry.dispose(); } };
 }
