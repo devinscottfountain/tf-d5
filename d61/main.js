@@ -511,16 +511,16 @@ function init() {
   const solc = q('.d61-solc'), solcN = q('.d61-solc-n'), solcInd = q('.d61-solc-ind');
   let solcP = 0, solcBeat = 1;
   function solcProgress(p, beat) { solcP = p; solcBeat = beat; D6.solc = { p, beat }; }
-  function solcFrame(marsOp, afterTop) {
+  function solcFrame(marsOp, afterTop, marsTop, solcW) {
     if (!solc) return;
     const m = window.__d5?.mars, on = marsOp > 0 && !!m?.on;
     const p = clamp01(m && m.p != null ? m.p : solcP);
     // in with the track, out under the closing section
-    const op = on ? clamp01((innerHeight - marsTrack.getBoundingClientRect().top) / (0.6 * innerHeight)) * sstep(innerHeight * 0.2, innerHeight * 0.85, afterTop) : 0;
+    const op = on ? clamp01((innerHeight - marsTop) / (0.6 * innerHeight)) * sstep(innerHeight * 0.2, innerHeight * 0.85, afterTop) : 0;
     css(solc, 'opacity', op.toFixed(3)); css(solc, 'visibility', op > 0 ? 'visible' : 'hidden');
     if (op <= 0) return;
     txt(solcN, String(1 + Math.round(205 * p)).padStart(4, '0'));
-    css(solcInd, 'transform', `translate3d(${(p * (solc.clientWidth - 1)).toFixed(1)}px,0,0)`);
+    css(solcInd, 'transform', `translate3d(${(p * (solcW - 1)).toFixed(1)}px,0,0)`);
   }
 
   // ---------- tech carousel: arrows + drag/swipe, no autoplay; only the active card's video plays ----------
@@ -544,7 +544,7 @@ function init() {
   function tVids() {
     cards.forEach((c, k) => {
       const v = q('.d61-card-vid', c); if (!v || !v.dataset.src) return;
-      const on = k === tIdx && tSeen;
+      const on = k === tIdx && tSeen && !RM; // reduced motion: the poster stays
       if (on && !v.src) { v.src = v.dataset.src; v.addEventListener('playing', () => v.classList.add('is-on'), { once: true }); }
       if (!v.src) return;
       if (on && v.paused && !v._d61busy) { v._d61busy = true; v.play().then(() => { v._d61busy = false; }, () => { v._d61busy = false; }); }
@@ -558,11 +558,12 @@ function init() {
   // drag: horizontal intent claims the gesture (vertical page scroll stays native through touch-action: pan-y)
   let drag = null;
   tvp?.addEventListener('pointerdown', e => {
-    if (e.button !== 0 || !cards.length) return;
+    if (e.button !== 0 || !cards.length || drag) return;
     drag = { id: e.pointerId, x0: e.clientX, y0: e.clientY, base: tX, on: false, t: performance.now(), lx: e.clientX, v: 0 };
   });
   addEventListener('pointermove', e => {
     if (!drag || e.pointerId !== drag.id) return;
+    if (e.pointerType === 'mouse' && !e.buttons) { dragEnd(e); return; } // released outside the window
     const dx = e.clientX - drag.x0, dy = e.clientY - drag.y0;
     if (!drag.on) {
       if (Math.abs(dx) < 8 || Math.abs(dx) < Math.abs(dy)) { if (Math.abs(dy) > 12) drag = null; return; }
@@ -584,9 +585,9 @@ function init() {
   tvp?.addEventListener('dragstart', e => e.preventDefault());
   if (tvp) { tvp.setAttribute('tabindex', '0'); tvp.setAttribute('aria-roledescription', 'carousel'); tvp.setAttribute('aria-label', 'Our tech in action'); }
   tGo(tIdx, true);
-  function techFrame() {
-    if (!techEl) return;
-    const r = techEl.getBoundingClientRect(), seen = r.bottom > 0 && r.top < innerHeight;
+  function techFrame(r) {
+    if (!r) return;
+    const seen = r.bottom > 0 && r.top < innerHeight;
     if (seen !== tSeen) { tSeen = seen; tVids(); }
   }
 
@@ -598,11 +599,12 @@ function init() {
     foot = m.createFooter({ THREE, host: footHost, quality: QUALITY, base: new URL('./', import.meta.url).href });
     D6.footer = foot; stamp('footBuilt');
     return foot.ready;
-  }).then(() => stamp('footReady')).catch(e => { footFail = true; foot = null; console.warn('d61 footer:', e); }));
+  }).then(() => stamp('footReady')).catch(e => { footFail = true; try { foot?.dispose(); } catch (_) { /* gone */ } foot = null; console.warn('d61 footer:', e); }));
   D6.loadFooter = loadFooter;
-  function footFrame() {
-    if (!footEl || footFail) return;
-    const r = footEl.getBoundingClientRect(), H = innerHeight;
+  let rmDrawn = -1, rmT = 0;
+  function footFrame(r) {
+    if (!r || footFail) return;
+    const H = innerHeight;
     if (!footP && r.top < H * 2) loadFooter();
     if (!foot) return;
     const vis = r.top < H && r.bottom > 0;
@@ -610,7 +612,10 @@ function init() {
     const p = clamp01((H - r.top) / Math.max(1, Math.min(r.height, H)));
     try {
       foot.setProgress(RM ? (p > 0.5 ? 1 : 0) : p);
-      if (vis && !footRun) { footRun = true; foot.start(); } else if (!vis && footRun) { footRun = false; foot.stop(); }
+      if (RM) { // reduced motion: no live loop (shimmer, dust, grain); a still on entry and on change, refreshed once a second for late textures
+        const k = p > 0.5 ? 1 : 0, now = performance.now();
+        if (!vis) rmDrawn = -1; else if (k !== rmDrawn || now - rmT > 1000) { rmDrawn = k; rmT = now; foot.renderOnce(); }
+      } else if (vis && !footRun) { footRun = true; foot.start(); } else if (!vis && footRun) { footRun = false; foot.stop(); }
     } catch (e) { footFail = true; console.warn('d61 footer:', e); }
     D6.footP = p;
   }
@@ -671,6 +676,7 @@ function init() {
     const introBottom = intro.getBoundingClientRect().bottom;
     const afterTop = after ? after.getBoundingClientRect().top : 1e9, exitPx = scrollY - solST.end;
     const mr = missionIn.getBoundingClientRect(), morphNow = enterST.progress; // the mission copy under the nav also gets the shade
+    const techR = techEl?.getBoundingClientRect(), footR = footEl?.getBoundingClientRect(), solcW = solc ? solc.clientWidth : 0;
     // 3D hero lifecycle: released while Mars is near, rebuilt as the stage comes back within ~1.5 viewports
     if (HERO3D && D6.t.heroRelease) released = true;
     if (HERO3D && released && !hero && !heroBuilding && marsTop > innerHeight * 2.5 && introBottom > -1.5 * innerHeight) buildHero(true);
@@ -687,7 +693,7 @@ function init() {
     kbFrame(sr.bottom > 0 && sr.top < innerHeight);
     for (const v of vids) vidOn(v, v.classList.contains('d6-hero-video') ? !heroOn && sr.bottom > 0 && p < 0.8 : sr.bottom > 0 && p > 0.3);
     solFrame(mr.top, exitPx); solMaskFrame(morphNow); const marsOp = marsFrame(marsTop, exitPx, afterTop); railFrame();
-    solcFrame(marsOp, afterTop); techFrame(); footFrame();
+    solcFrame(marsOp, afterTop, marsTop, solcW); techFrame(techR); footFrame(footR);
     // nav shade: over the hero / Series B media, the mission copy passing under it, and the Mars layer (colony is bright)
     navShadeFrame((sr.bottom > innerHeight * 0.15 && p > 0.12) || (mr.top < innerHeight * 0.12 && mr.bottom > 0 && morphNow < 0.3) || (marsOp > 0 && afterTop > innerHeight * 0.15));
   }

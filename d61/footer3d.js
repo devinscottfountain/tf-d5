@@ -278,11 +278,14 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
 
   // ---------------------------------------------------------------- loop + api
   let running = false, raf = 0, dead = false, visHidden = false;
-  const loop = now => { if (!running) return; raf = requestAnimationFrame(loop); frame(now); };
+  // nothing draws before ready: an early start() would compile every program synchronously on the main thread
+  const loop = now => { if (!running) return; raf = requestAnimationFrame(loop); if (stage) frame(now); };
   const onVis = () => { visHidden = document.hidden; if (visHidden) cancelAnimationFrame(raf); else if (running) { lastT = 0; raf = requestAnimationFrame(loop); } };
   document.addEventListener('visibilitychange', onVis);
   function resize() {
-    W = Math.max(1, host.clientWidth); H = Math.max(1, host.clientHeight);
+    const w = Math.max(1, host.clientWidth), h = Math.max(1, host.clientHeight);
+    if (w === W && h === H) return; // mobile URL bar resizes: re-setting the canvas size would clear it for a frame
+    W = w; H = h;
     renderer.setSize(W, H, false); canvas.style.width = canvas.style.height = '100%';
     sizeTargets(); layout();
     if (!running && stage) frame(performance.now());
@@ -320,7 +323,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
     setLogoRect(r) { logo = r ? { x: r.x ?? r.left, y: r.y ?? r.top, w: r.w ?? r.width, h: r.h ?? r.height } : null; setLogoU(); },
     start() { if (running || dead) return; running = true; lastT = 0; if (!visHidden) raf = requestAnimationFrame(loop); },
     stop() { running = false; cancelAnimationFrame(raf); },
-    renderOnce() { if (!dead) frame(performance.now()); },
+    renderOnce() { if (!dead && stage) frame(performance.now()); },
     resize,
     stats() { const i = renderer.info; return { calls: i.render.calls, triangles: i.render.triangles, pixelRatio: pr, dpr: DPR, frames, programs: i.programs?.length, stage, timing, placeholder: !!content?.placeholder }; },
     dispose() {
