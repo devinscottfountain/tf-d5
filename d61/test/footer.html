@@ -1,0 +1,50 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>D6.1 footer 3D test</title>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<style>html,body{margin:0;background:#000;color:#fff;font:12px/1.4 "IBM Plex Mono",monospace;overflow:hidden}
+#host{position:fixed;inset:0}
+/* overlay mock of 22952:8961 so legibility can be judged (the page owns the real one) */
+#ov{position:fixed;left:7.5vw;right:7.5vw;bottom:4vw;z-index:2;color:#D6D9E3;pointer-events:none;font-family:Geist,system-ui,sans-serif}
+#logo{font:500 15.6vw/1 Geist,system-ui,sans-serif;letter-spacing:-.02em;white-space:nowrap;display:flex;align-items:center;gap:2.5vw}
+#logo i{display:inline-block;width:15.7vw;height:15.7vw;border:1.4vw solid #D6D9E3;border-radius:50%;box-sizing:border-box}
+#logo span{font-size:12vw;letter-spacing:.06em}
+#row{display:flex;justify-content:space-between;align-items:center;margin-top:5vw;font-size:15px}
+#row b{font:500 11px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase}
+#legal{display:flex;justify-content:space-between;margin-top:5vw;font:500 11px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase}
+@media (max-width:600px){#logo span{font-size:9vw}#row{flex-direction:column;gap:14px}#legal{flex-direction:column;gap:8px}}
+#ui{position:fixed;left:12px;top:12px;width:300px;background:rgba(15,15,15,.85);border:1px solid #333;padding:10px;z-index:5}
+#ui input[type=range]{width:100%}
+body.noui #ui{display:none} body.noov #ov{display:none}</style></head><body>
+<div id="host"></div>
+<div id="ov"><div id="logo"><i></i><span>TERRAFIRMA</span></div>
+<div id="row"><span>Careers &nbsp;&nbsp; Contact</span><b>Texas born. Mars bound.</b><span>in &nbsp; X</span></div>
+<div id="legal"><span>2026 TerraFirma, Inc. All rights reserved.</span><span>Terms of service &nbsp; Privacy policy</span></div></div>
+<div id="ui"><div>p <span id="pv">0</span></div><input id="p" type="range" min="0" max="1" step="0.001" value="0">
+<label><input id="auto" type="checkbox"> scroll-in sweep (0 to 1 over 2.5 s)</label><div id="info"></div></div>
+<script type="module">
+import * as THREE from 'three';
+import { createFooter } from '../footer3d.js';
+const qs = new URLSearchParams(location.search);
+if (qs.has('noui')) document.body.classList.add('noui');
+if (qs.has('noov')) document.body.classList.add('noov');
+const host = document.getElementById('host');
+const q = qs.get('q') || (matchMedia('(max-width: 600px)').matches ? 'low' : 'high');
+const t0 = performance.now();
+const ft = createFooter({ THREE, host, quality: q, base: new URL('../', location.href).href });
+window.FOOT = ft;
+let P = +(qs.get('p') || 0);
+const apply = () => { ft.setProgress(P); document.getElementById('pv').textContent = P.toFixed(3); document.getElementById('p').value = P; };
+window.setP = p => { P = p; apply(); };
+document.getElementById('p').oninput = e => { P = +e.target.value; apply(); };
+document.getElementById('auto').onchange = e => { if (!e.target.checked) return; const s = performance.now(); const f = n => { P = Math.min(1, (n - s) / 2500); apply(); if (P < 1 && e.target.checked) requestAnimationFrame(f); else e.target.checked = false; }; requestAnimationFrame(f); };
+addEventListener('pointermove', e => ft.setPointer(e.clientX / innerWidth * 2 - 1, e.clientY / innerHeight * 2 - 1));
+const logoRect = () => { const r = document.getElementById('logo').getBoundingClientRect(); ft.setLogoRect(qs.has('noov') ? null : { x: r.left, y: r.top, w: r.width, h: r.height }); };
+addEventListener('resize', () => { ft.resize(); logoRect(); });
+apply(); logoRect();
+// render only while visible
+new IntersectionObserver(es => es[0].isIntersecting ? ft.start() : ft.stop()).observe(host);
+ft.ready.then(() => {
+  window.READY_MS = performance.now() - t0; window.DONE = true;
+  setInterval(() => { const s = ft.stats(); document.getElementById('info').textContent = `calls ${s.calls} tris ${s.triangles} pr ${s.pixelRatio} ${s.placeholder ? 'placeholder' : 'model'} ready ${window.READY_MS.toFixed(0)} ms`; }, 500);
+});
+</script></body></html>

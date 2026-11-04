@@ -1,0 +1,50 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>D6.1 footer model test</title>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<style>html,body{margin:0;background:#000;overflow:hidden}#host{position:fixed;inset:0}#info{position:fixed;left:8px;top:8px;color:#9a9;font:11px monospace;z-index:2}</style></head><body>
+<div id="host"></div><div id="info"></div>
+<script type="module">
+// Modeller test bench. ?q=low, ?tex=0 (no textures), ?comp=1 (real compositor footer3d.js), ?cam=x,y,z,tx,ty,tz,fov (debug view), ?p=0..1
+import * as THREE from 'three';
+const qs = new URLSearchParams(location.search), q = qs.get('q') || 'high', host = document.getElementById('host');
+window.DONE = false;
+if (qs.get('comp')) {
+  const { createFooter } = await import('../footer3d.js');
+  const f = createFooter({ THREE, host, quality: q, base: new URL('../', location.href).href });
+  window.F = f; f.setProgress(+(qs.get('p') ?? 1)); f.start?.(); await f.ready; setTimeout(() => (window.DONE = true), +(qs.get('wait') || 4000));
+} else {
+  const { buildFooterScene } = await import('../foot-model.js');
+  const W = innerWidth, H = innerHeight, r = new THREE.WebGLRenderer({ antialias: true });
+  r.setSize(W, H); r.toneMapping = THREE.ACESFilmicToneMapping; r.toneMappingExposure = +(qs.get('exp') || 1.2); host.appendChild(r.domElement);
+  const scene = new THREE.Scene(), cam = new THREE.PerspectiveCamera(30, W / H, 0.1, 6000);
+  // stand-in dusk sky: dark zenith, warm glow low behind the ridge, slightly left of centre
+  const skyM = new THREE.ShaderMaterial({ side: THREE.BackSide, depthWrite: false, vertexShader: 'varying vec3 vD; void main(){ vD = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.); }',
+    fragmentShader: `varying vec3 vD; void main(){ vec3 d = normalize(vD); float e = d.y; vec3 s = normalize(vec3(-0.07, -0.05, -1.));
+      float g = pow(max(dot(normalize(vec3(d.x, 0., d.z)), normalize(vec3(s.x, 0., s.z))), 0.), 6.);
+      vec3 c = mix(vec3(0.02, 0.012, 0.01), vec3(0.003, 0.003, 0.006), smoothstep(0.0, 0.5, e));
+      c += vec3(1.6, 0.62, 0.2) * g * exp(-max(e, 0.) * 14.) * 1.4 + vec3(0.4, 0.15, 0.05) * exp(-max(e, 0.) * 5.) * 0.4;
+      c = mix(c, vec3(0.03, 0.015, 0.008), step(e, 0.) * smoothstep(0., -0.08, e));
+      gl_FragColor = vec4(c, 1.); }` });
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(5000, 48, 24), skyM); scene.add(sky);
+  const es = new THREE.Scene(); es.add(new THREE.Mesh(new THREE.SphereGeometry(10, 48, 24), skyM));
+  const pm = new THREE.PMREMGenerator(r); scene.environment = pm.fromScene(es, 0, 0.1, 100).texture;
+  scene.fog = new THREE.FogExp2(0x3a1a0c, 1 / 2600);
+  const key = new THREE.DirectionalLight(0xff9a50, 2.4); key.position.set(-70, 90, -1000); scene.add(key, key.target);
+  scene.add(new THREE.HemisphereLight(0x5a3a30, 0x1a0c06, 0.45));
+  const t0 = performance.now(), F = buildFooterScene({ THREE, quality: q }), tb = performance.now() - t0;
+  scene.add(F.root); for (const l of F.lights || []) if (!l.parent) scene.add(l);
+  const c = (qs.get('cam') || '').split(',').map(Number);
+  if (c.length >= 6) { cam.position.set(c[0], c[1], c[2]); cam.lookAt(c[3], c[4], c[5]); if (c[6]) cam.fov = c[6]; }
+  else { cam.position.set(0, 1.7, 0); const pitch = Math.atan(0.4 * Math.tan(15 * Math.PI / 180)); cam.lookAt(0, 1.7 - Math.tan(pitch) * 1000, -1000); }
+  cam.updateProjectionMatrix();
+  if (qs.get('tex') !== '0') {
+    try { const { loadFooterTextures } = await import('../foot-tex.js');
+      const T = loadFooterTextures({ THREE, renderer: r, quality: q, base: new URL('../assets/tex/', location.href).href });
+      const ap = () => F.applyTextures(T); if (T.onReady) T.onReady(ap); T.ready?.then(ap); setInterval(ap, 500); window.TEX = T;
+    } catch (e) { console.warn('tex', e.message); }
+  }
+  let n = 0; const loop = t => { F.update?.(t / 1000); r.render(scene, cam); n++; requestAnimationFrame(loop); }; requestAnimationFrame(loop);
+  r.render(scene, cam);
+  document.getElementById('info').textContent = `build ${tb.toFixed(0)} ms | tris ${F.stats.tris} | model calls ${F.stats.drawCalls} | frame calls ${r.info.render.calls} tris ${r.info.render.triangles}`;
+  window.F = F; window.R = r; setTimeout(() => (window.DONE = true), +(qs.get('wait') || 3000));
+}
+</script></body></html>

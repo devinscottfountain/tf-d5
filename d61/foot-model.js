@@ -1,0 +1,132 @@
+// D6.1 footer: Mars dusk settlement (Figma 22951:8878), procedural, real scale in metres.
+// Frame: the compositor's eye is (0, 1.7, 0) looking down -z, ground under it is y = 0. Settlement pad ~280..450 m out,
+// ~6.8 m below the eye; ridge line 1.3..2.1 km out. Big glass dome left of centre, hab row across the middle, two
+// Starships standing right (nearer one taller in frame), a third far left against the ridge, rover in front of the row.
+//
+// Texture roles read from tex.get(role) (d61/foot-tex.js). Geometry UVs are baked in metres / TS[role]; if a set arrives
+// with a different texScale the UVs are rescaled once.
+//   regolith       ground grid (map, normal, ORM)             mars_rock      scattered rocks + foreground boulders
+//   dome_glass     glass panels: roughnessMap + dirtMap (dust raises alpha and warms the tint)
+//   dome_frame     struts, hubs, ribs, saddles, masts, roof kit   foliage    planted dome interiors (vertex colour tints)
+//   habitat_panel  cylinders, units, opaque domes, vestibules, pads   stainless  Starships + tank farm
+//   rover_paint    rover body
+// Untextured: soil, dark (heat tiles, tyres, canopy, skirts), solar, pad, emissive window / lamp / beacon.
+//
+// buildFooterScene({ THREE, quality }) -> { root, lights, applyTextures(tex), update(t), anchors, stats, dispose }
+import { TS, buckets } from './foot-model-kit.js';
+import { texBinder, placeholders } from '../d6/hero-model-kit.js';
+import { buildTerrain } from './foot-model-terrain.js';
+import { buildColony } from './foot-model-colony.js';
+import { buildStarships } from './foot-model-starship.js';
+
+export const FOOT_ROLES = ['regolith', 'mars_rock', 'dome_glass', 'dome_frame', 'foliage', 'habitat_panel', 'stainless', 'rover_paint'];
+
+export function buildFooterScene({ THREE, quality = 'high' } = {}) {
+  const high = quality !== 'low';
+  const root = new THREE.Group(); root.name = 'd61-footer-model';
+  const S = (o, role) => { const m = new THREE.MeshStandardMaterial(o); m.userData.texScale = TS[role] || 1; m.userData.role = role; return m; };
+  const HDR = (r, g, b) => new THREE.MeshBasicMaterial({ color: new THREE.Color(r, g, b), fog: false });
+
+  const M = {
+    regolith: S({ color: 0x7a4128, roughness: 0.96, vertexColors: true }, 'regolith'),
+    rock: S({ color: 0x4e2c1f, roughness: 0.9 }, 'mars_rock'),
+    glass: S({ color: 0xdfe6ea, roughness: 0.06, metalness: 0.1, transparent: true, opacity: 0.16, depthWrite: false, side: THREE.DoubleSide, envMapIntensity: 1.6 }, 'dome_glass'),
+    frame: S({ color: 0xd9d5cd, roughness: 0.5, metalness: 0.35 }, 'dome_frame'),
+    foliage: S({ color: 0x46702c, roughness: 0.78, vertexColors: true }, 'foliage'),
+    soil: S({ color: 0x24170f, roughness: 1 }),
+    hab: S({ color: 0xcdc8bf, roughness: 0.62, metalness: 0.05 }, 'habitat_panel'),
+    stainless: S({ color: 0xc8cbcf, roughness: 0.26, metalness: 1 }, 'stainless'),
+    rover: S({ color: 0xe4e1da, roughness: 0.48 }, 'rover_paint'),
+    dark: S({ color: 0x121315, roughness: 0.55, metalness: 0.2 }),
+    solar: S({ color: 0x0e1828, roughness: 0.22, metalness: 0.7 }),
+    pad: S({ color: 0x4d4642, roughness: 0.95 }),
+    window: HDR(1.9, 1.2, 0.6),
+    lamp: HDR(3.6, 2.1, 0.9),
+    beacon: HDR(5, 0.5, 0.25),
+  };
+
+  // glass: Fresnel lifts alpha toward grazing angles (reflective rims, clear centres); dust mask adds haze
+  const black = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1); black.needsUpdate = true;
+  const glassU = { uDust: { value: black }, uDustK: { value: 0.35 } };
+  M.glass.onBeforeCompile = sh => {
+    Object.assign(sh.uniforms, glassU);
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nuniform sampler2D uDust; uniform float uDustK;')
+      .replace('#include <opaque_fragment>', `{ float fr = pow(1.0 - abs(dot(normalize(vViewPosition), normal)), 3.0);
+        float du = texture2D(uDust, vMapUv).r * uDustK;
+        outgoingLight = mix(outgoingLight, vec3(0.42, 0.24, 0.14) * (totalDiffuse + 0.02), du * 0.6);
+        diffuseColor.a = clamp(mix(diffuseColor.a, 0.9, fr) + du * 0.35, 0.0, 1.0); }
+      #include <opaque_fragment>`);
+  };
+  M.glass.customProgramCacheKey = () => 'd61-glass';
+  // foliage: leaves between us and the glow transmit it (strongest at grazing), plus a faint grow-light fill
+  const leafU = { uBack: { value: new THREE.Color(0.55, 0.42, 0.12) } };
+  M.foliage.onBeforeCompile = sh => {
+    Object.assign(sh.uniforms, leafU);
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nuniform vec3 uBack;')
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        totalEmissiveRadiance += uBack * diffuseColor.rgb * (0.25 + 0.75 * pow(1.0 - abs(dot(normal, normalize(vViewPosition))), 2.0));`);
+  };
+  M.foliage.customProgramCacheKey = () => 'd61-foliage';
+  M.glass.map = placeholders(THREE).map; // white 1x1: gives the glass shader vMapUv for the dust mask
+
+  // ---------------------------------------------------------------- build
+  const B = buckets(THREE);
+  const terrain = buildTerrain({ THREE, group: root, M, high });
+  const colony = buildColony({ THREE, B, M, high });
+  const ships = buildStarships({ THREE, B, M, high, ships: [
+    { x: 72, z: -408, ry: 0.5 },                         // near, taller in frame
+    { x: 185, z: -700, ry: -0.3 },                       // far right
+    { x: -357, z: -1000, ry: 0.9, lod: 0 },              // far left, against the ridge
+  ] });
+  const merged = B.flush(root, 'colony');
+  for (const m of merged) if (m.material === M.glass) m.renderOrder = 2;
+
+  // ---------------------------------------------------------------- lights: warm fill inside the big dome (compositor owns key + sky)
+  const lights = [];
+  if (high) {
+    const d = colony.big, pl = new THREE.PointLight(0xffa860, 260, d.R * 1.8, 2);
+    pl.position.set(d.x, d.y + d.R * 0.55, d.z + d.R * 0.15); pl.userData.role = 'domeGlow'; lights.push(pl); root.add(pl);
+  }
+
+  // ---------------------------------------------------------------- textures
+  const tb = texBinder(THREE), meshesBy = new Map();
+  root.traverse(o => { if (o.isMesh) { const k = o.material; (meshesBy.get(k) || meshesBy.set(k, []).get(k)).push(o); } });
+  const rescaled = new Set();
+  const fitUV = (mat, set) => { // rebake UVs if the set's texScale differs from the one we baked at
+    const ts = set.texScale; if (ts == null) return;
+    const [su, sv] = Array.isArray(ts) ? ts : [ts, ts], b = mat.userData.texScale; if (Math.abs(su - b) < 1e-6 && Math.abs(sv - b) < 1e-6) return;
+    for (const m of meshesBy.get(mat) || []) { const g = m.geometry; if (rescaled.has(g)) continue; rescaled.add(g);
+      const uv = g.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * b / su, uv.getY(i) * b / sv); uv.needsUpdate = true; }
+  };
+  const bind = (mat, role, o = {}) => tb.bind(mat, role, { ...o, onApply: set => fitUV(mat, set) });
+  bind(M.regolith, 'regolith', { color: 0xc8b0a4, normalScale: 0.9 });
+  bind(M.rock, 'mars_rock', { color: 0xb09888, normalScale: 1 });
+  bind(M.frame, 'dome_frame', { color: 0xffffff, normalScale: 0.5 });
+  bind(M.foliage, 'foliage', { color: 0xffffff, normalScale: 0.8 });
+  bind(M.hab, 'habitat_panel', { color: 0xffffff, normalScale: 0.5 });
+  bind(M.stainless, 'stainless', { color: 0xffffff, maps: ['normalMap', 'roughnessMap'], normalScale: 0.3, roughness: 1 });
+  bind(M.rover, 'rover_paint', { color: 0xffffff, normalScale: 0.4 });
+  tb.bind(M.glass, 'dome_glass', { maps: ['roughnessMap'], custom: set => {
+    if (set.roughnessMap && M.glass.roughnessMap !== set.roughnessMap) { M.glass.roughnessMap = set.roughnessMap; M.glass.roughness = 1; fitUV(M.glass, set); }
+    if (set.dirtMap) glassU.uDust.value = set.dirtMap; } });
+  M.stainless.metalnessMap = null; // ORM blue channel unused: steel is metal everywhere
+
+  // ---------------------------------------------------------------- per frame: beacons blink, leaves breathe with the glow
+  const beacon = M.beacon.color.clone();
+  function update(t) {
+    const ph = (t * 0.7) % 1; M.beacon.color.copy(beacon).multiplyScalar(ph < 0.07 ? 1 : 0.08);
+    leafU.uBack.value.setRGB(0.55, 0.42, 0.12).multiplyScalar(1 + 0.06 * Math.sin(t * 0.6));
+  }
+
+  // stats
+  let tris = 0, calls = 0; root.traverse(o => { if (!o.isMesh) return; calls += o.material.transparent && o.material.side === THREE.DoubleSide ? 2 : 1;
+    const g = o.geometry, n = (g.index ? g.index.count : g.attributes.position.count) / 3; tris += n * (o.isInstancedMesh ? o.count : 1); });
+
+  return {
+    root, lights, update,
+    applyTextures(tex) { tb.apply(tex); },
+    anchors: { domes: colony.domes, rover: colony.rover, ships, glass: M.glass, foliage: leafU.uBack },
+    materials: M, stats: { tris: Math.round(tris), drawCalls: calls },
+    dispose() { root.traverse(o => o.isMesh && o.geometry.dispose()); terrain.dispose(); Object.values(M).forEach(m => m.dispose()); black.dispose(); },
+  };
+}

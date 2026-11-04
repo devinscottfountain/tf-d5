@@ -11,6 +11,9 @@ const q = (s, r = document) => r.querySelector(s), qa = (s, r = document) => [..
 // Mars mode (D6): set window.D5_CFG = { mode: 'mars' } before import. Only the Mars approach + Jezero build, driven by .d5-track
 // wherever it sits on the page; no Austin site, Earth, Moon, intro, veil or scroll lock. Everything else is the default D5 path.
 const CFG = window.D5_CFG || {}, MM = CFG.mode === 'mars', AHEAD = CFG.ahead ?? 1; // AHEAD: viewports before the track to wake up
+// D6.1 flags (Mars mode only): look 'lit' = front-left lit full disc + rim halo; beats = title / SpaceX lines / colony line on one track;
+// onProgress(p, beat) runs every frame the track is live.
+const LIT = MM && CFG.look === 'lit', BEATS = MM && !!CFG.beats, onProg = MM && typeof CFG.onProgress === 'function' ? CFG.onProgress : null;
 const host = q('.d5-canvas') || (MM ? document.body.appendChild(Object.assign(document.createElement('div'), { className: 'd5-canvas' })) : null);
 
 // ---------- renderer + bloom (the Expanse look is mostly glow against black) ----------
@@ -65,7 +68,7 @@ const MOON0 = new THREE.Vector3(26, 6, -42), MARS0 = new THREE.Vector3(-36, -4, 
 const EARTH = new THREE.Vector3(0, 0, 0), MOON = MOON0.clone().multiplyScalar(SPREAD.moon), MARS = MARS0.clone().multiplyScalar(SPREAD.mars);
 // Earth/Moon/Mars: user color maps + NASA night lights, clouds w/ shadows, ocean glint, relief, single-scatter atmospheres
 const planets = createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS, assetBase: ASSETS,
-  ...(MM ? { skip: ['d5-earth.webp', 'earth_spec.webp', 'earth_normal.webp', 'earth_lights.webp', 'earth_clouds.webp', 'd5-moon.webp', 'moon_normal.webp'] } : {}) });
+  ...(LIT ? { look: 'lit' } : {}), ...(MM ? { skip: ['d5-earth.webp', 'earth_spec.webp', 'earth_normal.webp', 'earth_lights.webp', 'earth_clouds.webp', 'd5-moon.webp', 'moon_normal.webp'] } : {}) });
 const { earth, moon, mars } = planets;
 if (MM) { scene.remove(planets.earth, planets.clouds, planets.earthAtmo, planets.moon); planets.loadDeferred(); } // Mars maps now, Earth/Moon never
 planets.moon.material.uniforms.uRelief.value = 0.35; planets.mars.material.uniforms.uRelief.value = 0.4; // relief is synthesized, keep it a whisper so the real maps lead
@@ -476,8 +479,17 @@ function pchip(xs, ys, m0, mN) {
 // Each shot is [scroll, position, look target, lens]. Position rides a centripetal spline; scroll maps to distance
 // along it through a monotone curve, so it slows near each planet (the copy reads) and runs between them without
 // ever stopping. The look direction is its own monotone curve over the same scroll, so turns are gentle and never reverse.
-const CA = MM ? 0.4 : 0.58; // the entry flash: everything after this is the Jezero timelapse
-const SHOTS = (MM ? [
+const CA = BEATS ? 0.5 : MM ? 0.4 : 0.58; // the entry flash: everything after this is the Jezero timelapse
+const SHOTS = (BEATS ? [
+  // beats: the title (gap framing, see frameBehind), then a long hold on the whole disc for the two SpaceX lines (frameBeat sets the
+  // size; the path only drifts a few degrees round the planet so it stays alive), then the same push and dive into the flash.
+  [-0.15, M3(MARS, [92, 26, 132]), MARS, 28],
+  [0.00, M3(MARS, [70, 20, 100]), MARS, 30],
+  [0.18, M3(MARS, [30, 10, 38]), MARS, 30],
+  [0.38, M3(MARS, [21, 6, 36]), MARS, 32],
+  [0.45, M3(MARS, [10, 2.7, 23]), MARS, 40],
+  [CA, DIVE, MARS, 52]
+] : MM ? [
   // Mars mode: already under way in black space, Mars small among the stars; arcs in onto the D5 arrival framing, then the same dive.
   // Negative scroll is the fade-in while the track rises into view (progress clamps at MM_P0), so the camera is moving from the first frame.
   [-0.15, M3(MARS, [92, 26, 132]), MARS, 28],
@@ -576,6 +588,10 @@ if (!MM) ScrollTrigger.create({ trigger: track, start: 'top top', end: 'bottom b
 // each overlay owns a scroll window [a, b]; it rises in, holds, then drifts out. Sections in the plain page below are left alone.
 // Mars mode: only d5-* classed [data-w] elements (the host page may use data-w elsewhere), windows straight from the markup.
 const ovs = qa('[data-w]').filter(el => !el.closest('.d5-after') && (!MM || [...el.classList].some(c => c.startsWith('d5')))).map(el => { const [a, b] = el.dataset.w.split(',').map(Number); return { el, a, b }; });
+// beats: the page's copy blocks (.d61-mbeat[data-beat="2"|"3"]) ride the same overlay fades. A data-w on one overrides its window;
+// several blocks in one beat come in one after another.
+if (BEATS) { const nb = {}; qa('.d61-mbeat[data-beat]').forEach(el => { const k = el.dataset.beat, i = nb[k] = (nb[k] ?? -1) + 1;
+  const [a, b] = el.dataset.w ? el.dataset.w.split(',').map(Number) : k === '2' ? [0.21 + 0.05 * i, 0.41] : [0.6 + 0.04 * i, 9]; ovs.push({ el, a, b }); }); }
 const WIN = { 'd5-hero': [-1, 0.06], 'd5-mission': [0.43, 0.55], 'd5-belt': [0.8, 9] };
 if (!MM) ovs.forEach(o => { const w = WIN[o.el.classList[0]]; if (w) [o.a, o.b] = w; });
 const win = (p, a, b, f = 0.035) => Math.min(THREE.MathUtils.smoothstep(p, a - f, a + f), 1 - THREE.MathUtils.smoothstep(p, b - f, b + f));
@@ -734,6 +750,38 @@ function frameBehind(inSpace) {
   const b = titleEl.getBoundingClientRect(), sx = (b.left + g.x - (W / 2 + nx * W / 2)) * k, sy = (b.top + g.y - (H / 2 - ny * H / 2)) * k;
   cam.setViewOffset(W, H, -sx, -sy, W, H); framed = true;
 }
+// beats: the SpaceX hold. Mars sits centred at 0.27 of the viewport height (0.4 of the width on narrow screens), sized by moving the
+// camera along its line to the planet as frameBehind does; the title's gap framing blends over it on the way in.
+const B2 = [0.13, 0.22, 0.38, 0.46]; // ramp in, held, ramp out
+function frameBeat(inSpace) {
+  const k = inSpace ? sstep(sm, B2[0], B2[1]) * (1 - sstep(sm, B2[2], B2[3])) : 0; if (k <= 0) return;
+  const H = innerHeight, th = Math.tan(cam.fov * Math.PI / 360), d = cam.position.distanceTo(MARS); if (d < 6.6) return;
+  const rNat = Math.tan(Math.asin(6.05 / d)) / th * H / 2, rT = rNat + (Math.min(0.27 * H, 0.4 * innerWidth) - rNat) * k;
+  const f = Math.max(6.6 / d, 6.05 / Math.sin(Math.atan(rT * 2 * th / H)) / d);
+  pos.sub(MARS).multiplyScalar(f).add(MARS); cam.position.sub(MARS).multiplyScalar(f).add(MARS); cam.updateMatrixWorld();
+}
+// lit look: a key light fixed in camera space (front, left, a little high), so whatever the path does the disc reads full and lit
+// from the upper left. Mars turns slowly with scroll, Valles Marineris across the face on the hold. A halo card behind the
+// planet adds the soft glow off the lit limb; the atmosphere shell keeps its own scattered rim.
+const LIT_DIR = new THREE.Vector3(-0.62, 0.42, 0.66).normalize(), litL = new THREE.Vector3(), litQ = new THREE.Quaternion();
+const halo = LIT ? new THREE.Mesh(new THREE.PlaneGeometry(30, 30), new THREE.ShaderMaterial({
+  uniforms: { uR: { value: 6 }, uL2: { value: new THREE.Vector2(LIT_DIR.x, LIT_DIR.y).normalize() }, uI: { value: 1 } },
+  vertexShader: 'varying vec2 vQ; void main(){ vQ = position.xy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.); }',
+  fragmentShader: `uniform float uR, uI; uniform vec2 uL2; varying vec2 vQ;
+  void main(){ float q = length(vQ), d = max(q / uR - 1., 0.); vec2 dir = vQ / max(q, 1e-4);
+    float side = smoothstep(-0.6, 1., dot(dir, uL2));
+    float g = exp(-d * 14.) * 0.55 + exp(-d * 4.) * 0.16 + exp(-d * 1.6) * 0.04;
+    gl_FragColor = vec4(vec3(1.0, 0.52, 0.24) * g * mix(0.1, 1., side) * uI, 0.); }`,
+  transparent: true, depthWrite: false, blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor
+})) : null;
+if (halo) { halo.position.copy(MARS); halo.renderOrder = 3; halo.frustumCulled = false; scene.add(halo); spaceMeshes.push(halo); }
+function litMars(t) {
+  mars.rotation.y = 0.26 + (sm - 0.28) * 0.45 + t * 0.002;
+  litL.copy(LIT_DIR).applyQuaternion(cam.quaternion);
+  planets.marsAtmo.material.uniforms.uSun.value.copy(litL);
+  litQ.copy(mars.quaternion).invert(); mars.material.uniforms.uSun.value.copy(litL).applyQuaternion(litQ);
+  const d = cam.position.distanceTo(MARS); halo.quaternion.copy(cam.quaternion); halo.material.uniforms.uR.value = 6 / Math.sqrt(Math.max(0.05, 1 - 36 / (d * d)));
+}
 renderer.setAnimationLoop(() => {
   if (!visible || (!booted && !skip)) return; // under the veil nothing draws until the boot warm-up is done
   if (MM && !marsGate()) return;
@@ -824,6 +872,7 @@ renderer.setAnimationLoop(() => {
   cam.up.copy(camUp);
   if (Math.abs(cam.fov - fov) > 0.01) { cam.fov = fov; cam.updateProjectionMatrix(); }
   cam.position.copy(pos); cam.lookAt(look);
+  if (BEATS) frameBeat(mode === 'space');
   if (titleEl) frameBehind(mode === 'space');
   if (behind.length) maskBehind(mode === 'space');
   // dust: smoothed camera velocity drives streak length (a short virtual shutter)
@@ -836,6 +885,7 @@ renderer.setAnimationLoop(() => {
   // Earth holds Austin under the opening frame until the pull out lands, then spins on from there
   if (introOn) spinOff = SPIN_LAND - t * EARTH_SPIN;
   planetArg.t = t; planetArg.spin = spinOff; planets.update(planetArg);
+  if (LIT && mode === 'space') litMars(t);
   // Mars mode: the night-side dome lights are sub-pixel from far out and read as specks inside the dark disc, so they only come up on the dive
   if (MM) planets.mars.material.uniforms.uDomes.value = 1 - sstep(pos.distanceTo(MARS), 14, 30);
   if (sky) { sky.update(pos); sky.group.visible = !inCol && !inSite; }
@@ -845,7 +895,7 @@ renderer.setAnimationLoop(() => {
   sunCore.visible = streak.visible = !inSite;
   sunCore.position.copy(pos).addScaledVector(sunDir, 1600); streak.position.copy(sunCore.position);
   const facing = Math.max(0, tmp.copy(look).sub(pos).normalize().dot(sunDir));
-  const flare = sstep(f2, 0.55, 1) * (0.25 + facing * 0.9) * (inCol ? 0.22 * (1 - sstep(colSun.y, 0.02, -0.04)) : 1);
+  const flare = sstep(f2, 0.55, 1) * (0.25 + facing * 0.9) * (inCol ? 0.22 * (1 - sstep(colSun.y, 0.02, -0.04)) : LIT ? 0 : 1); // lit look: the key light is behind the lens, no sun in frame
   sunCore.scale.setScalar(260 * flare + 40); streak.scale.set(2600 * flare, 26 * flare, 1);
   streak.material.opacity = 0.55 * flare; sunCore.material.opacity = Math.min(1, flare * 1.3);
   bloom.strength = 0.6 + flare * 0.3;
@@ -882,11 +932,13 @@ renderer.setAnimationLoop(() => {
     const auV = a[3] ? 1 + Math.floor(cg * 667) : Math.round((a[2] + (b[2] - a[2]) * THREE.MathUtils.clamp((sm - a[0]) / span, 0, 1)) * 100), k = a[3] ? 1e6 + auV : 2e6 + auV;
     if (k !== lastAu) { lastAu = k; txt(au, a[3] ? 'SOL ' + String(auV).padStart(4, '0') : (auV / 100).toFixed(2) + ' AU'); }
   }
+  if (onProg) onProg(clamp01(sm), beatOf(sm));
   { const f = Math.round((MM ? clamp01(sm) : sm) * 1e4); if (fill && f !== fill._d5f) { fill._d5f = f; fill.style.transform = `scaleY(${f / 1e4})`; } }
   post.render();
 });
 
 // rail dots sit at their scroll position and jump there on click
+const beatOf = s => (s < 0.15 ? 1 : s < CA ? 2 : 3);
 const STOPS = MM ? [['Mars', 0], ['Jezero', +(CA + 0.33 * (1 - CA)).toFixed(3)]] : [['Earth', 0], ['Luna', 0.3], ['Mars', 0.47], ['Jezero', 0.72]];
 qa('.d5-stop').forEach((s, i) => { if (STOPS[i]) { s.textContent = STOPS[i][0]; s.dataset.p = STOPS[i][1]; } else s.remove(); });
 qa('.d5-stop').forEach(s => (s.style.top = (+s.dataset.p * 100) + '%'));
@@ -955,7 +1007,7 @@ const bootP = (MM ? new Promise(r => (wake = r)).then(() => { mmWarm = true; ret
 const loadP = MM ? null : Promise.race([Promise.all([site.ready, planets.ready]), wait(2500)]);
 window.__d5.boot = bootP;
 if (MM) {
-  window.__d5.mars = { get p() { return sm; }, get on() { return mmOn; }, get near() { return near; } }; // eased track progress for the host page (rail etc.)
+  window.__d5.mars = { get p() { return sm; }, get on() { return mmOn; }, get near() { return near; }, get beat() { return beatOf(sm); } }; // eased track progress for the host page (rail etc.)
   const io = new IntersectionObserver(es => { near = es[es.length - 1].isIntersecting; if (near) { wake(); scheduleColony(); } },
     { rootMargin: `${AHEAD * 100}% 0px ${AHEAD * 100}% 0px` });
   if (track) io.observe(track);

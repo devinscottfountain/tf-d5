@@ -184,6 +184,37 @@ void main(){
   gl_FragColor = vec4(col, 1.);
 }`;
 
+// Mars, lit look (D6.1, D5_CFG.look = 'lit'): front-left key light on the full disc, like a hero render. The colour map carries
+// real shaded relief (Valles, Tharsis, crater rims), so its high-passed luminance doubles as a bump that answers the light;
+// the synthetic crater normals stay underneath. Tap spacing follows the screen footprint, so it never aliases or goes soft.
+const MARS_LIT_FRAG = /* glsl */ `
+uniform sampler2D tMap, tNorm; uniform vec3 uSun; uniform float uSunI, uRelief, uDomes, uBump;
+varying vec3 vP; varying vec2 vUv; varying vec3 vV;
+${GLSL_COMMON}
+float lumA(vec2 uv){ return dot(texture2D(tMap, uv).rgb, vec3(.35, .5, .15)); }
+void main(){
+  vec3 p = normalize(vP), V = normalize(vV), L = normalize(uSun);
+  float mu = dot(p, L);
+  vec3 alb = texture2D(tMap, vUv).rgb;
+  vec2 fw = fwidth(vUv); fw.x = min(fw.x, 0.004);            // the atan seam has a huge u derivative: cap it
+  vec2 st = clamp(fw * 1.2, vec2(1. / 4096., 1. / 2048.), vec2(0.004));
+  float hx = lumA(vUv + vec2(st.x, 0.)) - lumA(vUv - vec2(st.x, 0.)), hy = lumA(vUv + vec2(0., st.y)) - lumA(vUv - vec2(0., st.y));
+  vec3 nt = texture2D(tNorm, vUv).rgb * 2. - 1.; nt.xy *= uRelief;
+  nt.xy -= vec2(hx, hy) * uBump * (1.5 / 4096.) / st.x;      // gradient per texel, so the relief strength holds at every zoom
+  vec3 N = perturb(p, normalize(nt), 1.);
+  float l = dot(alb, vec3(.3, .55, .15));
+  alb = max(mix(vec3(l), alb, 1.18), 0.) * vec3(1.04, 0.93, 0.86); // a touch richer and warmer, as in the reference renders
+  vec3 sunCol = sunTrans(mu, vec3(0.05, 0.085, 0.15));
+  float m0 = max(dot(N, L), 0.) * smoothstep(-0.05, 0.1, mu), m1 = max(dot(p, V), 0.05);
+  float val = mix(m0, 2. * m0 / (m0 + m1), 0.18);             // a little lunar-Lambert so the lit limb holds its colour
+  vec3 col = alb * sunCol * val * uSunI;
+  col += alb * vec3(0.95, 0.60, 0.36) * 0.05 * smoothstep(-0.4, 0.5, mu);    // dust-scattered fill: the far side stays a dark rust, never black
+  col += vec3(0.9, 0.45, 0.25) * 0.03 * exp(-pow((mu + 0.02) / 0.12, 2.));    // warm terminator
+  float rim = pow(1. - m1, 3.) * smoothstep(-0.1, 0.5, mu);                  // limb haze on the lit side, meets the atmosphere shell
+  col += vec3(1.0, 0.62, 0.36) * rim * 0.22 * uSunI;
+  gl_FragColor = vec4(col, 1.);
+}`;
+
 // ---------------------------------------------------------------------------------------------
 // Atmosphere shell: single scattering (Rayleigh + Mie), analytic ray/sphere, 16 view samples x 3 light samples.
 // Samples cluster around the ray's lowest point so a thin limb is resolved. Premultiplied output.
@@ -240,7 +271,7 @@ void main(){
 }`;
 
 // ---------------------------------------------------------------------------------------------
-export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS, assetBase, deferAfter = 20000, skip = null }) { // skip: map names never fetched (D5 Mars mode)
+export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS, assetBase, deferAfter = 20000, skip = null, look = '' }) { // skip: map names never fetched (D5 Mars mode); look 'lit': D6.1 Mars shader
   const R_EARTH = 10, R_MOON = 2.7, R_MARS = 6;
   const anis = Math.min(8, renderer.capabilities.getMaxAnisotropy());
   const loader = new THREE.TextureLoader(); loader.setCrossOrigin('anonymous');
@@ -309,8 +340,9 @@ export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS
     tMap: U('d5-mars.webp', true, dot1(150, 70, 40, true), true), tNorm: U('mars_normal.webp', false, dot1(128, 128, 255), true),
     uSun: sunVec(), uSunI: { value: 2.2 }, uRelief: { value: 1.25 }, uDomes: { value: 1 }
   };
-  const mars = new THREE.Mesh(new THREE.SphereGeometry(R_MARS, 192, 96),
-    new THREE.ShaderMaterial({ vertexShader: PLANET_VERT, fragmentShader: MARS_FRAG, uniforms: marsU }));
+  if (look === 'lit') marsU.uBump = { value: 3.2 };
+  const mars = new THREE.Mesh(new THREE.SphereGeometry(R_MARS, look === 'lit' ? 256 : 192, look === 'lit' ? 128 : 96), // lit: the full limb is on show, keep it round when big
+    new THREE.ShaderMaterial({ vertexShader: PLANET_VERT, fragmentShader: look === 'lit' ? MARS_LIT_FRAG : MARS_FRAG, uniforms: marsU }));
   mars.position.copy(MARS); scene.add(mars);
 
   // ---------- atmospheres ----------
