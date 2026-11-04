@@ -23,11 +23,11 @@ vec3 skyRad(vec3 d, float stars){
   // night base: dusty, a little brighter and browner at the horizon
   vec3 c=mix(vec3(.0085,.0046,.0030), vec3(.0011,.0010,.0016), pow(smoothstep(0.,.55,hc),.5));
   // twilight band: wide in azimuth, thin in elevation; grows taller and wider as the sun comes up
-  float sw=.3+.14*uLift, H=.022+.03*uLift;
+  float sw=.3+.14*uLift, H=.02+.024*uLift;
   float band=exp(-az*az/(sw*sw))*exp(-hc/H);
   float aur=exp(-az*az/(.012+.02*uLift))*exp(-hc/(H*.55));
   float fwd=hg(cg,.85)*exp(-hc/(H*1.4));
-  vec3 warm=vec3(1.,.27,.07), amber=vec3(1.,.43,.13), core=vec3(1.,.64,.38);
+  vec3 warm=vec3(1.,.22,.05), amber=vec3(1.,.37,.1), core=vec3(1.,.5,.24);
   c+=uGlow*(warm*band*.5 + amber*aur*.8 + core*fwd*.25);
   // the antisolar sky stays dark; a faint warm skirt runs the whole horizon
   c+=uGlow*vec3(.03,.011,.004)*exp(-hc/.04);
@@ -76,7 +76,7 @@ export const ATMOS_FRAG = /* glsl */ `
 ${NOISE}
 ${SKY}
 uniform sampler2D tColor, tDepth; uniform mat4 uInvProj, uCamWorld; uniform vec3 uCamPos;
-uniform float uSigma, uHd, uDrift, uHazeK, uNear, uFar; uniform vec2 uWind;
+uniform float uSigma, uHd, uDrift, uHazeK; uniform vec2 uWind;
 varying vec2 vUv;
 void main(){
   vec3 col=texture2D(tColor,vUv).rgb; float z=texture2D(tDepth,vUv).r;
@@ -143,7 +143,7 @@ void main(){
   // vignette: edges (Figma ellipses), the lower half held down for the logotype and links, top melts into the page
   float yt=1.-vUv.y; vec2 e=(vUv-vec2(.5,.56))*vec2(1.,1.25);
   float v=mix(1.,1.-uVig,smoothstep(.3,.95,length(e)*1.3));
-  v*=mix(1.,1.-uLow,smoothstep(.4,.98,yt));
+  v*=mix(1.,1.-uLow,smoothstep(.36,.9,yt));
   v*=smoothstep(0.,uTop,yt);
   c*=v;
   vec3 o=oetf(c);

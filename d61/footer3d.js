@@ -127,7 +127,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
   const fsMat = (frag, uniforms, defines = {}) => new THREE.ShaderMaterial({ uniforms, defines, vertexShader: FS_VERT, fragmentShader: frag, depthTest: false, depthWrite: false });
   const eqMat = fsMat(EQ_FRAG, skyU, skyDefs);
   const atmosU = { ...skyU, tColor: { value: rtScene.texture }, tDepth: { value: depthTex }, uInvProj: { value: new THREE.Matrix4() }, uCamWorld: { value: new THREE.Matrix4() }, uCamPos: { value: new V3() },
-    uSigma: { value: 1 / 2600 }, uHd: { value: 900 }, uDrift: { value: HIGH ? 0.6 : 0.4 }, uHazeK: { value: 1 }, uNear: { value: 0.1 }, uFar: { value: 6000 }, uWind: { value: new THREE.Vector2(0.012, 0.004) } };
+    uSigma: { value: 1 / 2600 }, uHd: { value: 900 }, uDrift: { value: HIGH ? 0.6 : 0.4 }, uHazeK: { value: 1 }, uWind: { value: new THREE.Vector2(0.012, 0.004) } };
   const atmosMat = fsMat(ATMOS_FRAG, atmosU, skyDefs);
   const preMat = fsMat(PRE_FRAG, { tSrc: { value: rtA.texture }, uTexel: { value: new THREE.Vector2() }, uThr: { value: 0.55 }, uKnee: { value: 0.35 } });
   const blurMats = [];
@@ -135,7 +135,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
   const finU = {
     tSrc: { value: rtA.texture }, tB0: { value: rtL[0].texture }, tB1: { value: rtL[1].texture }, tB2: { value: rtL[2].texture }, tB3: { value: rtL[3].texture }, tB4: { value: rtL[LV - 1].texture },
     uBw: { value: new THREE.Vector4(0.4, 0.3, 0.17, 0.09) }, uBw4: { value: 0.04 }, uBloom: { value: 0.5 }, uExp: { value: 1 }, uGrain: { value: HIGH ? 0.05 : 0.035 }, uTime: { value: 0 },
-    uVig: { value: 0.55 }, uLow: { value: 0.5 }, uTop: { value: 0.1 }, uLogo: { value: new THREE.Vector4() }, uHalo: { value: 0 }, uHaloC: { value: new THREE.Color(0.06, 0.022, 0.009) }, uRes: { value: new THREE.Vector2() }
+    uVig: { value: 0.55 }, uLow: { value: 0.72 }, uTop: { value: 0.1 }, uLogo: { value: new THREE.Vector4() }, uHalo: { value: 0 }, uHaloC: { value: new THREE.Color(0.06, 0.022, 0.009) }, uRes: { value: new THREE.Vector2() }
   };
   const finMat = fsMat(FINAL_FRAG, finU, LV > 4 ? { B5: '' } : {});
   function pass(mat, target) { fs.material = mat; renderer.setRenderTarget(target); renderer.render(fsScene, fsCam); }
@@ -185,7 +185,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
   }
 
   // ---------------------------------------------------------------- sunrise + shimmer state for a given p and time
-  const look0 = { glow: 0, rest: 0 };
+  const tune = { glow: 1, haze: 1, sigma: 1, key: 1, bloom: 1, exposure: 1 };   // QA multipliers
   function light(p, t) {
     const e = ease(p), rest = sstep(0.82, 1, p);
     // at rest: slow breathing on the glow (two incommensurate noises, about 10 s), dust drifts
@@ -193,19 +193,18 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
     const el = (SUN_EL[0] + (SUN_EL[1] - SUN_EL[0]) * e) * Math.PI / 180;
     sun.set(Math.sin(SUN_AZ) * Math.cos(el), Math.sin(el), -Math.cos(SUN_AZ) * Math.cos(el));
     const glow = (0.22 + 0.78 * e) * breath;
-    skyU.uGlow.value = 1.35 * glow; skyU.uLift.value = e; skyU.uTime.value = t;
+    skyU.uGlow.value = 1.35 * glow * tune.glow; skyU.uLift.value = e; skyU.uTime.value = t;
     skyU.uStars.value = HIGH ? 1 - 0.75 * e : 0;
     // key from the glow, just above the ridge: backlight, rims the glass, steel and the dome edges
-    glowLight.position.set(Math.sin(SUN_AZ) * 1000, 60 + 40 * e, -Math.cos(SUN_AZ) * 1000);
+    glowLight.position.set(Math.sin(SUN_AZ) * 1000, 150 + 80 * e, -Math.cos(SUN_AZ) * 1000);   // the bright sky patch, not the sun: high enough that the dusty ground does not mirror it
     glowLight.target.position.set(0, 0, 0);
-    glowLight.color.copy(glowColLow).lerp(glowCol, e); glowLight.intensity = 0.3 + 1.3 * e * breath;
+    glowLight.color.copy(glowColLow).lerp(glowCol, e); glowLight.intensity = (0.12 + 0.6 * e * breath) * tune.key;
     hemi.intensity = 0.18 + 0.12 * e;
     // haze: denser and darker before the sun, warmer as it rises (the inscatter is the sky's own light)
-    atmosU.uSigma.value = (1 / 3200) * (1.15 - 0.2 * e); atmosU.uHazeK.value = 0.32 + 0.16 * e; atmosU.uDrift.value = (HIGH ? 0.6 : 0.4) * (0.5 + 0.5 * rest);
-    finU.uExp.value = 1.0 + 0.08 * e;
-    finU.uBloom.value = 0.16 + 0.16 * e;
+    atmosU.uSigma.value = (1 / 3200) * (1.15 - 0.2 * e) * tune.sigma; atmosU.uHazeK.value = (0.32 + 0.16 * e) * tune.haze; atmosU.uDrift.value = (HIGH ? 0.6 : 0.4) * (0.5 + 0.5 * rest);
+    finU.uExp.value = (1.0 + 0.08 * e) * tune.exposure;
+    finU.uBloom.value = (0.16 + 0.16 * e) * tune.bloom;
     finU.uHalo.value = (0.25 + 0.75 * e) * (1 + 1.5 * (breath - 1));   // breathes with the glow
-    look0.glow = glow; look0.rest = rest;
   }
 
   function bakeEnv(force) {
@@ -261,7 +260,9 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
   function startTextures() {
     import('./foot-tex.js').then(mod => {
       if (dead || !mod.loadFooterTextures) return;
-      texApi = mod.loadFooterTextures({ THREE, renderer, quality: HIGH ? 'high' : 'low', base: baseURL + 'assets/tex/' });
+      // dusk_sky is skipped: the environment is baked live from this sky, so reflections follow the sunrise
+      const roles = (mod.TEX_ROLES || []).filter(r => r !== 'dusk_sky');
+      texApi = mod.loadFooterTextures({ THREE, renderer, quality: HIGH ? 'high' : 'low', base: baseURL, ...(roles.length ? { roles } : {}) });
       if (texApi?.onReady) texApi.onReady(applyTextures); else texApi?.ready?.then(applyTextures);
     }).catch(() => { /* textures are optional */ });
   }
@@ -303,7 +304,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
 
   return {
     ready, renderer, scene, camera: cam,
-    fx: { sky: skyU, atmos: atmosU, final: finU, glowLight, hemi },   // look tunables (QA)
+    fx: { sky: skyU, atmos: atmosU, final: finU, glowLight, hemi, tune },   // look tunables (QA)
     setProgress(p) { const v = Math.min(1, Math.max(0, +p || 0)); if (v !== prog) { prog = v; moveT = performance.now(); } },
     setPointer(x, y) { ptrX = Math.max(-1, Math.min(1, +x || 0)); ptrY = Math.max(-1, Math.min(1, +y || 0)); },
     // optional: the logotype's box relative to the host (px), so the halo sits behind it; null restores the Figma layout
