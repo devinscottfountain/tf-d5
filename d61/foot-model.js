@@ -74,9 +74,9 @@ export function buildFooterScene({ THREE, quality = 'high' } = {}) {
   const terrain = buildTerrain({ THREE, group: root, M, high });
   const colony = buildColony({ THREE, B, M, high });
   const ships = buildStarships({ THREE, B, M, high, ships: [
-    { x: 84, z: -470, ry: 0.5 },                         // near, taller in frame
-    { x: 185, z: -700, ry: -0.3 },                       // far right
-    { x: -357, z: -1000, ry: 0.9, lod: 0 },              // far left, against the ridge
+    { x: 84, z: -470, ry: 0.14 },                        // near, taller in frame; flaps kept in the silhouette plane
+    { x: 185, z: -700, ry: -0.12 },                       // far right
+    { x: -357, z: -1000, ry: 0.2, lod: 0 },              // far left, against the ridge
   ] });
   const merged = B.flush(root, 'colony');
   for (const m of merged) if (m.material === M.glass) m.renderOrder = 2;

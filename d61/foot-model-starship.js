@@ -22,7 +22,7 @@ export function buildStarships({ THREE, B, M, high, ships }) {
     const s = new THREE.Shape([new V2(rHull(y0) - 0.2, y0), new V2(rHull(y0) + span, ty0), new V2(rHull(y1) + span * 0.92, ty1), new V2(rHull(y1) - 0.2, y1)]);
     return extrude(THREE, s, th, high ? 0.06 : 0, 1);
   };
-  const aft = flap(1.2, 12.5, 2.8, 9.4, 4.4, 0.42), fwd = flap(37.8, 45.6, 39.4, 44.6, 2.6, 0.34);
+  const aft = flap(1.2, 12.5, 2.8, 9.4, 4.4, 0.42), fwd = flap(37.6, 45.8, 39.2, 44.8, 3.1, 0.36);
   const cover = (y0, y1, rr) => new THREE.BoxGeometry(0.9, y1 - y0, 1.5).translate(rr + 0.3, (y0 + y1) / 2, 0);
   const steelParts = [], darkParts = [];
   for (const s of [1, -1]) {
