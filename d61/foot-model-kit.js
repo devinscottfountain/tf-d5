@@ -31,7 +31,7 @@ function rawHeight(x, z) {
   const mid = 1.6 * fbm(x / 70 + 3.1, z / 55) * ss(20, 60, d) * (1 - ss(260, 600, d))                      // gentle swales
             + 2.2 * Math.max(0, fbm(x / 140, z / 90 + 7) + 0.1) * ss(60, 120, d) * (1 - ss(170, 210, d));    // low dark bank before the pad
   const pad = ss(150, 210, d) * (1 - ss(470, 600, d)) * (1 - ss(260, 360, Math.abs(x)));                  // flatten the settlement pad
-  const fine = 0.35 * fbm(x / 9, z / 9, 3) * (1 - ss(150, 400, d));
+  const fine = (0.5 * fbm(x / 9, z / 9, 3) + 0.14 * fbm(x / 2.6 + 5, z / 2.6, 2)) * (1 - ss(150, 400, d));
   const far = 3.5 * fbm(x / 260 + 11, z / 260) * ss(400, 900, d);
   const rx = x / 520, ridge = ss(1250, 2100, d) * (40 + 26 * fbm(rx + 2.3, 0.5) + 11 * fbm(rx * 4.1 + 9, 1.7) + 4 * fbm(rx * 13, d / 300));
   return rise + (mid + fine) * (1 - 0.85 * pad) + far + ridge;
@@ -89,4 +89,13 @@ export function soup(THREE, P, C) {
   const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
   if (C) g.setAttribute('color', new THREE.Float32BufferAttribute(C, 3));
   g.computeVertexNormals(); g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(P.length / 3 * 2), 2)); return g;
+}
+
+// smooth normals on a non-indexed geometry: average face normals over vertices that share a position
+export function smoothNormals(geo) {
+  geo.computeVertexNormals();
+  const p = geo.attributes.position, n = geo.attributes.normal, acc = new Map(), key = i => `${Math.round(p.getX(i) * 1e3)},${Math.round(p.getY(i) * 1e3)},${Math.round(p.getZ(i) * 1e3)}`;
+  for (let i = 0; i < p.count; i++) { const k = key(i), a = acc.get(k) || acc.set(k, [0, 0, 0]).get(k); a[0] += n.getX(i); a[1] += n.getY(i); a[2] += n.getZ(i); }
+  for (let i = 0; i < p.count; i++) { const a = acc.get(key(i)), l = Math.hypot(a[0], a[1], a[2]) || 1; n.setXYZ(i, a[0] / l, a[1] / l, a[2] / l); }
+  return geo;
 }

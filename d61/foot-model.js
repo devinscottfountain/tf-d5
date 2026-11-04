@@ -74,7 +74,7 @@ export function buildFooterScene({ THREE, quality = 'high' } = {}) {
   const terrain = buildTerrain({ THREE, group: root, M, high });
   const colony = buildColony({ THREE, B, M, high });
   const ships = buildStarships({ THREE, B, M, high, ships: [
-    { x: 72, z: -408, ry: 0.5 },                         // near, taller in frame
+    { x: 84, z: -470, ry: 0.5 },                         // near, taller in frame
     { x: 185, z: -700, ry: -0.3 },                       // far right
     { x: -357, z: -1000, ry: 0.9, lod: 0 },              // far left, against the ridge
   ] });

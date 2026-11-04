@@ -16,18 +16,19 @@ export function buildStarships({ THREE, B, M, high, ships }) {
   const tiles = new THREE.LatheGeometry(tilePts, Math.round(seg / 2), Math.PI / 2, Math.PI).toNonIndexed();
 
   // flaps: trapezoids in the (radial, y) plane, extruded thin, root on the hull
-  const flap = (y0, y1, ty0, ty1, span, rootR, th) => {
-    const s = new THREE.Shape([new V2(0, y0), new V2(span, ty0), new V2(span, ty1), new V2(0, y1)]);
-    return extrude(THREE, s, th, high ? 0.06 : 0, 1).translate(rootR - 0.15, 0, 0);
+  const rHull = y => { for (let i = 1; i < PROF.length; i++) { const [r0, y0] = PROF[i - 1], [r1, y1] = PROF[i]; if (y <= y1) return r0 + (r1 - r0) * (y - y0) / (y1 - y0); } return 0; };
+  // flaps: trapezoids in the (radial, y) plane, root edge sunk into the hull line, extruded thin
+  const flap = (y0, y1, ty0, ty1, span, th) => {
+    const s = new THREE.Shape([new V2(rHull(y0) - 0.2, y0), new V2(rHull(y0) + span, ty0), new V2(rHull(y1) + span * 0.92, ty1), new V2(rHull(y1) - 0.2, y1)]);
+    return extrude(THREE, s, th, high ? 0.06 : 0, 1);
   };
-  const aft = flap(1.2, 12.5, 2.8, 9.4, 4.4, R, 0.42), fwd = flap(37.8, 45.6, 39.6, 44.3, 2.7, 4.0, 0.34);
-  fwd.rotateZ(-0.09).translate(0.6, 0.2, 0);          // follow the nose taper
+  const aft = flap(1.2, 12.5, 2.8, 9.4, 4.4, 0.42), fwd = flap(37.8, 45.6, 39.4, 44.6, 2.6, 0.34);
   const cover = (y0, y1, rr) => new THREE.BoxGeometry(0.9, y1 - y0, 1.5).translate(rr + 0.3, (y0 + y1) / 2, 0);
   const steelParts = [], darkParts = [];
   for (const s of [1, -1]) {
     const m = new THREE.Matrix4().makeRotationY(s > 0 ? 0 : Math.PI);
     steelParts.push(boxUV(THREE, aft.clone().applyMatrix4(m), TS.stainless), boxUV(THREE, fwd.clone().applyMatrix4(m), TS.stainless),
-      boxUV(THREE, cover(0.8, 13, R - 0.2).applyMatrix4(m), TS.stainless), boxUV(THREE, cover(37.5, 45.8, 3.9).applyMatrix4(m), TS.stainless));
+      boxUV(THREE, cover(0.8, 13, R - 0.2).applyMatrix4(m), TS.stainless), boxUV(THREE, cover(37.6, 45.2, rHull(41.5) - 0.35).applyMatrix4(m), TS.stainless));
   }
   // weld / ring frames and the header tank band
   for (const y of [8.5, 17.2, 25.8, 33]) steelParts.push(cylUV(new THREE.CylinderGeometry(R + 0.035, R + 0.035, 0.18, seg, 1, true).translate(0, y, 0), R, TS.stainless).toNonIndexed());

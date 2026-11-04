@@ -1,12 +1,12 @@
 // D6.1 footer terrain: one frustum-shaped ground grid (dense at the feet, coarse at the ridge 2 km out), instanced
 // scattered rocks (3 shapes) and a few hand-placed foreground boulders. Dark and calm near camera by design.
-import { TS, rng, fbm, height, smoothstep, boxUV, mergeAll } from './foot-model-kit.js';
+import { TS, rng, fbm, height, smoothstep, boxUV, mergeAll, smoothNormals } from './foot-model-kit.js';
 
 export function buildTerrain({ THREE, group, M, high }) {
   const r = rng(61);
 
   // ---------------------------------------------------------------- ground grid: rows spaced exponentially in distance
-  const NZ = high ? 220 : 110, NX = high ? 240 : 110, K = 5.2, D0 = -16, D1 = 3400, A = (D1 - D0) / (Math.exp(K) - 1);
+  const NZ = high ? 220 : 110, NX = high ? 200 : 100, K = 5.2, D0 = -16, D1 = 3400, A = (D1 - D0) / (Math.exp(K) - 1);
   const n = (NX + 1) * (NZ + 1), P = new Float32Array(n * 3), UV = new Float32Array(n * 2), C = new Float32Array(n * 3);
   for (let j = 0, v = 0; j <= NZ; j++) {
     const d = D0 + A * (Math.exp(K * j / NZ) - 1), W = 46 + Math.max(d, 0) * 1.12, z = -d;
@@ -19,7 +19,7 @@ export function buildTerrain({ THREE, group, M, high }) {
     }
   }
   const idx = new (n > 65535 ? Uint32Array : Uint16Array)(NX * NZ * 6);
-  for (let j = 0, o = 0; j < NZ; j++) for (let i = 0; i < NX; i++) { const a = j * (NX + 1) + i, b = a + 1, c = a + NX + 1, d = c + 1; idx.set([a, c, b, b, c, d], o); o += 6; }
+  for (let j = 0, o = 0; j < NZ; j++) for (let i = 0; i < NX; i++) { const a = j * (NX + 1) + i, b = a + 1, c = a + NX + 1, d = c + 1; idx.set([a, b, c, b, d, c], o); o += 6; }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(P, 3)); g.setAttribute('uv', new THREE.BufferAttribute(UV, 2)); g.setAttribute('color', new THREE.BufferAttribute(C, 3));
   g.setIndex(new THREE.BufferAttribute(idx, 1)); g.computeVertexNormals(); g.computeBoundingSphere(); g.userData.texScale = TS.regolith;
@@ -36,9 +36,9 @@ export function buildTerrain({ THREE, group, M, high }) {
       v.multiplyScalar(k); v.y = v.y * flat; if (v.y < -0.18) v.y = -0.18 + (v.y + 0.18) * 0.25;
       p.setXYZ(i, v.x, v.y, v.z);
     }
-    gg.computeVertexNormals(); return boxUV(THREE, gg.toNonIndexed(), TS.mars_rock);
+    smoothNormals(gg); return boxUV(THREE, gg, TS.mars_rock);
   };
-  const shapes = [rockGeo(3, high ? 2 : 1), rockGeo(9, high ? 2 : 1, 0.5), rockGeo(17, 1, 0.75)];
+  const shapes = [rockGeo(3, 1), rockGeo(9, 1, 0.5), rockGeo(17, 1, 0.75)];
 
   // scatter: sparse near camera (calm under the type), denser mid-ground, clear of the settlement pad
   const N = high ? 520 : 200, lists = [[], [], []];
@@ -61,11 +61,11 @@ export function buildTerrain({ THREE, group, M, high }) {
     const b = rockGeo(seed, det, 0.7); b.scale(sx, sy, sz); b.rotateY(ry); b.translate(x, height(x, z) - sy * 0.15, z);
     bould.push(boxUV(THREE, b, TS.mars_rock));
   };
-  place(9.5, -15, 4.2, 2.6, 3.6, 0.6, 31, high ? 3 : 2);
-  place(13.5, -12, 2.0, 1.2, 1.7, 1.9, 37, high ? 2 : 1);
-  place(-12, -40, 4.6, 1.3, 2.8, -0.3, 43, high ? 3 : 2);
-  place(-24, -64, 2.6, 1.0, 2.0, 0.9, 47, 2);
-  place(30, -78, 3.4, 1.5, 2.6, 0.2, 53, 2);
+  // tops kept well under the eye line so nothing breaks the horizon
+  place(2.4, -6.6, 2.7, 0.7, 2.2, 0.6, 31, high ? 3 : 2);        // bottom right, half out of frame
+  place(4.6, -5.2, 1.2, 0.35, 1.0, 1.9, 37, 2);
+  place(-2.4, -11, 1.7, 0.36, 1.15, -0.3, 43, 2);                // mid left
+  place(-7, -19, 1.4, 0.3, 1.0, 0.9, 47, 1);
   const boulders = new THREE.Mesh(mergeAll(THREE, bould), M.rock); boulders.userData.part = 'boulders'; boulders.userData.texScale = TS.mars_rock; group.add(boulders);
 
   return { ground, rocks, boulders, meshes: [ground, ...rocks, boulders], dispose() { g.dispose(); shapes.forEach(s => s.dispose()); boulders.geometry.dispose(); } };

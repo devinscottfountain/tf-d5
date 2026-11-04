@@ -1,7 +1,7 @@
 // D6.1 footer colony: geodesic glass domes with lush planted interiors (canopy blobs, trees, grow lamps), small
 // opaque hab domes, the long row of pressurised cylinders + boxy units with lit windows, masts, end-on tank farm,
 // solar arrays and a pressurised rover. All merged per material through the bucket B.
-import { TS, rng, fbm, height, geodesic, soup, boxUV, rrect, extrude, smoothstep } from './foot-model-kit.js';
+import { TS, rng, fbm, height, geodesic, soup, boxUV, rrect, extrude, smoothNormals } from './foot-model-kit.js';
 
 export function buildColony({ THREE, B, M, high }) {
   const r = rng(77), V3 = THREE.Vector3;
@@ -55,7 +55,7 @@ export function buildColony({ THREE, B, M, high }) {
   // ---------------------------------------------------------------- planted interior
   const blob = (det, seed) => { const g = new THREE.IcosahedronGeometry(1, det), p = g.attributes.position, f = rng(seed), o = f() * 40;
     for (let i = 0; i < p.count; i++) { const v = new V3().fromBufferAttribute(p, i), k = 1 + 0.22 * fbm(v.x * 1.6 + o, v.y * 1.6 + v.z * 1.1, 3); p.setXYZ(i, v.x * k, v.y * k, v.z * k); }
-    g.computeVertexNormals(); return g.toNonIndexed(); };
+    return smoothNormals(g); };
   const blobs = [blob(high ? 2 : 1, 1), blob(high ? 2 : 1, 2), blob(1, 3)];
   const TINT = [[1, 1, 1], [1.12, 1.08, 0.62], [0.78, 0.95, 0.9], [0.66, 0.78, 0.6], [1.15, 0.95, 0.55], [0.9, 1.05, 0.8]];
   const tinted = (g, c) => { const n = g.attributes.position.count, C = new Float32Array(n * 3); for (let i = 0; i < n; i++) C.set(c, i * 3); g.setAttribute('color', new THREE.BufferAttribute(C, 3)); return g; };
