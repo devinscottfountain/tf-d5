@@ -411,6 +411,7 @@ function init() {
   D6.exit = EXIT;
   // ---------- Mars: D5 in mars mode, imported when its track is ~1.5 viewports away ----------
   let marsP = null;
+  q('.d6-mline')?.remove(); // the D6 mission belt is not part of 6.1: gone before D5 collects its [data-w] overlays (CSS hides it too)
   const loadMars = () => marsP || (marsP = (window.D5_CFG = Object.assign({ ahead: 1 }, window.D5_CFG, { mode: 'mars', look: 'lit', beats: true, onProgress: solcProgress }),
     import(new URL('../d5/main.js', import.meta.url).href).catch(e => console.warn('d6 mars:', e))));
   D6.loadMars = loadMars;
