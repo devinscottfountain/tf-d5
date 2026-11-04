@@ -37,5 +37,23 @@ Fetched from polyhaven.com via the browser on 2026-11-02, re-encoded to WebP (co
 | rock_ridge | cliff_side |
 | rusty_metal | rusty_metal_02 |
 
-Still procedural (no good CC0 scan match): black_plastic, excavator_paint, rubber_track, tyre_track_decal, glass_smudge. Sky: Poly Haven dikhololo_night (CC0).
-Tier totals: high ~2.65 MB (incl. HDR), low ~0.68 MB.
+## Scan pass 2 (Poly Haven, CC0), 2026-11-04
+Pulled from polyhaven.com (2k JPG via the browser, downsized in-browser to 1024 / 512), graded and encoded by `_src/hero_scans.py`
+(run it after `build_tex.py`, which would otherwise overwrite these with the procedural masters).
+
+| role | Poly Haven asset | changes |
+|---|---|---|
+| dirt_tracks (new) | muddy_tracks by Amal Kumar, https://polyhaven.com/a/muddy_tracks | regraded to the brown_mud_dry palette, 20 % darker, 1.5x contrast so the ruts survive grazing-angle mips; 512 c / n, ruts along v, texScale 3 |
+| excavator_paint | green_metal_rust by Rob Tuytel, https://polyhaven.com/a/green_metal_rust | repainted CAT yellow; rust runs, pits and scratches kept as dark grime; mean luminance matched to the old set. Colour only (the night machine shader reads its luminance) |
+| desk_laminate | black_oak_veneer by Jenelle van Heerden, https://polyhaven.com/a/black_oak_veneer | now 1k colour / normal + 512 ORM from the real arm map (was 512 with a flat normal); metal forced to 0 |
+| rock_ridge | cliff_side (already shipped) | 512 c / n for the far ridges, mean colour divided out in the material so they keep the blue-hour tint |
+
+Each set now ships only the maps its materials sample: rusty_metal and brushed_metal load normal + ORM, excavator_paint loads colour.
+Files still on disk but not loaded by `hero-tex.js`: `1k/rusty_metal_c`, `512/brushed_metal_c`, `1k|512/excavator_paint_n`, `512|256/excavator_paint_orm`,
+`1k/rock_ridge_c|n` (master for the 512s), `512/rock_ridge_orm`, `256/tyre_track_decal_*`, `512/rubber_track_*`, `night_sky.hdr` and the LDRs.
+
+Still procedural (no CC0 scan fits): black_plastic, glass_smudge, rubber_track, tyre_track_decal (the last two are not bound by the hero).
+Sky: Poly Haven dikhololo_night (CC0), not bound by the hero.
+
+Tier totals for the 14 roles the hero binds (`HERO_ROLES` in `hero3d.js`): high 2278 KB (34 files), low 520 KB (15 files).
+Before this pass: high 2144 KB, low 643 KB.

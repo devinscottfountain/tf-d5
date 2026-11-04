@@ -6,10 +6,10 @@
 //   tyre_track_decal  { map (RGBA, alpha = decal mask; use transparent + depthWrite false), normalMap }, v = travel direction
 //   dirt_tracks       { map, normalMap } rutted, tracked mud in the dirt_ground palette, ruts run along v (texScale 3: dozer-scale ruts).
 //                     The terrain blends it over worked ground; high tier only.
-// A set only carries the maps its materials sample (rusty_metal, brushed_metal: normal + ORM; excavator_paint: colour),
-// so no bytes go to maps nobody binds.
 //   night_sky_hdr     { map: equirect (HDR on high, LDR on low), envMap: PMREM of it, intensity } for scene.environment
 // texScale = metres covered by one UV repeat (number, or [u, v]).
+// A set only carries the maps its materials sample (rusty_metal, brushed_metal: normal + ORM; excavator_paint: colour),
+// so no bytes go to maps nobody binds.
 
 export const TEX_ROLES = [
   'concrete_floor', 'desk_laminate', 'black_plastic', 'brushed_metal', 'ceiling_panel', 'carpet', 'fabric_chair', 'glass_smudge',
