@@ -17,7 +17,7 @@ import * as RoomMod from './hero-room.js';
 import * as OutMod from './hero-outside.js';
 import { createScreens } from './hero-screens.js';
 import { createCab } from './hero-cab.js';
-import { sstep, noise1, NOISE3, rng, createAtmosphere, upgradeDOF, createStreaks, filmLens, createMirror, NOISE } from './hero-glsl.js';
+import { sstep, noise1, NOISE3, rng, createAtmosphere, upgradeDOF, createStreaks, filmLens, createMirror, NOISE, FIN } from './hero-glsl.js';
 
 export const SERIES_B = 'https://cdn.prod.website-files.com/6ae4c2b96de64cf78d486e72/6ae8ed33c51d167d8d66b21b_d6-seriesb.webp';
 
@@ -98,14 +98,23 @@ function patchTerrain(THREE, m) {
         float pack=smoothstep(.35,.75,fbm2(vW.xz*.21+17.));                 // compacted, polished by tracks
         float rr=mix(.97, mix(.84,.98,ormR), terrK);
         rr=mix(rr,.6,wet*.7); rr=mix(rr,.72,pack*.35*terrK);
-        roughnessFactor=mix(rr,.97,smoothstep(40.,95.,tDist)+smoothstep(16.,9.,tDist)); }   // and under the window: matte        // far: matte, no sub-pixel glints`);
+        roughnessFactor=mix(rr,.97,clamp(smoothstep(40.,95.,tDist)+1.-smoothstep(9.,16.,tDist),0.,1.)); }   // far and under the window: matte`);
+    // the modeller's screen-space bump (dFdx of value noise at 9 cm / 43 cm, quad-coarse, never filtered) sparkles as the camera
+    // floats: it was half the frame-to-frame ground flicker. Each octave fades before it drops under 2 px per period, and the
+    // noise octaves go entirely once the scans land (their mipped normals carry the grain stably).
+    f = f.replace(/float bh=\(n2\*\.35\+n3\*\.1\)\*\(1\.-\.45\*terrK\)\+tr\*\.08\*/, 'float fpw=length(fwidth(vW.xz)); float bh=(n2*.35*(1.-smoothstep(.09,.2,fpw))+n3*.1*(1.-smoothstep(.02,.045,fpw)))*(1.-terrK)+(1.-smoothstep(.15,.4,fpw))*tr*.08*');   // scans landed: their (mipped) normals carry the grain
     f = f.replace('#include <emissivemap_fragment>', `
+      if(!(dot(normal,normal)>1e-6)) normal=nonPerturbedNormal;             // degenerate screen-space bump (edge-on quads): never NaN
       #ifdef USE_NORMALMAP_TANGENTSPACE
-      { float near=1.-smoothstep(14.,70.,tDist);                          // rotated 1.3 m detail layer over the 4 m tile
+      { float near=(1.-smoothstep(14.,70.,tDist))*(1.-smoothstep(.03,.08,length(fwidth(vW.xz))));  // rotated 1.3 m detail layer, footprint-faded
         vec2 du=mat2(.8,-.6,.6,.8)*vW.xz/1.3+vec2(.37,.11);
         vec3 dn=texture2D(normalMap,du).xyz*2.-1.;
-        normal=normalize(normal+tbn*vec3(dn.xy*.32*near*terrK,0.)); }
+        vec3 nn=normal+tbn*vec3(dn.xy*.32*near*terrK,0.);
+        if(dot(nn,nn)>1e-6) normal=normalize(nn); }
       #endif
+      { vec3 nx=dFdx(normal), ny=dFdy(normal);                                // specular AA (Kaplanyan / Tokuyoshi): normal variance -> roughness
+        float a=roughnessFactor*roughnessFactor, k2=min(.5*(dot(nx,nx)+dot(ny,ny)),.18);
+        roughnessFactor=max(sqrt(sqrt(clamp(a*a+k2,0.,1.))),.5); }
       #include <emissivemap_fragment>`);
     sh.fragmentShader = f;
   };
@@ -135,6 +144,28 @@ function roomOffSite(THREE, root) {
         sh.fragmentShader = f;
       };
       m.customProgramCacheKey = () => (key ? key.call(m) : '') + '-nosite';
+      m.needsUpdate = true;
+    }
+  });
+}
+
+// Every lit material in the scene writes a finite, bounded HDR value: a near-mirror specular (cab glass, polished metal
+// swinging through a flood's reflection) can pass 65504 and become inf in the half-float target, and a NaN / inf texel
+// spreads through bloom into a one-frame black block. Chained after any onBeforeCompile already there.
+function guardOutput(THREE, root) {
+  const done = new Set();
+  root.traverse(o => {
+    for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+      if (!m || done.has(m) || m.isShaderMaterial || !(m.isMeshStandardMaterial || m.isMeshPhongMaterial || m.isMeshLambertMaterial || m.isMeshBasicMaterial)) continue;
+      done.add(m);
+      const prev = m.onBeforeCompile, key = m.customProgramCacheKey;
+      m.onBeforeCompile = (sh, r) => {
+        prev?.call(m, sh, r);
+        if (!sh.fragmentShader.includes('#include <dithering_fragment>')) return;
+        sh.fragmentShader = sh.fragmentShader.replace('void main()', FIN + '\nvoid main()')
+          .replace('#include <dithering_fragment>', '#include <dithering_fragment>\n\tgl_FragColor.rgb = fin( gl_FragColor.rgb );');
+      };
+      m.customProgramCacheKey = () => (key ? key.call(m) : '') + '-fin';
       m.needsUpdate = true;
     }
   });
@@ -193,6 +224,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
   moonFill.position.set(0, 1.75, GLASS_Z + 0.03); moonFill.lookAt(0, 1.2, 6); scene.add(moonFill);
   const spill = { left: new THREE.Color(0.5, 0.62, 0.9), right: new THREE.Color(0.42, 0.74, 1.0), cab: new THREE.Color(1.0, 0.84, 0.66), still: new THREE.Color(0.78, 0.74, 0.7) };
   const siteLight = lightSite({ THREE, outside, high: HIGH, G0 });
+  guardOutput(THREE, scene);   // last: the other patches find materials by their original cache keys
 
   // ---------------------------------------------------------------- light-tower beams: additive cones, soft edges, drifting dust noise
   const coneU = { time, uG: { value: G0 } };
@@ -293,6 +325,11 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
 
   // ---------------------------------------------------------------- post (internal ratio pr; the canvas stays at DPR)
   const post = createPost({ THREE, renderer, scene, cam });
+  { const hp = post.bloom.materialHighPassFilter;   // bloom bright pass: backstop sanitiser (NaN / inf -> 0, clamped)
+    if (hp && hp.fragmentShader.includes('vec4 texel = texture2D( tDiffuse, vUv );')) {
+      hp.fragmentShader = hp.fragmentShader.replace('void main()', FIN + '\nvoid main()').replace('vec4 texel = texture2D( tDiffuse, vUv );', 'vec4 texel = texture2D( tDiffuse, vUv ); texel = vec4( fin( texel.rgb ), 1.0 );');
+      hp.needsUpdate = true;
+    } }
   post.composer.setPixelRatio(pr);
   const P = post.composer.passes, scenePass = P[0], mbPass = P[1];
   const depthTex = () => scenePass.rt.depthTexture;

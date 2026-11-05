@@ -16,6 +16,10 @@ float vn3(vec3 x){ vec3 i=floor(x),f=fract(x); f=f*f*(3.-2.*f);
              mix(mix(hh31(i+vec3(0,0,1)),hh31(i+vec3(1,0,1)),f.x),mix(hh31(i+vec3(0,1,1)),hh31(i+vec3(1,1,1)),f.x),f.y),f.z); }
 `;
 
+// HDR sanitiser for every pass that spreads pixels (atmosphere, DOF, streaks, bloom): NaN / inf -> 0, clamp to a sane max.
+// One bad texel in the half-float scene buffer otherwise smears into a black block through the bloom mip chain.
+export const FIN = /* glsl */ `vec3 fin(vec3 c){ return (c.r+c.g+c.b < 1e5) ? clamp(c,0.,2048.) : vec3(0.); }`;
+
 export const IGN = /* glsl */ `float ign(vec2 p){ return fract(52.9829189*fract(dot(p,vec2(0.06711056,0.00583715)))); }`;
 
 // screen colours are authored in sRGB; these invert the ACES fit three.js tone maps with, so a screen shows its pixels as drawn
@@ -62,13 +66,13 @@ export function createAtmosphere({ THREE, src, depth, cam }) {
     lampP: { value: [0, 1, 2, 3].map(() => new THREE.Vector4(0, -999, 0, 0)) }, lampC: { value: [0, 1, 2, 3].map(() => new THREE.Color(0, 0, 0)) },
     roomP: { value: new THREE.Vector3(0, 1.13, 0.3) }, roomC: { value: new THREE.Color(0, 0, 0) }
   };
-  const m = fsMat(THREE, u, `${NOISE3}${DEPTH}
+  const m = fsMat(THREE, u, `${NOISE3}${DEPTH}${FIN}
     uniform sampler2D tColor, tDepth; uniform mat4 invProj, camWorld; uniform vec3 camPos, hazeC, hazeLow, roomC, roomP; uniform float time, glassZ, glassT, hazeD, hazeH, hazeY0;
     uniform vec4 lampP[4]; uniform vec3 lampC[4]; varying vec2 vUv;
     float air(vec3 o, vec3 dir, float t0, float t1, vec3 s){ vec3 so=s-o; float tc=dot(so,dir); float h=max(length(so-dir*tc),.04);
       return (atan((t1-tc)/h)-atan((t0-tc)/h))/h; }
     void main(){
-      vec3 c=texture2D(tColor,vUv).rgb; float d=texture2D(tDepth,vUv).x;
+      vec3 c=fin(texture2D(tColor,vUv).rgb); float d=texture2D(tDepth,vUv).x;
       vec4 v=invProj*vec4(vUv*2.-1.,d*2.-1.,1.); v/=v.w;
       float L=d>=.999999 ? 1400. : length(v.xyz);
       vec3 dir=normalize((camWorld*vec4(normalize(v.xyz),0.)).xyz);
@@ -92,7 +96,7 @@ export function createAtmosphere({ THREE, src, depth, cam }) {
       }
       float ti=min(L,tg);
       add+=roomC*air(camPos,dir,0.,ti,roomP);
-      gl_FragColor=vec4(c*T+add,1.); }`);
+      gl_FragColor=vec4(fin(c*T+add),1.); }`);
   const q = new FullScreenQuad(m);
   const pass = new Pass(); pass.needsSwap = true; pass.uniforms = u; pass.materials = [m];
   pass.render = (r, write, read) => {
@@ -117,10 +121,10 @@ export function upgradeDOF({ THREE, dof, src, depth, cam, taps = 48 }) {
   const A = mk(), B = mk();
   const res = new THREE.Vector2(1, 1), cocU = { value: 1 }, maxU = { value: 8 };
   const COC = `uniform float focus, cocK, maxC; float cocOf(float z){ return clamp(cocK*(1./focus-1./max(z,1e-3)),-maxC,maxC); }`; // signed: + behind focus
-  const mPre = fsMat(THREE, { tColor: { value: null }, tDepth: { value: null }, near: { value: 1 }, far: { value: 10 }, focus: U.focus, cocK: cocU, maxC: maxU, res: { value: res } }, `${DEPTH}${COC}
+  const mPre = fsMat(THREE, { tColor: { value: null }, tDepth: { value: null }, near: { value: 1 }, far: { value: 10 }, focus: U.focus, cocK: cocU, maxC: maxU, res: { value: res } }, `${DEPTH}${COC}${FIN}
     uniform sampler2D tColor, tDepth; uniform vec2 res; varying vec2 vUv;
     void main(){ vec2 t=.5/res; vec3 c=vec3(0.); float zc=1e9;
-      for(int i=0;i<4;i++){ vec2 o=vec2(i==1||i==3?t.x:-t.x, i>1?t.y:-t.y)*.5; c+=texture2D(tColor,vUv+o).rgb; zc=min(zc,-viewZ(texture2D(tDepth,vUv+o).x)); }
+      for(int i=0;i<4;i++){ vec2 o=vec2(i==1||i==3?t.x:-t.x, i>1?t.y:-t.y)*.5; c+=fin(texture2D(tColor,vUv+o).rgb); zc=min(zc,-viewZ(texture2D(tDepth,vUv+o).x)); }
       gl_FragColor=vec4(min(c*.25,vec3(64.)),cocOf(zc)*.5); }`);   // CoC stored in half-res pixels
   const mGather = fsMat(THREE, { tPre: { value: A.texture }, res: { value: res }, maxC: maxU }, `
     uniform sampler2D tPre; uniform vec2 res; uniform float maxC; varying vec2 vUv;
@@ -144,9 +148,9 @@ export function upgradeDOF({ THREE, dof, src, depth, cam, taps = 48 }) {
         acc+=s.rgb*w; ws+=w;
         float isf=step(cs,-.5)*clamp(-cs-l+1.,0.,1.); fg+=isf; fgw+=1.; }
       gl_FragColor=vec4(acc/ws, clamp(fg/max(fgw,1.)*2.5,0.,1.)); }`);
-  const mComp = fsMat(THREE, { tColor: { value: null }, tDepth: { value: null }, tBlur: { value: B.texture }, near: { value: 1 }, far: { value: 10 }, focus: U.focus, cocK: cocU, maxC: maxU }, `${DEPTH}${COC}
+  const mComp = fsMat(THREE, { tColor: { value: null }, tDepth: { value: null }, tBlur: { value: B.texture }, near: { value: 1 }, far: { value: 10 }, focus: U.focus, cocK: cocU, maxC: maxU }, `${DEPTH}${COC}${FIN}
     uniform sampler2D tColor, tDepth, tBlur; varying vec2 vUv;
-    void main(){ vec3 c=texture2D(tColor,vUv).rgb; float z=-viewZ(texture2D(tDepth,vUv).x);
+    void main(){ vec3 c=fin(texture2D(tColor,vUv).rgb); float z=-viewZ(texture2D(tDepth,vUv).x);
       vec4 b=texture2D(tBlur,vUv); float t=max(smoothstep(.5,1.8,abs(cocOf(z))),b.a);
       gl_FragColor=vec4(mix(c,b.rgb,t),1.); }`);
   const q = new FullScreenQuad(mPre);
@@ -170,10 +174,10 @@ export function createStreaks({ THREE, src, depth, cam }) {
   const mk = () => new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
   const A = mk(), B = mk(), res = new THREE.Vector2(1, 1);
   const u = { tColor: { value: null }, tDepth: { value: null }, near: { value: 1 }, far: { value: 10 }, thr: { value: 3 }, minZ: { value: 5 }, res: { value: res } };
-  const mEx = fsMat(THREE, u, `${DEPTH} uniform sampler2D tColor, tDepth; uniform float thr, minZ; uniform vec2 res; varying vec2 vUv;
+  const mEx = fsMat(THREE, u, `${DEPTH}${FIN} uniform sampler2D tColor, tDepth; uniform float thr, minZ; uniform vec2 res; varying vec2 vUv;
     void main(){ vec2 t=1./res; vec3 a=vec3(0.);
       for(int i=0;i<4;i++){ vec2 uv=vUv+vec2(i==1||i==3?.25:-.25, i>1?.25:-.25)*t;
-        vec3 c=texture2D(tColor,uv).rgb; float z=-viewZ(texture2D(tDepth,uv).x), l=max(c.r,max(c.g,c.b));
+        vec3 c=fin(texture2D(tColor,uv).rgb); float z=-viewZ(texture2D(tDepth,uv).x), l=max(c.r,max(c.g,c.b));
         a+=c*smoothstep(thr,thr*2.5,l)/max(l,1e-3)*min(l-thr,40.)*step(minZ,z); }
       gl_FragColor=vec4(a*.25,1.); }`);
   const mBl = fsMat(THREE, { tSrc: { value: null }, step: { value: 1 }, res: { value: res } }, `uniform sampler2D tSrc; uniform float step; uniform vec2 res; varying vec2 vUv;
