@@ -58,6 +58,7 @@ const RAKE = { pos: [-58, 13, -18], at: [18, -1, -56], col: 0xe4ebff, I: 6500, a
 function lightSite({ THREE, outside, high, G0 }) {
   const g = outside.group; if (!g) return {};
   for (const s of outside.spots || []) s.intensity *= 1.7;
+  if (outside.spots?.[0]) outside.spots[0].distance = 64;   // tower 0 faces the building: stop it at the near yard (no glare under the glass)
   // sky fill: a soft, range-cut cone straight down over the yard (the hemi reaches the room and washed the monitors)
   const sky = new THREE.SpotLight(0x5a74b8, high ? 0.5 : 0.4, 120, 0.68, 1, 0); sky.position.set(0, G0 + 70, -64); sky.target.position.set(0, G0, -64); g.add(sky, sky.target);
   if (outside.moon) { outside.moon.intensity = 0.45; outside.moon.color.setRGB(0.5, 0.62, 0.95); }   // directional: it reaches the room too, so kept low
@@ -112,6 +113,33 @@ function patchTerrain(THREE, m) {
   m.needsUpdate = true;
 }
 
+// The room has a roof and walls the site lights do not see, and three has no per-object light masks: the floods (all the
+// scene's spot lights live outside) and the moon (directional) reached the desk through it. Tower 0 aims at the room, so its
+// specular on the desk blew out right of the keyboard, and the floods / moon left a cool sheen on the left desk end that
+// bloomed over the left monitor. Room materials drop spot + directional light (hemi stays as ambient; monitor spill and
+// the moon fill are rect area lights). Chained after any onBeforeCompile the room already has (the glazing's noFlood).
+const SPOT_CALL = 'getSpotLightInfo( spotLight, geometryPosition, directLight );', DIR_CALL = 'getDirectionalLightInfo( directionalLight, directLight );';
+function roomOffSite(THREE, root) {
+  if (!root) return;
+  const done = new Set();
+  root.traverse(o => {
+    for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+      if (!m || done.has(m) || !(m.isMeshStandardMaterial || m.isMeshPhongMaterial || m.isMeshLambertMaterial)) continue;
+      done.add(m);
+      const prev = m.onBeforeCompile, key = m.customProgramCacheKey;
+      m.onBeforeCompile = (sh, r) => {
+        prev?.call(m, sh, r);
+        let f = sh.fragmentShader;
+        if (f.includes('#include <lights_fragment_begin>')) f = f.replace('#include <lights_fragment_begin>', THREE.ShaderChunk.lights_fragment_begin);
+        for (const c of [SPOT_CALL, DIR_CALL]) f = f.split(c).join(c + ' directLight.color = vec3( 0.0 );');
+        sh.fragmentShader = f;
+      };
+      m.customProgramCacheKey = () => (key ? key.call(m) : '') + '-nosite';
+      m.needsUpdate = true;
+    }
+  });
+}
+
 // options: enhance 'auto' (default, runs on idle after ready) | 'manual' (page calls hero.enhance());
 // lite: no mirror / streaks / dust, cab without MSAA (default: coarse pointer, i.e. tablets)
 export function createHero({ THREE, host, quality = 'high', still = SERIES_B, canvas: cvIn, fadeOutside = true, enhance: enhanceMode = 'auto', lite } = {}) {
@@ -158,6 +186,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
   const mons = room.makeMonitors(screens);
   const time = screens.time;
   const monList = [mons.left, mons.centre, mons.right];
+  roomOffSite(THREE, room.group);
 
   // ---------------------------------------------------------------- light: moon through the glass (one-sided area light, so the site is untouched)
   const moonFill = new THREE.RectAreaLight(0x5b74b8, HIGH ? 0.55 : 0.4, 14, 3.4);
@@ -434,7 +463,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
       dustU.pxScale.value = H * pr * cam.projectionMatrix.elements[5] * 0.5; dustU.amt.value = da;
       mons.centre.screen.getWorldPosition(dustU.lightP.value); dustU.lightC.value.copy(mons.centre.light?.color ?? spill.cab).lerp(spill.right, 0.35);
     }
-    post.bloom.strength = (0.66 - 0.42 * sstep(0.55, 1, p)) * (0.3 + 0.7 * glare); post.bloom.radius = 0.55; post.bloom.threshold = 0.8;
+    post.bloom.strength = (0.66 - 0.42 * sstep(0.55, 1, p)) * (0.3 + 0.7 * glare); post.bloom.radius = 0.55; post.bloom.threshold = 1.0;   // sources and screens only, not lit props
     lensU.barrel.value = 0.035 * (1 - s); lensU.vig.value = 0.6 - 0.32 * s; lensU.grain.value = 0.032 - 0.016 * s;
     lensU.leadK.value = W >= 768 ? LEAD_DARK * ca : 0;
     lensU.grade.value = 1 - end; lensU.hal.value = 0.12 * (1 - end) * glare; lensU.streak.value = 0.6 * (1 - end) * enh * glare;
