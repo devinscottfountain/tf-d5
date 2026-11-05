@@ -56,7 +56,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
   renderer.setSize(W, H, false);
 
   const scene = new THREE.Scene();
-  const cam = new THREE.PerspectiveCamera(VFOV, W / H, 0.1, 6000);
+  const cam = new THREE.PerspectiveCamera(VFOV, W / H, 0.5, 6000);
   const sun = new V3();
 
   // ---------------------------------------------------------------- sky: shared uniforms (dome, env bake, haze)
