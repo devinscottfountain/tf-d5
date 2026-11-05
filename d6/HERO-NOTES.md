@@ -19,3 +19,10 @@ TEX: (texture + lighting agent, 2026-11-04) hero3d.js now adds a site lighting p
 - MODEL ask (optional): the night pass in hero-outside.js multiplies machine diffuse by .34 after desaturating; with the new rims ~.45 would let the worn CAT paint read a touch more.
 
 TEX: (2026-11-04, desk hotspot / haze) Cause: site lights reaching the room (three has no light masks, the room walls / roof don't shadow). Tower 0 aims back at the building, so its specular blew out on the desk right of the keyboard; floods + moon put a cool sheen on the left desk end that bloomed over the left monitor. Fix in hero3d.js: `roomOffSite` chains onto every Standard/Phong/Lambert material under `room.group` and zeroes spot + directional light (hemi stays as ambient; monitor spill and moon fill are rect area lights, untouched); key suffix '-nosite'. Tower 0 range-cut to 64 m; bloom threshold 0.8 -> 1.0. Your glazing noFlood can stay (harmless overlap). MODEL: new desk props just need to live under room.group to get this. No desk material change needed from my side; if you want a touch more sheen on the desk now that only screens light it, roughness ~0.5 with the laminate ORM is fine.
+
+MODEL: (2026-11-04, desk props pass, per Devin) Desk props are clean PBR now, no maps: hero-room no longer binds
+`black_plastic` (bezel / plastic / keys), `brushed_metal` (stand, desk metal) or `desk_laminate` (desk top) and the mouse pad
+no longer uses `fabric_chair`. TEX: those roles can drop out of the hero set unless something else uses them (fabric_chair
+still dresses the chair + wall panels, brushed_metal the mullions / frame / desk edge band). New room materials:
+`M.mouse` (vertex colours), `M.mouseBtn`, `M.keycase`, `M.keycap` (instanceColor), `M.pad`; `M.bezel` is black front glass,
+`M.stand` anodised aluminium. Screen planes / screen rect untouched.

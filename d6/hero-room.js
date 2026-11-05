@@ -37,9 +37,15 @@ export function buildRoom({ THREE, scene, high, quality }) {
   const env = roomEnv(THREE);
   const S = o => new THREE.MeshStandardMaterial(o);
   const M = {
-    bezel: S({ color: 0x0c0c0e, roughness: 0.38, metalness: 0.2, envMap: env, envMapIntensity: 0.6 }),
-    stand: S({ color: 0x1a1b1d, roughness: 0.3, metalness: 0.85, envMap: env, envMapIntensity: 0.8 }),
-    desk: S({ color: 0x0a0a0c, roughness: 0.42, metalness: 0.0, envMap: env, envMapIntensity: 0.3 }),
+    // desk props: clean PBR, no maps (flat stays flat): black front glass, anodised aluminium, soft-touch graphite, felt pad, matte caps
+    bezel: S({ color: 0x050506, roughness: 0.1, metalness: 0, envMap: env, envMapIntensity: 1.0 }),
+    stand: S({ color: 0x8a8d92, roughness: 0.34, metalness: 1, envMap: env, envMapIntensity: 0.8 }),
+    mouse: S({ color: 0x2b2c30, roughness: 0.62, metalness: 0, vertexColors: true, envMap: env, envMapIntensity: 0.35 }),
+    mouseBtn: S({ color: 0x3a3c40, roughness: 0.5, metalness: 0, envMap: env, envMapIntensity: 0.4 }),
+    keycase: S({ color: 0x4a4d52, roughness: 0.38, metalness: 0.9, envMap: env, envMapIntensity: 0.7 }),
+    keycap: S({ color: 0xffffff, roughness: 0.7, metalness: 0, envMap: env, envMapIntensity: 0.25 }),
+    pad: S({ color: 0x141518, roughness: 0.95, metalness: 0 }),
+    desk: S({ color: 0x141518, roughness: 0.5, metalness: 0.0, envMap: env, envMapIntensity: 0.3 }),
     edge: S({ color: 0x1c1d20, roughness: 0.3, metalness: 0.6, envMap: env, envMapIntensity: 0.9 }),
     dark: S({ color: 0x07070a, roughness: 0.85 }),
     frame: S({ color: 0x15161a, roughness: 0.32, metalness: 0.75, envMap: env, envMapIntensity: 0.9 }),
@@ -65,10 +71,11 @@ export function buildRoom({ THREE, scene, high, quality }) {
   const noFlood = sh => { sh.fragmentShader = sh.fragmentShader.replace('#include <lights_fragment_begin>', THREE.ShaderChunk.lights_fragment_begin.replace('getSpotLightInfo( spotLight, geometryPosition, directLight );', 'getSpotLightInfo( spotLight, geometryPosition, directLight ); directLight.color = vec3( 0.0 );')); };
   for (const m of [M.mull, M.frame, M.sill]) { m.onBeforeCompile = noFlood; m.customProgramCacheKey = () => 'd6room-noflood'; }
   const tb = texBinder(THREE);
-  tb.bind(M.desk, 'desk_laminate', { color: 0x1a1a1d }); tb.bind(M.edge, 'brushed_metal', { maps: ['normalMap', 'roughnessMap'] });
-  tb.bind(M.stand, 'brushed_metal', { maps: ['normalMap', 'roughnessMap'] }); tb.bind(M.metal, 'brushed_metal', { maps: ['normalMap', 'roughnessMap'] });
+  // desk top: clean matte laminate (the magnified oak scan read as blocky tiles in close-ups), no maps
+  tb.bind(M.edge, 'brushed_metal', { maps: ['normalMap', 'roughnessMap'] });
+  // M.metal (desk legs, lamp, pen) stays clean: no tiling brushed-metal maps on the desk props
   tb.bind(M.mull, 'brushed_metal', { maps: ['normalMap', 'roughnessMap'], normalScale: 0.4 }); tb.bind(M.frame, 'brushed_metal', { maps: ['normalMap', 'roughnessMap'] });
-  for (const k of ['bezel', 'plastic', 'keys']) tb.bind(M[k], 'black_plastic', { maps: ['normalMap', 'roughnessMap'] });
+  // bezel / plastic / keys stay clean (no black_plastic normal noise on the desk props)
   tb.bind(M.fabric, 'fabric_chair', { color: 0x1a1b20 }); // tan leather scan, tinted near black
   tb.bind(M.carpet, 'carpet', { color: 0x202228 });
   tb.bind(M.ceil, 'ceiling_panel', { color: 0x2a2b30 }); tb.bind(M.sill, 'concrete_floor', { color: 0x3a3b3f });
