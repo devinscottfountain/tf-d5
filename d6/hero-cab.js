@@ -92,15 +92,30 @@ export function createCab({ THREE, high, samples = high ? 4 : 0 }) {
   { const d = new THREE.Mesh(new THREE.PlaneGeometry(0.31, 0.23), new THREE.MeshBasicMaterial({ map: dispTex, color: new THREE.Color(1.6, 1.6, 1.6) }));
     d.position.set(0.66 + Math.sin(-0.55) * 0.027, 1.78, -0.62 + Math.cos(-0.55) * 0.027); d.rotation.y = -0.55; scene.add(d); }
   box(black, 0.05, 0.05, 0.4, 0.8, 1.7, -0.45);
-  // machine outside: hood, blade lift arms, blade
+  // machine outside: hood (grille, exhaust, precleaner), lift rams, push arms, curved blade with cutting edge, dirt windrow
+  const chrome = S(0xd8d8d4, 0.18, 1), steel = S(0x6f6a62, 0.5, 0.7), dirtM = S(0x8a6a40, 1);
+  const rod = (m, a, b, r, seg = 12) => { const A = new THREE.Vector3(...a), Bv = new THREE.Vector3(...b), o = new THREE.Mesh(new THREE.CylinderGeometry(r, r, A.distanceTo(Bv), seg), m);
+    o.position.copy(A).add(Bv).multiplyScalar(0.5); o.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), Bv.clone().sub(A).normalize()); scene.add(o); return o; };
   box(yellow, 0.95, 0.5, 2.3, 0, 1.15, -2.4);
+  for (let i = 0; i < 6; i++) box(black, 0.7, 0.02, 0.05, 0, 1.405, -2.9 - i * 0.12);                                  // top grille slats
+  rod(trim, [0.22, 1.35, -1.85], [0.22, 1.95, -1.85], 0.06); rod(black, [-0.25, 1.38, -2.05], [-0.25, 1.62, -2.05], 0.085); // exhaust, precleaner
+  rod(S(0x9fb0b8, 0.15, 0.2), [-0.25, 1.62, -2.05], [-0.25, 1.74, -2.05], 0.1);
   for (const s of [-1, 1]) {
-    const a = new THREE.Vector3(s * 0.62, 1.55, -1.9), b = new THREE.Vector3(s * 0.85, 0.65, -3.75), m = a.clone().add(b).multiplyScalar(0.5);
-    const cy = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, a.distanceTo(b), 12), yellow); cy.position.copy(m); cy.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize()); scene.add(cy);
-    box(yellow, 0.12, 0.18, 2.4, s * 1.25, 0.55, -2.6);                                     // push arms
+    rod(S(0x2a2a28, 0.5), [s * 0.62, 1.55, -1.9], [s * 0.74, 1.05, -2.95], 0.095);                                       // lift ram barrel
+    rod(chrome, [s * 0.74, 1.05, -2.95], [s * 0.85, 0.62, -3.78], 0.055);                                              // rod
+    box(yellow, 0.14, 0.2, 2.5, s * 1.25, 0.52, -2.65);                                                               // push arms
+    box(steel, 0.12, 0.6, 0.2, s * 1.62, 0.42, -3.95);                                                                // end bits
   }
-  box(yellow, 3.3, 1.0, 0.18, 0, 0.6, -3.95, -0.15, 0, 0);                                 // blade
-  box(S(0x8a6a40, 1), 3.2, 0.5, 0.9, 0, 0.18, -4.4);                                       // dirt rolling off the blade
+  { const n = 8, BW = 3.3; let prev = null;                                                                           // moldboard: curved strip, back ribs, cutting edge
+    for (let i = 0; i <= n; i++) { const a = i / n, p = new THREE.Vector3(0, 0.12 + a * 1.0, -3.92 - Math.sin(a * Math.PI) * 0.16 + a * 0.12);
+      if (prev) { const d = p.clone().sub(prev), seg = new THREE.Mesh(new THREE.BoxGeometry(BW, d.length() + 0.02, 0.05), yellow); seg.position.copy(p).add(prev).multiplyScalar(0.5); seg.rotation.x = Math.atan2(-d.z, d.y) * -1; scene.add(seg); }
+      prev = p; }
+    box(yellow, BW, 0.08, 0.16, 0, 1.15, -3.82);                                                                     // top spill lip
+    for (const x of [-1.1, -0.35, 0.35, 1.1]) box(S(0xc08a0c, 0.5), 0.05, 0.9, 0.2, x, 0.6, -3.82);                  // ribs behind
+    box(steel, BW - 0.3, 0.14, 0.08, 0, 0.1, -3.97); }
+  { const g = new THREE.PlaneGeometry(3.6, 1.6, 36, 16).rotateX(-Math.PI / 2), p = g.attributes.position;              // windrow rolling off the blade
+    for (let i = 0; i < p.count; i++) { const x = p.getX(i), z = p.getZ(i), u = z / 0.8; p.setY(i, Math.max(0, 0.55 * (1 - u * u)) * (0.75 + 0.25 * Math.sin(x * 5.3) * Math.sin(z * 7.1 + x)) + 0.03 * Math.sin(x * 23 + z * 17)); }
+    g.computeVertexNormals(); const m = new THREE.Mesh(g, dirtM); m.position.set(0, 0, -4.75); scene.add(m); }
 
   // bake the static cab into one mesh per material (about 6 draws instead of 45); only the frame casts the sun shadow
   { scene.updateMatrixWorld(true); const by = new Map(), drop = [];

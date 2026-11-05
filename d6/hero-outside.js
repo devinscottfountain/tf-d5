@@ -1,8 +1,10 @@
 // D6 hero: the night site through the glass. Displaced dirt terrain with berms and spoil piles, ridgelines,
-// blue-hour sky dome, D5 machines (excavators, dozer, truck, light towers) under warm work lights.
+// blue-hour sky dome, the hero machines (excavator, dozer, haul truck, loader, light towers) under warm work lights.
 // The room floor sits 1 m above the site; the camera looks along -z.
-import { createMachines } from '../d5/machines.js';
-import { NOISE, rng } from './hero-glsl.js';
+// Terrain is a non-uniform grid: 0.6 m cells over the worked yard (the stepped dig, ruts, spoil, berm read as real
+// relief), opening out to 6 m toward the hills.
+import { buildMachines, bakeStatic } from './hero-model-machines.js';
+import { NOISE, rng, sstep } from './hero-glsl.js';
 import { texBinder, placeholders } from './hero-model-kit.js';
 import { buildSite } from './hero-model-site.js';
 
@@ -30,19 +32,42 @@ export function buildOutside({ THREE, scene, high, quality }) {
   const tb = texBinder(THREE);
   const fbm = makeNoise(19);
   const bump = (x, z, cx, cz, rx, rz, h) => { const d = ((x - cx) / rx) ** 2 + ((z - cz) / rz) ** 2; return h * Math.exp(-d * 2.2); };
-  const hgt = (x, z) => {
+  const ridged = (x, z, cx, cz, rx, rz, h) => { const d = Math.sqrt(((x - cx) / rx) ** 2 + ((z - cz) / rz) ** 2); return d >= 1 ? 0 : h * Math.pow(1 - d * d, 1.4); }; // berm: flat-topped, steep-sided
+  const fine = makeNoise(53);
+  // the dig: an elliptical pit cut in three benches (0.7 m lifts, battered walls), rubble on the floor and benches
+  const DIG = [0, -47.5, 10, 6.5];
+  const dig = (x, z) => { const d = Math.hypot((x - DIG[0]) / DIG[2], (z - DIG[1]) / DIG[3]); if (d > 1.2) return 0;
+    const lv = Math.max(0, (1.2 - d) / 1.2) * 3.4, k = Math.floor(lv), f = lv - k, depth = Math.min(3, k + sstep(0.6, 0.95, f)) * 0.7;
+    return -depth + (fine(x * 0.9, z * 0.9, 3) - 0.5) * 0.35 * Math.min(1, lv) - (d < 0.35 ? 0.15 : 0); };
+  // haul-road ruts: twin tyre grooves with squeezed-up shoulders (same centreline the shader's road mask uses)
+  const ruts = (x, z) => { if (z > -33 || z < -98) return 0; const c = -6 + 0.2 * (z + 44) + 3 * Math.sin(z * 0.08), e = Math.abs(x - c); if (e > 3) return 0;
+    const g = q => Math.exp(-(q * q)); let y = 0; for (const o of [-1.15, 1.15]) { const q = (x - c - o) / 0.28; y += -0.14 * g(q) + 0.05 * g((x - c - o) / 0.5 - Math.sign(q) * 1.1); }
+    return y * sstep(-33, -38, z); };
+  const raw = (x, z) => {
     let y = (fbm(x * 0.04, z * 0.04) - 0.5) * 0.8;
-    y += bump(x, z, -22, -76, 26, 5, 2.4) + bump(x, z, -50, -72, 16, 6, 3.0) + bump(x, z, 4, -82, 18, 4, 1.6);   // long berm behind the pad
-    y += bump(x, z, 26, -60, 6, 5, 2.4) + bump(x, z, 32, -66, 5, 4, 1.6) + bump(x, z, -36, -50, 7, 5, 1.4);       // spoil piles
-    y -= bump(x, z, 2, -48, 10, 6, 1.2);                                                                           // the dig
+    y += ridged(x, z, -22, -76, 30, 5.5, 2.6) + ridged(x, z, -50, -72, 18, 6, 3.2) + ridged(x, z, 6, -83, 20, 4.5, 1.9);  // long berm behind the pad
+    for (const [cx, cz, rx, rz, h] of [[22, -58, 6.5, 5, 2.6], [28, -64, 5, 4, 1.8], [-34, -50, 7, 5, 1.5], [-12, -46, 3.5, 2.8, 1.1]]) { // spoil piles: lumpy, rubbly
+      const b = ridged(x, z, cx, cz, rx, rz, h); if (b > 0) y += b * (0.8 + 0.45 * fine(x * 0.35, z * 0.35, 3)) + (fine(x * 2.2, z * 2.2, 2) - 0.5) * 0.25 * Math.min(1, b); }
+    y += dig(x, z) + ruts(x, z);
     y += bump(x, z, 30, -40, 12, 4, 0.9) + bump(x, z, -14, -36, 10, 3, 0.7);                                      // foreground windrows
+    y += (fine(x * 0.35, z * 0.35, 2) - 0.5) * 0.06 * sstep(-28, -40, z) * sstep(-110, -90, z);                     // clods and track chop over the yard (gentle: steep facets went dark)
     const far = Math.max(0, -z - 90); y += far * 0.06 + (fbm(x * 0.012 + 3, z * 0.012) - 0.4) * far * 0.12;        // land rises toward the hills
     return y * (0.85 + 0.3 * fbm(x * 0.2, z * 0.2, 2));
   };
+  // level pads under the machines so the tracks sit flat
+  const pads = [[10.5, -50, 6], [-8, -54, 5.5], [-24, -70, 6], [-20, -60, 4.5]].map(([x, z, r]) => [x, z, r, raw(x, z)]);
+  const hgt = (x, z) => { let y = raw(x, z); for (const [px, pz, r, py] of pads) { const d = Math.hypot(x - px, z - pz); if (d < r) y += (py - y) * sstep(r, r * 0.55, d); } return y; };
 
-  // terrain
-  const tg = new THREE.PlaneGeometry(420, 420, high ? 210 : 140, high ? 210 : 140).rotateX(-Math.PI / 2).translate(0, 0, -215);
-  { const p = tg.attributes.position, uv = tg.attributes.uv; for (let i = 0; i < p.count; i++) { p.setY(i, G0 + hgt(p.getX(i), p.getZ(i))); uv.setXY(i, p.getX(i) / TEX_DIRT, -p.getZ(i) / TEX_DIRT); } tg.computeVertexNormals(); }
+  // terrain: non-uniform grid, dense over the yard
+  const axis = (a0, a1, segs) => { const v = [a0]; for (const [end, step] of segs) { const n = Math.max(1, Math.round((end - v[v.length - 1]) / step)), s0 = v[v.length - 1]; for (let i = 1; i <= n; i++) v.push(s0 + (end - s0) * i / n); } return v; };
+  const fineStep = high ? 0.7 : 1.4;
+  const XS = axis(-210, 210, [[-75, 6], [-55, 2], [55, fineStep], [75, 2], [210, 6]]);
+  const ZS = axis(-425, -5, [[-260, 6], [-150, 3], [-108, 2], [-32, fineStep], [-5, high ? 1.2 : 2]]);
+  const tg = new THREE.BufferGeometry();
+  { const nx = XS.length, nz = ZS.length, P = new Float32Array(nx * nz * 3), UV = new Float32Array(nx * nz * 2), I = new Uint32Array((nx - 1) * (nz - 1) * 6);
+    for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) { const v = j * nx + i, x = XS[i], z = ZS[j]; P[v * 3] = x; P[v * 3 + 1] = G0 + hgt(x, z); P[v * 3 + 2] = z; UV[v * 2] = x / TEX_DIRT; UV[v * 2 + 1] = -z / TEX_DIRT; }
+    let o = 0; for (let j = 0; j < nz - 1; j++) for (let i = 0; i < nx - 1; i++) { const a = j * nx + i, b = a + 1, c = a + nx, d = c + 1; I.set([a, c, b, b, c, d], o); o += 6; }
+    tg.setAttribute('position', new THREE.BufferAttribute(P, 3)); tg.setAttribute('uv', new THREE.BufferAttribute(UV, 2)); tg.setIndex(new THREE.BufferAttribute(I, 1)); tg.computeVertexNormals(); }
   tg.userData.texScale = TEX_DIRT;
   const tm = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.96 });
   const terrK = { value: 0 }; // 0 until dirt_ground lands (a white placeholder is bound until then)
@@ -138,10 +163,9 @@ export function buildOutside({ THREE, scene, high, quality }) {
   }));
   sky.renderOrder = -1; sky.frustumCulled = false; group.add(sky);
 
-  // machines from D5: build the yard into a scratch group, keep what reads at night, drop the rest
-  const scratch = new THREE.Group();
-  const yard = createMachines({ THREE, group: scratch, D: 4 });
-  const night = (() => { // replace the daylight env with a dark blue-hour one
+  // machines (hero-model-machines): built straight into the group, materials night-graded below
+  const yard = buildMachines({ THREE, high });
+  const night = (() => { // dark blue-hour env for paint / steel / glass
     const c = document.createElement('canvas'); c.width = 128; c.height = 64; const x = c.getContext('2d'), g = x.createLinearGradient(0, 0, 0, 64);
     g.addColorStop(0, '#020308'); g.addColorStop(0.4, '#0b1a3a'); g.addColorStop(0.5, '#1d3466'); g.addColorStop(0.52, '#1a1410'); g.addColorStop(1, '#050404');
     x.fillStyle = g; x.fillRect(0, 0, 128, 64); for (const u of [30, 70, 100]) { x.fillStyle = '#ffd9a0'; x.fillRect(u, 30, 3, 2); }
@@ -149,8 +173,8 @@ export function buildOutside({ THREE, scene, high, quality }) {
   const MAT = yard.materials;
   for (const k of ['paint', 'metal', 'glass']) { MAT[k].envMap = night; }
   MAT.paint.envMapIntensity = 0.5; MAT.metal.envMapIntensity = 0.9; MAT.glass.envMapIntensity = 1.4;
-  MAT.glow.color.setRGB(4, 4, 4);
-  const paintU = { value: placeholders(THREE).map }, paintK = { value: 0 }; // excavator_paint, triplanar in object space (D5 machine geometry carries no UVs)
+  MAT.glow.color.setRGB(4, 4, 4); MAT.glass.color.setScalar(0.5); // cab glass reads dark at night, the env does the rest
+  const paintU = { value: placeholders(THREE).map }, paintK = { value: 0 }; // excavator_paint, triplanar in object space (machine geometry carries no UVs)
   for (const k of ['paint', 'rough', 'metal']) { // night read: mostly silhouettes, the CAT yellow only hinted
     const m = MAT[k], prev = m.onBeforeCompile;
     m.onBeforeCompile = (sh, r) => { prev(sh, r); if (k === 'paint') { sh.uniforms.tPaint = paintU; sh.uniforms.paintK = paintK; }
@@ -170,21 +194,22 @@ export function buildOutside({ THREE, scene, high, quality }) {
   place(exA.g, EX_X, -50, Math.PI * 0.95); exA.g.scale.setScalar(1.55);
   place(dozer, -8, -54, 0.3); dozer.scale.setScalar(1.2);
   const keep = [exA.g, dozer];
-  if (high) { place(yard.trucks[0].g, -24, -70, -2.6); keep.push(yard.trucks[0].g); }
-  // light towers: the head meshes' parents are the tower groups
+  if (high) { place(yard.truck, -24, -70, -2.6); keep.push(yard.truck); }
+  place(yard.loader, -20, -60, 2.2); keep.push(yard.loader);
+  // light towers: the lamp lens meshes' parents are the tower groups
   // towers framed off the copy (H1 left, lead right): one behind the excavator, one high on the right, both >= 120 px from text at 1280-1920 incl. parallax
   const towerSpots = [[8, -64, -0.6], [16, -40, 2.6]];
   // one visible lamp (right): tower 0 still lights the dig but its heads face away from the room (dark lens backs, no glow)
   const LAMP_ON = new THREE.Color(1.4, 1.3, 1.15);
-  yard.towers[1].material.color.copy(LAMP_ON);
+  yard.towers[1].material = yard.towers[1].material.clone(); yard.towers[1].material.color.copy(LAMP_ON);
   yard.towers[0].material = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.018, 0.018, 0.02), side: THREE.DoubleSide });
   const lampHead = yard.towers[1];
   const towers = towerSpots.map(([x, z, ry], i) => { const t = yard.towers[i].parent; place(t, x, z, ry); keep.push(t); return t; });
-  scratch.traverse(o => { if (o.isMesh && !keep.some(k => isIn(o, k))) o.geometry.dispose(); });
   group.traverse(o => { if (o.isMesh) o.castShadow = o.receiveShadow = false; });
-  for (const k of keep) k.traverse(o => { if (o.isMesh) { o.castShadow = high && !o.isInstancedMesh; o.receiveShadow = high; } });
+  for (const k of keep) k.traverse(o => { if (o.isMesh) { o.castShadow = high && !o.isInstancedMesh && o.material !== MAT.glow; o.receiveShadow = high; } });
   terrain.receiveShadow = high;
-  function isIn(o, root) { for (let p = o; p; p = p.parent) if (p === root) return true; return false; }
+  // everything that never moves (truck, loader, tower bodies, the excavator undercarriage) baked to one mesh per material
+  const baked = bakeStatic(THREE, group, [...(high ? [{ root: yard.truck, deep: true }] : []), { root: yard.loader, deep: true }, ...towers.map(t => ({ root: t, deep: true })), { root: exA.g, deep: false }], { shadow: high });
 
   // lights: blue-hour sky fill, a cool rim from behind the site, warm work lights from the tower heads
   const hemi = new THREE.HemisphereLight(0x223660, 0x140e09, 0.2); group.add(hemi);
@@ -210,6 +235,7 @@ export function buildOutside({ THREE, scene, high, quality }) {
     e.boom.rotation.z = 0.78 + 0.1 * Math.sin(c);
     e.stick.rotation.z = -2.2 - 0.18 * Math.sin(c + 0.8);
     e.bucket.rotation.z = -0.7 - 0.35 * Math.sin(c + 1.6);
+    e.rig();
   };
   const dz0 = dozer.position.clone();
   function update(t) {
@@ -221,7 +247,7 @@ export function buildOutside({ THREE, scene, high, quality }) {
   const api = {
     group, update, spots, lampHead, LAMP_ON, hemi, moon, skyU, hgt, site, cones: site.cones, city,
     applyHeroTextures: tex => tb.apply(tex),
-    dispose() { live.delete(api); site.dispose(); group.traverse(o => { if (o.geometry) o.geometry.dispose(); }); tm.dispose(); sky.material.dispose(); night.dispose(); city.material.dispose(); Object.values(MAT).forEach(m => m.dispose()); yard.towers[0].material.dispose(); }
+    dispose() { live.delete(api); site.dispose(); group.traverse(o => { if (o.geometry) o.geometry.dispose(); }); tm.dispose(); sky.material.dispose(); night.dispose(); city.material.dispose(); Object.values(MAT).forEach(m => m.dispose()); yard.towers[0].material.dispose(); yard.towers[1].material.dispose(); yard.dispose(); }
   };
   live.add(api);
   return api;
