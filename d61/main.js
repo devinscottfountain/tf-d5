@@ -362,17 +362,18 @@ function init() {
   const measureMission = () => { restMission = 0.12 * innerHeight + (parseFloat(getComputedStyle(mission).paddingTop) || 0); };
   // framing inputs for the WebGL layer, in canvas px as they sit while the stage is pinned (stage and canvas share 0,0):
   // bottom of the tab cards (the scene keeps its machines below it) and the control HUD cards (kept clear in control)
-  let geo = null, geoKey = '', tabsBottom = 0, geoT = 0;
+  let geo = null, geoKey = '', tabsBottom = 0, tabsTop = 0, geoT = 0;
   function measureSolGeo() {
     const s = solStage.getBoundingClientRect(), t = tabsEl.getBoundingClientRect();
     const rr = el => { const r = el && el.getBoundingClientRect(); return r && r.width > 1 ? { l: r.left - s.left, t: r.top - s.top, r: r.right - s.left, b: r.bottom - s.top } : null; };
     // 6.1: the scene is masked off above the cards (solMaskFrame), so its framing band starts a little lower than D6's
     // groundTop + 64: the execution fit reaches 16 px above it, so its machines keep 48 px of air below the cards (Figma ~46)
-    tabsBottom = t.bottom - s.top;
+    tabsBottom = t.bottom - s.top; tabsTop = t.top - s.top;
     const mob = mobile(), hud = hudCards.map(rr);
     // phones: the telemetry card is treated as a full-width shelf, so control frames the machine above it, not squeezed beside it
     if (mob && hud[0]) { hud[0].l = 0; hud[0].r = s.width; }
-    const g = { groundTop: tabsBottom + (mob ? 40 : 64), hud, fitPad: Math.round(Math.max(mob ? 24 : 28, (mob ? 0.035 : 0.05) * innerHeight)) };
+    const g = { groundTop: tabsBottom + (mob ? 40 : 64), hud, fitPad: Math.round(Math.max(mob ? 24 : 28, (mob ? 0.035 : 0.05) * innerHeight)),
+      dotTop: Math.max(0, (q('.d6-sol-head', solStage)?.offsetTop ?? 0) - 70) }; // lattice up behind the copy; d61.css feathers it
     const key = Math.round(g.groundTop) + '|' + g.hud.map(r => (r ? Math.round(r.l) + ',' + Math.round(r.t) + ',' + Math.round(r.r) : '')).join(';');
     // each change refits three camera solves: while the cards slide in or a card grows, push at most every 250 ms (the last value always lands)
     if (key !== geoKey) { const now = performance.now(); if (geo && solApi && now - geoT < 250) return; geoT = now; geoKey = key; geo = g; if (solApi) solApi.setScene(g); D6.solGeo = g; }
@@ -497,16 +498,16 @@ function init() {
 
   // ---------- reveals (fonts must be in for SplitText) ----------
   fontsP.then(() => {
-    const reveal = (trigger, els, extra) => {
+    const reveal = (trigger, els, extra, start = 'top 82%') => {
       const tl = gsap.timeline({ paused: true });
       if (!RM && Split) {
         const sp = els.map(el => new Split(el, { type: 'lines', linesClass: 'split-line', mask: 'lines' }));
         tl.from(sp.flatMap(s => s.lines), { yPercent: 110, duration: 1.1, stagger: 0.06, ease: 'expo.out', onComplete: () => sp.forEach(s => s.revert()) }, 0);
       } else tl.from(els, { opacity: 0, duration: 0.8 }, 0);
       extra?.(tl);
-      ST.create({ trigger, start: 'top 82%', once: true, onEnter: () => tl.play() });
+      ST.create({ trigger, start, once: true, onEnter: () => tl.play() });
     };
-    reveal(missionIn, qa('.d6-mission-h, .d6-p', missionIn), tl => tl.from(qa('.d6-mission-label, .d6-cta, .d6-br', missionIn), { opacity: 0, duration: 0.8, stagger: 0.08 }, 0.15));
+    reveal(missionIn, qa('.d6-mission-h, .d6-p', missionIn), tl => tl.from(qa('.d6-mission-label, .d6-cta, .d6-br', missionIn), { opacity: 0, duration: 0.8, stagger: 0.08 }, 0.15), 'top 97%'); // 6.1: in as it clears the card, no black wait
     reveal(sol, [q('.d6-sol-h')], tl => tl.from(q('.d6-sol-head .d6-label'), { opacity: 0, duration: 0.8 }, 0).from(tabs, { opacity: 0, y: RM ? 0 : 24, duration: 0.9, stagger: 0.08, ease: 'power3.out' }, 0.25));
     ST.refresh();
   });
@@ -516,9 +517,12 @@ function init() {
   // ---------- solutions: the scene lives below the tab cards (canvas mask from the cards' bottom, eased in with the morph) ----------
   let cutLast = '';
   function solMaskFrame(morph) {
-    const k = sstep(0.25, 0.9, morph), fe = Math.max(36, 0.07 * innerHeight);
-    const v = k <= 0 ? '0px' : Math.round((tabsBottom - fe * 0.35) * k) + 'px'; // the soft edge straddles the cards' bottom
-    if (v !== cutLast) { cutLast = v; solHost.style.setProperty('--d61-cut', v); solHost.style.setProperty('--d61-fe', k <= 0 ? '1px' : Math.round(fe * k + 1) + 'px'); }
+    const k = sstep(0.25, 0.9, morph);
+    // feathered: the grid rises behind the label, H2 and cards (Figma 22920:11162), faint behind the copy (CSS ramp), full
+    // at the cards' bottom
+    const hd = q('.d6-sol-head', solStage), top = Math.max(0, hd ? hd.offsetTop : tabsTop - 0.2 * innerHeight), full = tabsBottom + 16; // from the label down
+    const v = k <= 0 ? '0px' : Math.round(top * k) + 'px', f = k <= 0 ? '1px' : Math.round((full - top) * k + 1) + 'px';
+    if (v + f !== cutLast) { cutLast = v + f; solHost.style.setProperty('--d61-cut', v); solHost.style.setProperty('--d61-fe', f); }
   }
 
   // ---------- SOL counter: D5 onProgress (p 0..1 over the Mars run) drives the number and the tick ----------

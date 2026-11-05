@@ -332,7 +332,7 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
   // The page passes groundTop (px from the canvas top to the bottom of its tab cards) and the HUD card rects.
   // Plan and exec fit their key points into the band below groundTop; control frames the excavator around
   // 62-65% of the viewport height, between (or above) the HUD cards. Fits are recomputed on change and eased in.
-  const FR = { gt: null, hud: [], key: '', snap: true, pb: 0 }; // pb: extra bottom margin in px (D6.1 option, D6 leaves it 0)
+  const FR = { gt: null, hud: [], key: '', snap: true, pb: 0, dt: null }; // pb: extra bottom margin in px (D6.1 option, D6 leaves it 0)
   const fitCam = new THREE.PerspectiveCamera(30, 1, 0.5, 4000), fv = new THREE.Vector3(), bx = new THREE.Box3();
   const F = { plan: { ...C_PLAN }, ctrl: { ...C_CTRL }, exec: { ...C_EXEC } }, Fg = { plan: null, ctrl: null, exec: null };
   const KP = { plan: [], ctrl: [], exec: [] };
@@ -541,7 +541,9 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
     U.uFar.value = lerp(1e4, lerp(150, 120, toExec), toCtrl);
     // mask: nothing above the tab cards (their bottom - 40 px, soft 70 px), following the stage as it scrolls in
     const scrollIn = (1 - morph) * ch, gt = FR.gt != null ? FR.gt : ch * 0.45;
-    U.uTopY.value = 1 - ((gt - 40 + scrollIn) / ch) * 2; U.uFadeW.value = (70 / ch) * 2;
+    // dotTop (D6.1 option, px from the canvas top): the lattice may rise above the cards (the page feathers it); D6 leaves it null
+    const dTop = FR.dt != null ? FR.dt : gt - 40;
+    U.uTopY.value = 1 - ((dTop + scrollIn) / ch) * 2; U.uFadeW.value = (70 / ch) * 2;
     // machines fade out above the same line (40 px soft): nothing shows through the tab cards
     kit.clip.value.set((ch - (gt - 40 + scrollIn) + 40) * PRU.value, 40 * PRU.value);
     points.visible = morph > 0.3 && !!lines;
@@ -618,6 +620,7 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
       if (o.modeT != null) S.modeT = o.modeT; if (o.flatten != null) S.flatten = o.flatten;
       if ('mapY' in o) S.mapY = o.mapY; if ('missionTop' in o) S.missionTop = o.missionTop;
       if (o.fitPad != null) FR.pb = Math.max(0, +o.fitPad || 0);
+      if ('dotTop' in o) FR.dt = o.dotTop == null ? null : +o.dotTop;
       if (o.groundTop != null || o.hud || o.fitPad != null) { if (FR.gt == null) FR.snap = true; if (o.groundTop != null) FR.gt = o.groundTop; if (o.hud) FR.hud = o.hud; refitMaybe(); }
       if (changed && ov) ov = null;
     },

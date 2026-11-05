@@ -205,11 +205,12 @@ void main(){
   alb = pow(alb, vec3(1.2)) * 1.3; float l = dot(alb, vec3(.3, .55, .15));
   alb = max(mix(vec3(l), alb, 1.12), 0.) * vec3(1.0, 0.94, 0.72);   // deeper butterscotch rust, as in the reference renders
   vec3 sunCol = sunTrans(mu, vec3(0.05, 0.085, 0.15));
-  float m0 = max(dot(N, L), 0.) * smoothstep(-0.05, 0.1, mu), m1 = max(dot(p, V), 0.05);
-  float val = mix(m0, 2. * m0 / (m0 + m1), 0.18);             // a little lunar-Lambert so the lit limb holds its colour
+  // feathered terminator: slightly wrapped diffuse under a wide eased gate, so day fades into night over ~30 degrees
+  float m0 = max(dot(N, L) + 0.1, 0.) / 1.1 * pow(smoothstep(-0.16, 0.45, mu), 1.6), m1 = max(dot(p, V), 0.05);
+  float val = mix(m0, 2. * m0 / (m0 + m1), 0.1);              // a little lunar-Lambert so the lit limb holds its colour
   vec3 col = alb * sunCol * val * uSunI;
-  col += alb * vec3(0.95, 0.60, 0.36) * 0.05 * smoothstep(-0.4, 0.5, mu);    // dust-scattered fill: the far side stays a dark rust, never black
-  col += vec3(0.9, 0.45, 0.25) * 0.03 * exp(-pow((mu + 0.02) / 0.12, 2.));    // warm terminator
+  col += alb * vec3(0.95, 0.60, 0.36) * 0.035 * smoothstep(-0.05, 0.6, mu);  // dust-scattered fill on the day side only: night goes near black
+  col += vec3(0.9, 0.45, 0.25) * 0.012 * exp(-pow((mu - 0.02) / 0.16, 2.));   // faint warm band in the twilight
   float rim = pow(1. - m1, 3.) * smoothstep(0.05, 0.6, mu);                   // limb haze on the lit side, meets the atmosphere shell
   col += vec3(1.0, 0.55, 0.28) * rim * 0.1 * uSunI;
   col += vec3(1.0, 0.78, 0.52) * pow(1. - m1, 7.) * smoothstep(0.15, 0.7, mu) * 0.9 * uSunI; // the bright lit limb
