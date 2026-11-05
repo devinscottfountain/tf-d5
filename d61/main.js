@@ -686,7 +686,7 @@ function init() {
       const tl = gsap.timeline({ paused: true });
       lines([q('.d61-cta-h', cta)], tl, 0);
       tl.from(qa('.d6-label, .d6-cta, .d6-br, .d61-dash', cta), { opacity: 0, duration: 0.8, stagger: 0.08 }, 0.15);
-      once(cta, tl);
+      once(cta, tl, 'top 95%');
     }
     if (footEl) {
       const tl = gsap.timeline({ paused: true });
