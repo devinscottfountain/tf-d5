@@ -104,7 +104,8 @@ function patchTerrain(THREE, m) {
     // noise octaves go entirely once the scans land (their mipped normals carry the grain stably).
     f = f.replace(/float bh=\(n2\*\.35\+n3\*\.1\)\*\(1\.-\.45\*terrK\)\+tr\*\.08\*/, 'float fpw=length(fwidth(vW.xz)); float bh=(n2*.35*(1.-smoothstep(.09,.2,fpw))+n3*.1*(1.-smoothstep(.02,.045,fpw)))*(1.-terrK)+(1.-smoothstep(.15,.4,fpw))*tr*.08*');   // scans landed: their (mipped) normals carry the grain
     f = f.replace('#include <emissivemap_fragment>', `
-      if(!(dot(normal,normal)>1e-6)) normal=nonPerturbedNormal;             // degenerate screen-space bump (edge-on quads): never NaN
+      if(!(dot(nonPerturbedNormal,nonPerturbedNormal)>1e-6)) nonPerturbedNormal=normalize((viewMatrix*vec4(0.,1.,0.,0.)).xyz);
+      if(!(dot(normal,normal)>1e-6)) normal=nonPerturbedNormal;             // degenerate screen-space bump (det = 0 on edge-on quads): never NaN
       #ifdef USE_NORMALMAP_TANGENTSPACE
       { float near=(1.-smoothstep(14.,70.,tDist))*(1.-smoothstep(.03,.08,length(fwidth(vW.xz))));  // rotated 1.3 m detail layer, footprint-faded
         vec2 du=mat2(.8,-.6,.6,.8)*vW.xz/1.3+vec2(.37,.11);
@@ -153,8 +154,14 @@ function roomOffSite(THREE, root) {
 // swinging through a flood's reflection) can pass 65504 and become inf in the half-float target, and a NaN / inf texel
 // spreads through bloom into a one-frame black block. Chained after any onBeforeCompile already there.
 function guardOutput(THREE, root) {
-  const done = new Set();
+  const done = new Set(), geos = new Set();
   root.traverse(o => {
+    // zero-area triangles carry zero-length vertex normals (two on the mouse, three on a site prop): normalize(0) is NaN on
+    // real GPUs, and those slivers only rasterise on the odd frame as the camera floats. Give them a unit normal.
+    const n = o.geometry?.attributes?.normal;
+    if (n && !geos.has(o.geometry)) { geos.add(o.geometry); let fixed = 0;
+      for (let i = 0; i < n.count; i++) { const x = n.getX(i), y = n.getY(i), z = n.getZ(i), l = x * x + y * y + z * z; if (!(l > 1e-8) || !Number.isFinite(l)) { n.setXYZ(i, 0, 1, 0); fixed++; } }
+      if (fixed) n.needsUpdate = true; }
     for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
       if (!m || done.has(m) || m.isShaderMaterial || !(m.isMeshStandardMaterial || m.isMeshPhongMaterial || m.isMeshLambertMaterial || m.isMeshBasicMaterial)) continue;
       done.add(m);

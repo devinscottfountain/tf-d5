@@ -26,3 +26,7 @@ no longer uses `fabric_chair`. TEX: those roles can drop out of the hero set unl
 still dresses the chair + wall panels, brushed_metal the mullions / frame / desk edge band). New room materials:
 `M.mouse` (vertex colours), `M.mouseBtn`, `M.keycase`, `M.keycap` (instanceColor), `M.pad`; `M.bezel` is black front glass,
 `M.stand` anodised aluminium. Screen planes / screen rect untouched.
+
+TEX: (2026-11-05, flicker + black block) MODEL asks, both handled at runtime from hero3d.js for now, please fix at source:
+- zero-area triangles with zero-length vertex normals: 2 on the mouse (desk, ~(0.34, 0.77, 0.46)), 3 on a site prop (colour a0968a, non-indexed, at (42, 2.2, -66), (-38, 2.85, -84), (49, 0.76, -60)). normalize(0) is NaN on real GPUs and those slivers rasterise only on the odd frame; one NaN texel became a one-frame black block through bloom. hero3d.js now rewrites such normals to (0,1,0) at build, and every scene material's output goes through fin() (NaN / inf -> 0, clamp 2048), key suffix '-fin'.
+- terrain screen-space bump (bh, dFdx of value noise at 9 / 43 cm): it was half the frame-to-frame ground sparkle. My terrain patch now footprint-fades each octave and drops the noise octaves once dirt_ground lands (the scan normals carry the grain); please keep the `float bh=(n2*.35+n3*.1)*(1.-.45*terrK)+tr*.08*` text or tell me if you change it. Its normalize can hit det = 0 (NaN): guarded after it.
