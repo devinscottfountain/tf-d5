@@ -56,7 +56,7 @@ export function loadHeroTextures({ THREE, renderer, quality = 'high', base, role
   const sets = new Map(), listeners = new Set(), owned = [];
   let disposed = false;
   const maxAniso = renderer?.capabilities?.getMaxAnisotropy?.() || 1;
-  const aniso = Math.min(lo ? 4 : 8, maxAniso);
+  const aniso = Math.min(lo ? 4 : 16, maxAniso);   // the site is seen near edge-on: max anisotropy keeps ground grain past 20 m
 
   // one upload (or PMREM build) per frame; falls back to a timer when rAF is throttled (hidden tab)
   const queue = []; let pumping = false;

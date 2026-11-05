@@ -46,6 +46,72 @@ const coarsePointer = () => {
 const yieldTask = () => new Promise(r => setTimeout(r, 0));
 const idle = fn => (typeof requestIdleCallback === 'function' ? requestIdleCallback(fn, { timeout: 1500 }) : setTimeout(fn, 300));
 
+// ---------------------------------------------------------------- site lighting pass (texture read at grazing angles)
+// The site is seen almost edge-on at night, so surface detail only reads where light rakes across it. On top of the
+// modeller's rig (hero-outside.js) this: drives the two towers harder, adds an off-frame raking flood from low on the left
+// (no fixture, no cone, no glow: the one visible lamp stays the right tower) that throws long relief shadows across the
+// yard, lifts sky fill, turns the moon into a cool back/rim light on the machines, and gives the terrain a roughness
+// breakup (wet / compacted dirt glints, matte at distance so nothing aliases) plus a rotated detail-normal layer that kills
+// the 4 m tile near the dig. Everything is a shader injection chained after the modeller's onBeforeCompile, guarded by
+// anchors: if they rename things the terrain keeps its own look.
+const RAKE = { pos: [-58, 13, -18], at: [18, -1, -56], col: 0xe4ebff, I: 6500, angle: 0.45 };   // cool LED flood vs the sodium towers
+function lightSite({ THREE, outside, high, G0 }) {
+  const g = outside.group; if (!g) return {};
+  for (const s of outside.spots || []) s.intensity *= 1.7;
+  // sky fill: a soft, range-cut cone straight down over the yard (the hemi reaches the room and washed the monitors)
+  const sky = new THREE.SpotLight(0x5a74b8, high ? 0.5 : 0.4, 120, 0.68, 1, 0); sky.position.set(0, G0 + 70, -64); sky.target.position.set(0, G0, -64); g.add(sky, sky.target);
+  if (outside.moon) { outside.moon.intensity = 0.45; outside.moon.color.setRGB(0.5, 0.62, 0.95); }   // directional: it reaches the room too, so kept low
+  // raking flood: low, long throw, shadowed (high) so windrows / spoil / machines lay long shadows across the tracks
+  const rake = new THREE.SpotLight(RAKE.col, RAKE.I, 0, RAKE.angle, 0.7, 2);
+  rake.position.set(RAKE.pos[0], G0 + RAKE.pos[1], RAKE.pos[2]); rake.target.position.set(RAKE.at[0], G0 + RAKE.at[1] + 1, RAKE.at[2]);
+  if (high) { rake.castShadow = true; rake.shadow.mapSize.set(2048, 2048); rake.shadow.camera.near = 8; rake.shadow.camera.far = 160; rake.shadow.bias = -0.0004; rake.shadow.normalBias = 0.05; rake.shadow.radius = 2; }
+  g.add(rake, rake.target);
+  // rims: spots from behind the machines with a hard range cut, so they can never reach the room (a directional this
+  // strong glared on the monitors): a cool moon kicker from behind left, a warm one from behind right
+  const rims = [[[-26, 16, -112], [6, 1, -50], 0x8fa8ff, 2600], [[44, 12, -100], [4, 1, -52], 0xffb070, 2200]].map(([p, t, c, I]) => {
+    const s = new THREE.SpotLight(c, high ? I : I * 0.7, 95, 0.6, 0.8, 2); s.position.set(p[0], G0 + p[1], p[2]); s.target.position.set(t[0], G0 + t[1], t[2]); g.add(s, s.target); return s; });
+  const rim = rims[1];
+  // machine paint / metal: a bit glossier so the rim and floods break up on them
+  g.traverse(o => {
+    const m = o.material; if (!m || !m.isMeshStandardMaterial) return;
+    const k = m.customProgramCacheKey?.call(m);
+    if (k === 'd6night-paint') { m.roughness = Math.min(m.roughness, 0.42); m.envMapIntensity = 0.9; }
+    else if (k === 'd6night-metal') { m.roughness = Math.min(m.roughness, 0.35); m.envMapIntensity = 1.3; }
+    else if (k === 'd6hero-terrain') patchTerrain(THREE, m);
+  });
+  return { rake, rim, rims, sky };
+}
+function patchTerrain(THREE, m) {
+  const prev = m.onBeforeCompile, key = m.customProgramCacheKey;
+  m.onBeforeCompile = (sh, r) => {
+    prev?.call(m, sh, r);
+    let f = sh.fragmentShader;
+    if (!/varying vec3 vW/.test(f) || !/terrK/.test(f) || !/fbm2/.test(f)) return;   // modeller changed the terrain: keep theirs
+    f = f.replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+      float tDist=length(vW-cameraPosition);
+      { float ormR=.9;
+        #ifdef USE_AOMAP
+        ormR=texture2D(aoMap,vAoMapUv).g;                                   // dirt_ground ORM: G = roughness
+        #endif
+        float wet=smoothstep(.5,.85,fbm2(vW.xz*.06+3.));                    // the dark wet patches the colour pass lays down
+        float pack=smoothstep(.35,.75,fbm2(vW.xz*.21+17.));                 // compacted, polished by tracks
+        float rr=mix(.97, mix(.84,.98,ormR), terrK);
+        rr=mix(rr,.6,wet*.7); rr=mix(rr,.72,pack*.35*terrK);
+        roughnessFactor=mix(rr,.97,smoothstep(40.,95.,tDist)+smoothstep(16.,9.,tDist)); }   // and under the window: matte        // far: matte, no sub-pixel glints`);
+    f = f.replace('#include <emissivemap_fragment>', `
+      #ifdef USE_NORMALMAP_TANGENTSPACE
+      { float near=1.-smoothstep(14.,70.,tDist);                          // rotated 1.3 m detail layer over the 4 m tile
+        vec2 du=mat2(.8,-.6,.6,.8)*vW.xz/1.3+vec2(.37,.11);
+        vec3 dn=texture2D(normalMap,du).xyz*2.-1.;
+        normal=normalize(normal+tbn*vec3(dn.xy*.32*near*terrK,0.)); }
+      #endif
+      #include <emissivemap_fragment>`);
+    sh.fragmentShader = f;
+  };
+  m.customProgramCacheKey = () => (key ? key.call(m) : '') + '-lit';
+  m.needsUpdate = true;
+}
+
 // options: enhance 'auto' (default, runs on idle after ready) | 'manual' (page calls hero.enhance());
 // lite: no mirror / streaks / dust, cab without MSAA (default: coarse pointer, i.e. tablets)
 export function createHero({ THREE, host, quality = 'high', still = SERIES_B, canvas: cvIn, fadeOutside = true, enhance: enhanceMode = 'auto', lite } = {}) {
@@ -97,6 +163,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
   const moonFill = new THREE.RectAreaLight(0x5b74b8, HIGH ? 0.55 : 0.4, 14, 3.4);
   moonFill.position.set(0, 1.75, GLASS_Z + 0.03); moonFill.lookAt(0, 1.2, 6); scene.add(moonFill);
   const spill = { left: new THREE.Color(0.5, 0.62, 0.9), right: new THREE.Color(0.42, 0.74, 1.0), cab: new THREE.Color(1.0, 0.84, 0.66), still: new THREE.Color(0.78, 0.74, 0.7) };
+  const siteLight = lightSite({ THREE, outside, high: HIGH, G0 });
 
   // ---------------------------------------------------------------- light-tower beams: additive cones, soft edges, drifting dust noise
   const coneU = { time, uG: { value: G0 } };
@@ -528,7 +595,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
 
   return {
     ready, renderer, scene, camera: cam, post,
-    fx: { atmo, streak, mirror, lens: lensU, glass: glassU, dust: dustU, cones, moonFill },   // look tunables (QA)
+    fx: { atmo, streak, mirror, lens: lensU, glass: glassU, dust: dustU, cones, moonFill, site: siteLight },   // look tunables (QA)
     enhance,                                                                       // mirror, streaks, dust (auto after ready unless enhance: 'manual')
     setProgress(p) { const v = Math.min(1, Math.max(0, +p || 0)); if (v !== prog) { prog = v; moveT = performance.now(); } },
     setTarget(rect, radius) { if (!rect) { autoTarget = true; } else { target = { x: rect.x ?? rect.left, y: rect.y ?? rect.top, w: rect.w ?? rect.width, h: rect.h ?? rect.height }; autoTarget = false; } if (radius !== undefined) targetRad = radius; solve(); },
