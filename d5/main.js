@@ -663,10 +663,10 @@ function marsOff() {
 if (MM) marsOff(); // hidden until the track arrives
 // Exit: over the track's last MM_OUT viewport the image (and HUD/overlays) fades to black, and once the after section's top
 // reaches the bottom of the viewport the canvas is hidden and nothing renders, so no seam and no sky band above a short closing section.
-const MM_OUT = 0.4;
+const MM_OUT = MBEATS ? 0.35 : 0.4, MM_LAP = MBEATS ? 0.15 : 0; // beats: the fade overlaps the after section by MM_LAP of a viewport, so the CTA rises as the colony goes
 function marsGate() {
   const r = near && track.getBoundingClientRect(), end = r ? (after ? after.getBoundingClientRect().top : r.bottom) : 0;
-  const fade = r ? clamp01(1 - r.top / innerHeight) : 0, out = r ? clamp01((end - innerHeight) / (MM_OUT * innerHeight)) : 0;
+  const fade = r ? clamp01(1 - r.top / innerHeight) : 0, out = r ? clamp01((end - innerHeight * (1 - MM_LAP)) / (MM_OUT * innerHeight)) : 0;
   const on = booted && fade > 0.001 && out > 0.001 && r.bottom > 0;
   if (!on) { if (mmOn) marsOff(); return false; }
   prog = Math.min(1, Math.max(MM_P0, -r.top / Math.max(1, r.height - innerHeight)));
