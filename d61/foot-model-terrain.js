@@ -90,10 +90,16 @@ export function buildTerrain({ THREE, group, M, high }) {
   // inside the view wedge (k = half-width / distance, 0.72 covers aspect up to ~2.7), weighted toward the camera
   const spot = (d0, d1, k = 0.72, w = 1.7) => { const d = d0 + (d1 - d0) * Math.pow(r(), w), x = (r() * 2 - 1) * (d * k + 3); return [x, -d, d]; };
 
-  // mid boulders, 30..170 m: breaks up the plain before the settlement
+  // mid boulders: a sparse set 30..170 m plus a denser midground band 24..120 m weighted to the frame sides (|x|/d > 0.3)
+  // so the ground reads rocky at a glance; the centre stays smaller so nothing pokes up behind the type. Same draw call.
   const midGeo = rockGeo(71, 2, 0.6);
-  const mids = scatter(midGeo, high ? 14 : 7, () => { const [x, z, d] = spot(30, 170, 0.8, 1.2); if (pad(x, d)) return null;
-    const s = 0.9 + r() * 1.4; return [x, z, s * (1 + r() * 0.5), s * (0.45 + r() * 0.3), s * (0.8 + r() * 0.4), 0.3 + r() * 0.15, 0.75 + r() * 0.3]; });
+  let mi = 0;
+  const mids = scatter(midGeo, high ? 70 : 30, () => {
+    const far = (mi++ % 4) === 0, [x0, z, d] = far ? spot(30, 170, 0.8, 1.2) : spot(24, 120, 0.78, 1.4);
+    let x = x0; if (!far && Math.abs(x) / d < 0.3 && r() < 0.75) x = Math.sign(x || 1) * d * (0.3 + r() * 0.48);   // push to the sides
+    if (pad(x, d)) return null;
+    const side = Math.min(1, Math.abs(x) / d / 0.35), s = (far ? 0.9 + r() * 1.4 : 0.5 + r() * 1.3) * (0.55 + 0.45 * side);
+    return [x, z, s * (1 + r() * 0.5), s * (0.42 + r() * 0.3), s * (0.8 + r() * 0.4), 0.3 + r() * 0.15, 0.75 + r() * 0.3]; });
 
   // fist- to knee-size stones, 2.5..90 m, thinner and smaller (and darker) in the calm band
   const stoneGeo = (() => { const f = rng(83), gg = new THREE.DodecahedronGeometry(1, 0), p = gg.attributes.position;   // 36 tris, faceted like broken basalt

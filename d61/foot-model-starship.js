@@ -12,7 +12,7 @@ export function buildStarships({ THREE, B, M, high, ships }) {
 
   // template parts in ship space (y up, tile half faces -z, flaps on +-x), cloned per ship
   const body = cylUV(new THREE.LatheGeometry(pts, seg), R, TS.stainless).toNonIndexed();
-  const tilePts = PROF.filter(([, y]) => y < 48.6).map(([r, y]) => new V2(r * 1.008 + 0.02, y));
+  const tilePts = PROF.filter(([, y]) => y < 48.6).map(([r, y]) => new V2(r + 0.18, y));
   const tiles = new THREE.LatheGeometry(tilePts, Math.round(seg / 2), Math.PI / 2, Math.PI).toNonIndexed();
 
   // flaps: trapezoids in the (radial, y) plane, extruded thin, root on the hull
@@ -31,7 +31,7 @@ export function buildStarships({ THREE, B, M, high, ships }) {
       boxUV(THREE, cover(0.8, 13, R - 0.2).applyMatrix4(m), TS.stainless), boxUV(THREE, cover(37.6, 45.2, rHull(41.5) - 0.35).applyMatrix4(m), TS.stainless));
   }
   // weld / ring frames and the header tank band
-  for (const y of [8.5, 17.2, 25.8, 33]) steelParts.push(cylUV(new THREE.CylinderGeometry(R + 0.035, R + 0.035, 0.18, seg, 1, true).translate(0, y, 0), R, TS.stainless).toNonIndexed());
+  for (const y of [8.5, 17.2, 25.8, 33]) steelParts.push(cylUV(new THREE.CylinderGeometry(R + 0.16, R + 0.16, 0.22, seg, 1, true).translate(0, y, 0), R, TS.stainless).toNonIndexed());
   darkParts.push(tiles, new THREE.CylinderGeometry(3.75, 4.0, 1.2, seg, 1, true).translate(0, -0.3, 0).toNonIndexed());
   // legs
   const legs = [];

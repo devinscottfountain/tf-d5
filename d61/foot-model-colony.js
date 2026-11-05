@@ -46,7 +46,7 @@ export function buildColony({ THREE, B, M, high }) {
       const vs = new THREE.Shape(); vs.moveTo(-vw / 2, 0); vs.lineTo(vw / 2, 0); vs.lineTo(vw / 2, vh * 0.6); vs.quadraticCurveTo(vw / 2, vh, 0, vh); vs.quadraticCurveTo(-vw / 2, vh, -vw / 2, vh * 0.6); vs.closePath();
       const vg = extrude(THREE, vs, vl, 0, 1, 4).translate(0, -0.9, R * 0.98 + vl / 2 - 1.2).applyMatrix4(tr);
       B.P(M.hab, boxUV(THREE, vg, TS.habitat_panel));
-      B.P(M.window, new THREE.PlaneGeometry(vw * 0.42, vh * 0.55).translate(0, vh * 0.3 - 0.9, R * 0.98 + vl - 1.18).applyMatrix4(tr));
+      B.P(M.window, new THREE.BoxGeometry(vw * 0.42, vh * 0.55, 0.4).translate(0, vh * 0.3 - 0.9, R * 0.98 + vl - 1.2 + 0.08).applyMatrix4(tr));   // stands 0.28 m proud: no z-fight at 300 m
     }
     if (green) planting(cx, y0 + 0.9, cz, R);
     domes.push({ x: cx, y: y0, z: cz, R });
@@ -92,10 +92,10 @@ export function buildColony({ THREE, B, M, high }) {
     B.P(M.hab, boxUV(THREE, new THREE.CylinderGeometry(R, R, L, cylSeg, 1, true).rotateZ(Math.PI / 2).translate(cx, y, z), TS.habitat_panel));
     for (const s of [-1, 1]) B.P(M.hab, boxUV(THREE, new THREE.SphereGeometry(R, cylSeg, 6, 0, Math.PI * 2, 0, Math.PI / 2).scale(1, 0.42, 1).rotateZ(-s * Math.PI / 2).translate(cx + s * L / 2, y, z), TS.habitat_panel));
     const nr = Math.max(2, Math.round(L / 4));
-    for (let i = 0; i <= nr; i++) B.P(M.frame, boxUV(THREE, new THREE.CylinderGeometry(R + 0.07, R + 0.07, 0.28, cylSeg, 1, true).rotateZ(Math.PI / 2).translate(x0 + 0.4 + (L - 0.8) * i / nr, y, z), TS.dome_frame));
+    for (let i = 0; i <= nr; i++) B.P(M.frame, boxUV(THREE, new THREE.CylinderGeometry(R + 0.2, R + 0.2, 0.3, cylSeg, 1, true).rotateZ(Math.PI / 2).translate(x0 + 0.4 + (L - 0.8) * i / nr, y, z), TS.dome_frame));
     for (const s of [-1, 1]) B.P(M.frame, boxUV(THREE, new THREE.BoxGeometry(0.5, lift + R * 0.6, R * 1.5).translate(cx + s * L * 0.3, y - R * 0.7 - lift / 2, z), TS.dome_frame));
     for (let i = 0; i < win; i++) { const wx = x0 + L * (i + 0.5) / win + (r() - 0.5) * 0.6, lit = r() < 0.7;
-      B.P(lit ? M.window : M.dark, new THREE.PlaneGeometry(0.9, 0.45).translate(wx, y + 0.25, z + R + 0.02)); }
+      B.P(lit ? M.window : M.dark, new THREE.BoxGeometry(0.9, 0.45, 0.5).translate(wx, y + 0.25, z + R)); }   // half sunk, 0.25 m proud
     return y;
   }
   // end-on tank (axis along z) for the farm on the right
@@ -110,10 +110,10 @@ export function buildColony({ THREE, B, M, high }) {
     const y = Math.min(gy(cx - w / 2, cz), gy(cx + w / 2, cz)) + 0.5, tr = new THREE.Matrix4().makeRotationY(ry).setPosition(cx, y, cz), T = g => g.applyMatrix4(tr);
     B.P(M.hab, boxUV(THREE, T(extrude(THREE, rrect(THREE, w, d, Math.min(1.4, d * 0.25)), h, 0, 1, 3).rotateX(-Math.PI / 2).translate(0, h / 2, 0)), TS.habitat_panel));
     B.P(M.frame, boxUV(THREE, T(new THREE.BoxGeometry(w - 0.6, 0.5, d - 0.6).translate(0, -0.25, 0)), TS.dome_frame));
-    B.P(M.dark, T(new THREE.BoxGeometry(w * 0.98, 0.12, d * 0.98).translate(0, h * 0.62, 0)));            // seam band
+    B.P(M.dark, T(new THREE.BoxGeometry(w + 0.3, 0.14, d + 0.3).translate(0, h * 0.62, 0)));             // seam band, 0.15 m proud
     for (let i = 0; i < 3; i++) B.P(M.frame, boxUV(THREE, T(new THREE.BoxGeometry(1 + r() * 1.6, 0.6 + r() * 0.8, 1 + r()).translate((r() - 0.5) * (w - 3), h + 0.4, (r() - 0.5) * (d - 3))), TS.dome_frame));
     for (let i = 0; i < win; i++) { const wx = -w / 2 + w * (i + 0.5) / win, lit = r() < 0.65;
-      B.P(lit ? M.window : M.dark, T(new THREE.PlaneGeometry(1.1, 0.6).translate(wx, h * 0.45, d / 2 + 0.03))); }
+      B.P(lit ? M.window : M.dark, T(new THREE.BoxGeometry(1.1, 0.6, 0.5).translate(wx, h * 0.45, d / 2))); }   // half sunk, 0.25 m proud
   }
   const tube = (x0, x1, z, y, R = 1.1) => B.P(M.hab, boxUV(THREE, new THREE.CylinderGeometry(R, R, x1 - x0, 12, 1, true).rotateZ(Math.PI / 2).translate((x0 + x1) / 2, y, z), TS.habitat_panel));
   function mast(x, z, h) {
@@ -158,7 +158,7 @@ export function buildColony({ THREE, B, M, high }) {
   { const y = gy(rover.x, rover.z), tr = new THREE.Matrix4().makeRotationY(rover.ry).setPosition(rover.x, y, rover.z), T = g => g.applyMatrix4(tr), V2 = THREE.Vector2;
     const side = new THREE.Shape([[-2.8, 0.75], [2.4, 0.75], [2.95, 1.05], [3.0, 1.6], [2.55, 2.35], [-2.5, 2.45], [-2.85, 2.2]].map(p => new V2(...p)));
     B.P(M.rover, boxUV(THREE, T(extrude(THREE, side, 2.3, high ? 0.08 : 0, 1)), TS.rover_paint));
-    B.P(M.dark, T(extrude(THREE, new THREE.Shape([[2.48, 1.6], [2.9, 1.62], [2.5, 2.3], [1.4, 2.36], [1.4, 1.6]].map(p => new V2(...p))), 2.42, 0)));  // canopy glass
+    B.P(M.dark, T(extrude(THREE, new THREE.Shape([[2.48, 1.6], [2.9, 1.62], [2.5, 2.3], [1.4, 2.36], [1.4, 1.6]].map(p => new V2(...p))), 2.7, 0)));   // canopy glass, clears the body bevel
     B.P(M.dark, T(new THREE.BoxGeometry(5.2, 0.3, 2.2).translate(-0.1, 0.62, 0)));                               // chassis
     for (const wx of [-2, 0, 2]) for (const s of [-1, 1]) B.P(M.dark, T(new THREE.CylinderGeometry(0.58, 0.58, 0.45, 12).rotateX(Math.PI / 2).translate(wx, 0.58, s * 1.32)));
     B.P(M.solar, T(new THREE.BoxGeometry(3.4, 0.06, 2.0).translate(-0.9, 2.55, 0)));

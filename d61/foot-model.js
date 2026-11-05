@@ -40,7 +40,7 @@ export function buildFooterScene({ THREE, quality = 'high' } = {}) {
     dark: S({ color: 0x121315, roughness: 0.55, metalness: 0.2 }),
     solar: S({ color: 0x0e1828, roughness: 0.22, metalness: 0.7 }),
     pad: S({ color: 0x4d4642, roughness: 0.95 }),
-    window: HDR(1.9, 1.2, 0.6),
+    window: Object.assign(HDR(1.9, 1.2, 0.6), { polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }),
     lamp: HDR(3.6, 2.1, 0.9),
     beacon: HDR(5, 0.5, 0.25),
   };
