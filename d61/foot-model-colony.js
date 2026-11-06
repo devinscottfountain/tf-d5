@@ -1,6 +1,7 @@
-// D6.1 footer colony: geodesic glass domes with lush planted interiors (canopy blobs, trees, grow lamps), small
+// D6.1 footer colony: geodesic glass domes with planted interiors (foot-model-plants.js), grow lamps, small
 // opaque hab domes, the long row of pressurised cylinders + boxy units with lit windows, masts, end-on tank farm,
 // solar arrays and a pressurised rover. All merged per material through the bucket B.
+import { makePlanter } from './foot-model-plants.js';
 import { TS, rng, fbm, height, geodesic, soup, boxUV, rrect, extrude, smoothNormals } from './foot-model-kit.js';
 
 export function buildColony({ THREE, B, M, high }) {
@@ -53,32 +54,11 @@ export function buildColony({ THREE, B, M, high }) {
   }
 
   // ---------------------------------------------------------------- planted interior
-  const blob = (det, seed) => { const g = new THREE.IcosahedronGeometry(1, det), p = g.attributes.position, f = rng(seed), o = f() * 40;
-    for (let i = 0; i < p.count; i++) { const v = new V3().fromBufferAttribute(p, i), k = 1 + 0.22 * fbm(v.x * 1.6 + o, v.y * 1.6 + v.z * 1.1, 3); p.setXYZ(i, v.x * k, v.y * k, v.z * k); }
-    return smoothNormals(g); };
-  const blobs = [blob(high ? 2 : 1, 1), blob(high ? 2 : 1, 2), blob(1, 3)];
-  const TINT = [[1, 1, 1], [1.12, 1.08, 0.62], [0.78, 0.95, 0.9], [0.66, 0.78, 0.6], [1.15, 0.95, 0.55], [0.9, 1.05, 0.8]];
-  const tinted = (g, c) => { const n = g.attributes.position.count, C = new Float32Array(n * 3); for (let i = 0; i < n; i++) C.set(c, i * 3); g.setAttribute('color', new THREE.BufferAttribute(C, 3)); return g; };
+  const planter = makePlanter({ THREE, B, M, high });
   function planting(cx, y0, cz, R) {
     B.P(M.soil, new THREE.CircleGeometry(R * 0.98, high ? 40 : 20).rotateX(-Math.PI / 2).translate(cx, y0 + 0.25, cz));
     const roof = rr => Math.sqrt(Math.max(0, R * R - rr * rr)) * 0.9;
-    const N = Math.round((high ? 3.2 : 1.5) * R);
-    for (let i = 0; i < N; i++) {
-      const a = r() * Math.PI * 2, rr = Math.sqrt(r()) * R * 0.86, x = Math.cos(a) * rr, z = Math.sin(a) * rr, top = roof(rr);
-      const tint = TINT[Math.floor(r() * TINT.length)].map(c => c * (0.85 + r() * 0.3)), tree = r() < 0.32 && top > 6;
-      if (tree) { // trunk + crown(s)
-        const cr = 1.6 + r() * Math.min(3.2, R * 0.12), h = Math.min(top - cr * 0.8, 4 + r() * R * 0.55);
-        B.P(M.soil, new THREE.CylinderGeometry(0.12, 0.22, h, 5, 1, true).translate(cx + x, y0 + h / 2, cz + z));
-        for (let k = 0; k < (high ? 3 : 2); k++) {
-          const s = cr * (1 - k * 0.22), g = blobs[(i + k) % 3].clone().scale(s * 1.15, s * 0.8, s * 1.15).translate(cx + x + (r() - 0.5) * cr, y0 + h - k * cr * 0.5, cz + z + (r() - 0.5) * cr);
-          B.P(M.foliage, boxUV(THREE, tinted(g, tint), TS.foliage));
-        }
-      } else { // shrub mound / bed
-        const s = 0.9 + r() * Math.min(3, R * 0.1);
-        const g = blobs[i % 3].clone().scale(s * (1 + r() * 0.6), s * (0.55 + r() * 0.5), s * (1 + r() * 0.6)).translate(cx + x, y0 + s * 0.3, cz + z);
-        B.P(M.foliage, boxUV(THREE, tinted(g, tint), TS.foliage));
-      }
-    }
+    planter.plant(cx, y0 + 0.25, cz, R);
     // grow lamps: warm clusters hung under the frame
     const nl = Math.max(2, Math.round(R / 5));
     for (let i = 0; i < nl; i++) { const a = r() * Math.PI * 2, rr = r() * R * 0.55, h = roof(rr) * (0.7 + r() * 0.15);
@@ -168,6 +148,6 @@ export function buildColony({ THREE, B, M, high }) {
     B.P(M.beacon, T(new THREE.SphereGeometry(0.1, 6, 4).translate(-2.2, 3.85, 0.7)));
   }
 
-  blobs.forEach(g => g.dispose());
+  planter.flush();
   return { domes, rover, big: domes[0] };
 }

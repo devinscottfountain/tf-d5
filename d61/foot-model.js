@@ -7,7 +7,7 @@
 // with a different texScale the UVs are rescaled once.
 //   regolith       ground grid (map, normal, ORM)             mars_rock      scattered rocks + foreground boulders
 //   dome_glass     glass panels: roughnessMap + dirtMap (dust raises alpha and warms the tint)
-//   dome_frame     struts, hubs, ribs, saddles, masts, roof kit   foliage    planted dome interiors (vertex colour tints)
+//   dome_frame     struts, hubs, ribs, saddles, masts, roof kit   foliage    (role unused: leaf cards use a procedural cutout atlas)
 //   habitat_panel  cylinders, units, opaque domes, vestibules, pads   stainless  Starships + tank farm
 //   rover_paint    rover body
 // Untextured: soil, dark (heat tiles, tyres, canopy, skirts), solar, pad, emissive window / lamp / beacon.
@@ -17,6 +17,7 @@ import { TS, buckets } from './foot-model-kit.js';
 import { texBinder, placeholders } from '../d6/hero-model-kit.js';
 import { buildTerrain } from './foot-model-terrain.js';
 import { buildColony } from './foot-model-colony.js';
+import { leafAtlas } from './foot-model-plants.js';
 import { buildStarships } from './foot-model-starship.js';
 
 export const FOOT_ROLES = ['regolith', 'mars_rock', 'dome_glass', 'dome_frame', 'foliage', 'habitat_panel', 'stainless', 'rover_paint'];
@@ -32,7 +33,7 @@ export function buildFooterScene({ THREE, quality = 'high' } = {}) {
     rock: S({ color: 0x4e2c1f, roughness: 0.9 }, 'mars_rock'),
     glass: S({ color: 0xdfe6ea, roughness: 0.06, metalness: 0.1, transparent: true, opacity: 0.16, depthWrite: false, side: THREE.DoubleSide, envMapIntensity: 1.6 }, 'dome_glass'),
     frame: S({ color: 0xd9d5cd, roughness: 0.5, metalness: 0.35 }, 'dome_frame'),
-    foliage: S({ color: 0x46702c, roughness: 0.78, vertexColors: true }, 'foliage'),
+    foliage: S({ color: 0xffffff, roughness: 0.7, vertexColors: true, alphaTest: 0.5, side: THREE.DoubleSide }, 'foliage'),   // leaf cards, cutout
     soil: S({ color: 0x24170f, roughness: 1 }),
     hab: S({ color: 0xcdc8bf, roughness: 0.62, metalness: 0.05 }, 'habitat_panel'),
     stainless: S({ color: 0xc8cbcf, roughness: 0.26, metalness: 1 }, 'stainless'),
@@ -60,11 +61,14 @@ export function buildFooterScene({ THREE, quality = 'high' } = {}) {
   M.glass.customProgramCacheKey = () => 'd61-glass';
   // foliage: leaves between us and the glow transmit it (strongest at grazing), plus a faint grow-light fill
   const leafU = { uBack: { value: new THREE.Color(0.55, 0.42, 0.12) } };
+  M.foliage.map = leafAtlas(THREE);
+  // cards carry crown normals: keep them on both faces (no back-face flip) so lobes shade as one volume
+  const nfb = THREE.ShaderChunk.normal_fragment_begin.replace('normal *= faceDirection;', '');
   M.foliage.onBeforeCompile = sh => {
     Object.assign(sh.uniforms, leafU);
-    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nuniform vec3 uBack;')
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nuniform vec3 uBack;').replace('#include <normal_fragment_begin>', nfb)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
-        totalEmissiveRadiance += uBack * diffuseColor.rgb * (0.25 + 0.75 * pow(1.0 - abs(dot(normal, normalize(vViewPosition))), 2.0));`);
+        float tl = clamp(-dot(normal, normalize(vViewPosition)), 0.0, 1.0); totalEmissiveRadiance += uBack * diffuseColor.rgb * (0.12 + 1.1 * tl * tl + 0.4 * pow(1.0 - abs(dot(normal, normalize(vViewPosition))), 3.0));`);
   };
   M.foliage.customProgramCacheKey = () => 'd61-foliage';
   M.glass.map = placeholders(THREE).map; // white 1x1: gives the glass shader vMapUv for the dust mask
@@ -102,7 +106,7 @@ export function buildFooterScene({ THREE, quality = 'high' } = {}) {
   bind(M.regolith, 'regolith', { color: 0xc8b0a4, normalScale: 0.9 });
   bind(M.rock, 'mars_rock', { color: 0xb09888, normalScale: 1 });
   bind(M.frame, 'dome_frame', { color: 0xffffff, normalScale: 0.5 });
-  bind(M.foliage, 'foliage', { color: 0xffffff, normalScale: 0.8 });
+  // foliage: leaf cards use the procedural atlas (leafAtlas), not the tiling foliage role
   bind(M.hab, 'habitat_panel', { color: 0xffffff, normalScale: 0.5 });
   bind(M.stainless, 'stainless', { color: 0xffffff, maps: ['normalMap', 'roughnessMap'], normalScale: 0.3, roughness: 1 });
   bind(M.rover, 'rover_paint', { color: 0xffffff, normalScale: 0.4 });
@@ -127,6 +131,6 @@ export function buildFooterScene({ THREE, quality = 'high' } = {}) {
     applyTextures(tex) { tb.apply(tex); },
     anchors: { domes: colony.domes, rover: colony.rover, ships, glass: M.glass, foliage: leafU.uBack },
     materials: M, stats: { tris: Math.round(tris), drawCalls: calls, instances: inst },
-    dispose() { root.traverse(o => o.isMesh && o.geometry.dispose()); terrain.dispose(); Object.values(M).forEach(m => m.dispose()); black.dispose(); },
+    dispose() { root.traverse(o => o.isMesh && o.geometry.dispose()); terrain.dispose(); M.foliage.map?.dispose(); Object.values(M).forEach(m => m.dispose()); black.dispose(); },
   };
 }
