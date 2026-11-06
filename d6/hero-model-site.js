@@ -102,25 +102,7 @@ export function buildSite({ THREE, group, hgt, G0, high, spots = [], machines = 
     glowBox(e.boom, 2.5, 1.5, 0.32, 0.12, 0.1, 0.06);                                                       // boom light
   }
 
-  // ---------------------------------------------------------------- rubble: instanced broken rock on the dig benches, its rim and round the spoil
-  const rockGeo = (() => { const g = new THREE.DodecahedronGeometry(1, 0), p = g.attributes.position, f = rng(12);
-    for (let i = 0; i < p.count; i++) { const k = 0.75 + f() * 0.5; p.setXYZ(i, p.getX(i) * k, p.getY(i) * k * 0.7, p.getZ(i) * k); }
-    g.computeVertexNormals(); return boxUV(THREE, g, 1); })();
-  M.rock = S({ color: 0x6a5f55, roughness: 1, flatShading: true });
-  const rocks = [];
-  { const D = [0, -47.5, 10, 6.5], n = high ? 340 : 140;
-    for (let i = 0; i < n; i++) {
-      let x, z, s; const t = r();
-      if (t < 0.55) { const a = r() * Math.PI * 2, d = Math.pow(r(), 0.6) * 1.25; x = D[0] + Math.cos(a) * d * D[2]; z = D[1] + Math.sin(a) * d * D[3]; s = 0.08 + Math.pow(r(), 3) * 0.55; }  // in and round the dig
-      else if (t < 0.85) { const P = [[22, -58, 7], [28, -64, 5], [-34, -50, 7], [-12, -46, 4]][Math.floor(r() * 4)], a = r() * Math.PI * 2, d = (0.7 + r() * 0.5) * P[2]; x = P[0] + Math.cos(a) * d; z = P[1] + Math.sin(a) * d * 0.75; s = 0.07 + Math.pow(r(), 3) * 0.4; } // spoil toes
-      else { x = -40 + r() * 80; z = -36 - r() * 40; s = 0.05 + Math.pow(r(), 4) * 0.25; }                                                    // stray clods over the yard
-      if (Math.hypot(x - 10.5, z + 50) < 4.5 || Math.hypot(x + 8, z + 54) < 4) continue;                                                 // not under the tracks
-      rocks.push([x, z, s]);
-    } }
-  const rubble = new THREE.InstancedMesh(rockGeo, M.rock, rocks.length);
-  { const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), v = new THREE.Vector3();
-    rocks.forEach(([x, z, s], i) => { q.setFromEuler(e.set(r() * 0.6, r() * 6.3, r() * 0.6)); rubble.setMatrixAt(i, m.compose(v.set(x, Y(x, z) + s * 0.25, z), q, new THREE.Vector3(s * (0.8 + r() * 0.6), s, s * (0.8 + r() * 0.6)))); }); }
-  rubble.userData.part = 'rubble'; rubble.userData.texScale = 1; group.add(rubble);
+  // rubble: stones and clods now live in the terrain mesh (hero-outside), same dirt material, baked contact shadows
 
   // ---------------------------------------------------------------- traffic cones (orange, reflective collar) along the haul road edge and the dig
   const coneGeo = (() => {
@@ -144,8 +126,8 @@ export function buildSite({ THREE, group, hgt, G0, high, spots = [], machines = 
   for (const [m, gs] of parts) { const mesh = new THREE.Mesh(mergeAll(THREE, gs), m); mesh.userData.part = 'site'; group.add(mesh); meshes.push(mesh); }
 
   return {
-    M, cones, barriers, posts, fenceMesh, meshes, rubble, trafficCones,
-    bind(tb) { tb.bind(M.concrete, 'concrete_floor', { color: 0xe8e4dc, maps: ['map', 'normalMap', 'aoMap'], normalScale: 0.5 }); tb.bind(M.gravel, 'gravel', { color: 0xa0968a, maps: ['map', 'normalMap', 'aoMap'], normalScale: 0.35 }); tb.bind(M.rock, 'gravel', { color: 0x9a9088, maps: ['map', 'normalMap'], normalScale: 0.6 }); tb.bind(M.steel, 'rusty_metal', { maps: ['normalMap', 'roughnessMap'] }); tb.bind(M.galv, 'brushed_metal', { maps: ['normalMap', 'roughnessMap'] }); },
-    dispose() { for (const o of [...meshes, barriers, posts, fenceMesh, rubble, trafficCones, ...cones]) o.geometry.dispose(); Object.values(M).forEach(m => m.dispose()); link.dispose(); }
+    M, cones, barriers, posts, fenceMesh, meshes, trafficCones,
+    bind(tb) { tb.bind(M.concrete, 'concrete_floor', { color: 0xe8e4dc, maps: ['map', 'normalMap', 'aoMap'], normalScale: 0.5 }); tb.bind(M.gravel, 'gravel', { color: 0xa0968a, maps: ['map', 'normalMap', 'aoMap'], normalScale: 0.35 }); tb.bind(M.steel, 'rusty_metal', { maps: ['normalMap', 'roughnessMap'] }); tb.bind(M.galv, 'brushed_metal', { maps: ['normalMap', 'roughnessMap'] }); },
+    dispose() { for (const o of [...meshes, barriers, posts, fenceMesh, trafficCones, ...cones]) o.geometry.dispose(); Object.values(M).forEach(m => m.dispose()); link.dispose(); }
   };
 }

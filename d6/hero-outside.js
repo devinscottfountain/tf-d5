@@ -5,6 +5,7 @@
 // relief), opening out to 6 m toward the hills.
 import { buildMachines, bakeStatic } from './hero-model-machines.js';
 import { NOISE, rng, sstep } from './hero-glsl.js';
+import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
 import { texBinder, placeholders } from './hero-model-kit.js';
 import { buildSite } from './hero-model-site.js';
 
@@ -38,19 +39,42 @@ export function buildOutside({ THREE, scene, high, quality }) {
   const DIG = [0, -47.5, 10, 6.5];
   const dig = (x, z) => { const d = Math.hypot((x - DIG[0]) / DIG[2], (z - DIG[1]) / DIG[3]); if (d > 1.2) return 0;
     const lv = Math.max(0, (1.2 - d) / 1.2) * 3.4, k = Math.floor(lv), f = lv - k, depth = Math.min(3, k + sstep(0.6, 0.95, f)) * 0.7;
-    return -depth + (fine(x * 0.9, z * 0.9, 3) - 0.5) * 0.35 * Math.min(1, lv) - (d < 0.35 ? 0.15 : 0); };
+    return -depth + (fine(x * 0.45, z * 0.45, 2) - 0.5) * 0.2 * Math.min(1, lv) - (d < 0.35 ? 0.15 : 0); };
   // haul-road ruts: twin tyre grooves with squeezed-up shoulders (same centreline the shader's road mask uses)
   const ruts = (x, z) => { if (z > -33 || z < -98) return 0; const c = -6 + 0.2 * (z + 44) + 3 * Math.sin(z * 0.08), e = Math.abs(x - c); if (e > 3) return 0;
     const g = q => Math.exp(-(q * q)); let y = 0; for (const o of [-1.15, 1.15]) { const q = (x - c - o) / 0.28; y += -0.14 * g(q) + 0.05 * g((x - c - o) / 0.5 - Math.sign(q) * 1.1); }
     return y * sstep(-33, -38, z); };
+  // stockpiles: smooth cones at the angle of repose with slumped lobes, a soft crest, a rolled toe and erosion runnels down the
+  // flanks; one is cut flat on top where the loader has been working it. [x, z, R, h, flatTop 0..1, seed]
+  const PILES = [[23, -58.5, 7.5, 2.9, 0, 1], [30, -66, 5.5, 2.0, 0, 2], [-31, -61, 7, 2.6, 0.5, 3], [-2, -78, 5, 2.0, 0, 4]];
+  const pile = (x, z, [cx, cz, R, h, flat, sd]) => {
+    const dx = x - cx, dz = z - cz, a = Math.atan2(dz, dx), r0 = Math.hypot(dx, dz) / R;
+    if (r0 > 1.35) return 0;
+    const lobe = 1 + 0.07 * Math.sin(3 * a + sd * 1.7) + 0.04 * Math.sin(5 * a + sd * 2.9) + 0.025 * Math.sin(9 * a + sd);
+    const d = r0 / lobe, crest = 0.14 + 0.4 * flat;
+    let y = d < crest ? 1 : Math.max(0, (1 - d) / (1 - crest));
+    y = y * y * (3 - 2 * y) * 0.35 + y * 0.65;                                             // soft crest, straight repose flank, rolled toe
+    if (d > 0.98) y = 0.05 * sstep(1.3, 0.98, d);                                          // slumped apron
+    let ru = 0; for (let k = 0; k < 7; k++) { const ak = sd * 2.3 + k * 0.9 + 0.25 * Math.sin(k * 3.1 + sd), w = Math.abs(Math.atan2(Math.sin(a - ak - 0.15 * d), Math.cos(a - ak - 0.15 * d))) * d * R;
+      ru += Math.exp(-((w / 0.32) ** 2)) * (0.6 + 0.4 * Math.sin(k + sd)); }               // runnels, deepest mid-flank
+    y = y * h * (1 - 0.18 * flat) - ru * 0.16 * sstep(crest, 0.45, d) * sstep(1.0, 0.7, d);
+    if (flat) y += (fine(x * 0.5, z * 0.5, 2) - 0.5) * 0.06 * sstep(crest + 0.1, crest - 0.05, d);  // bucket-scraped top
+    return y;
+  };
+  // tyre / track marks: twin grooves with squeezed-up lips, from a to b; they run up the berms and over a stockpile
+  const MARKS = [[-30, -68, -27, -82, 1.0], [-12, -69, -10, -84, 0.94], [5, -74, 7, -88, 1.0], [-44, -64, -48, -79, 0.94], [16, -55, 21, -58.5, 0.94], [-24, -54, -29, -60, 1.0]];
+  const marks = (x, z) => { let y = 0;
+    for (const [ax, az, bx, bz, half] of MARKS) { const vx = bx - ax, vz = bz - az, L2 = vx * vx + vz * vz, t = ((x - ax) * vx + (z - az) * vz) / L2;
+      if (t < -0.05 || t > 1.05) continue; const e = ((x - ax) * vz - (z - az) * vx) / Math.sqrt(L2), fade = sstep(-0.05, 0.1, t) * sstep(1.05, 0.85, t);
+      for (const o of [-half, half]) { const q = (e - o) / 0.32; y += fade * (-0.09 * Math.exp(-q * q) + 0.035 * Math.exp(-((Math.abs(q) - 1.6) ** 2) * 2)); } }
+    return y; };
   const raw = (x, z) => {
     let y = (fbm(x * 0.04, z * 0.04) - 0.5) * 0.8;
     y += ridged(x, z, -22, -76, 30, 5.5, 2.6) + ridged(x, z, -50, -72, 18, 6, 3.2) + ridged(x, z, 6, -83, 20, 4.5, 1.9);  // long berm behind the pad
-    for (const [cx, cz, rx, rz, h] of [[22, -58, 6.5, 5, 2.6], [28, -64, 5, 4, 1.8], [-34, -50, 7, 5, 1.5], [-12, -46, 3.5, 2.8, 1.1]]) { // spoil piles: lumpy, rubbly
-      const b = ridged(x, z, cx, cz, rx, rz, h); if (b > 0) y += b * (0.8 + 0.45 * fine(x * 0.35, z * 0.35, 3)) + (fine(x * 2.2, z * 2.2, 2) - 0.5) * 0.25 * Math.min(1, b); }
-    y += dig(x, z) + ruts(x, z);
+    for (const P of PILES) y += pile(x, z, P);
+    y += dig(x, z) + ruts(x, z) + marks(x, z);
     y += bump(x, z, 30, -40, 12, 4, 0.9) + bump(x, z, -14, -36, 10, 3, 0.7);                                      // foreground windrows
-    y += (fine(x * 0.35, z * 0.35, 2) - 0.5) * 0.06 * sstep(-28, -40, z) * sstep(-110, -90, z);                     // clods and track chop over the yard (gentle: steep facets went dark)
+    y += (fine(x * 0.35, z * 0.35, 2) - 0.5) * 0.06 * sstep(-28, -40, z) * sstep(-110, -90, z);                     // gentle yard undulation
     const far = Math.max(0, -z - 90); y += far * 0.06 + (fbm(x * 0.012 + 3, z * 0.012) - 0.4) * far * 0.12;        // land rises toward the hills
     return y * (0.85 + 0.3 * fbm(x * 0.2, z * 0.2, 2));
   };
@@ -63,11 +87,61 @@ export function buildOutside({ THREE, scene, high, quality }) {
   const fineStep = high ? 0.7 : 1.4;
   const XS = axis(-210, 210, [[-75, 6], [-55, 2], [55, fineStep], [75, 2], [210, 6]]);
   const ZS = axis(-425, -5, [[-260, 6], [-150, 3], [-108, 2], [-32, fineStep], [-5, high ? 1.2 : 2]]);
+  // stones and clods are merged into the terrain mesh itself (same dirt material and texture roles, no extra draw):
+  // angular convex stones half-buried with a contact darkening baked into the ground, broken clods along the dig lip.
+  // aGd = (occlusion multiplier, stone 0..1) per vertex; the ground also gets crevice darkening from its own curvature.
+  const rr = rng(97), V = THREE.Vector3;
+  const proto = (n, sx, sy, sz) => { const pts = []; for (let i = 0; i < n; i++) { const u = rr() * 2 - 1, a = rr() * Math.PI * 2, q = Math.sqrt(1 - u * u), k = 0.85 + rr() * 0.2; pts.push(new V(q * Math.cos(a) * sx * k, u * sy * k, q * Math.sin(a) * sz * k)); }
+    const g = new ConvexGeometry(pts); return g.index ? g.toNonIndexed() : g; };
+  const stones = [proto(18, 1, 0.72, 0.85), proto(16, 1, 0.65, 0.8), proto(20, 0.9, 0.8, 0.9), proto(15, 1, 0.6, 0.85), proto(17, 1, 0.7, 0.95)]; // chunky, angular, never slivers
+  const clodP = [proto(12, 1, 0.75, 0.9), proto(11, 1, 0.7, 0.85), proto(13, 0.9, 0.8, 1)];
+  const bits = []; // [x, z, size, stone(0/1), protoIndex]
+  { const D = DIG, nS = high ? 46 : 26, nC = high ? 170 : 70, clear = (x, z) => Math.hypot(x - 10.5, z + 50) > 5.5 && Math.hypot(x + 8, z + 54) > 4.2 && Math.hypot(x + 20, z + 60) > 4.5;
+    for (let i = 0, tries = 0; i < nS && tries < 800; tries++) {                                  // stones: dig floor + benches, pile toes, berm toe
+      const t = rr(); let x, z, sz;
+      if (t < 0.45) { const a = rr() * Math.PI * 2, d = Math.pow(rr(), 0.7) * 1.05; x = D[0] + Math.cos(a) * d * D[2]; z = D[1] + Math.sin(a) * d * D[3]; sz = 0.25 + Math.pow(rr(), 2) * 0.75; }
+      else if (t < 0.8) { const P = PILES[Math.floor(rr() * PILES.length)], a = rr() * Math.PI * 2, d = (0.95 + rr() * 0.3) * P[2]; x = P[0] + Math.cos(a) * d; z = P[1] + Math.sin(a) * d; sz = 0.2 + Math.pow(rr(), 2) * 0.6; }
+      else { x = -40 + rr() * 56; z = -69 - rr() * 3; sz = 0.25 + Math.pow(rr(), 2) * 0.7; }
+      if (!clear(x, z)) continue; bits.push([x, z, sz, 1, Math.floor(rr() * stones.length)]); i++; }
+    for (let i = 0, tries = 0; i < nC && tries < 1500; tries++) {                                // clods: broken soil along the dig lip, a few on the haul road shoulders
+      let x, z; if (rr() < 0.82) { const a = rr() * Math.PI * 2, d = 1.0 + (rr() - 0.3) * 0.28; x = D[0] + Math.cos(a) * d * D[2]; z = D[1] + Math.sin(a) * d * D[3]; }
+      else { z = -36 - rr() * 40; x = -6 + 0.2 * (z + 44) + 3 * Math.sin(z * 0.08) + (rr() < 0.5 ? -1 : 1) * (1.9 + rr() * 0.8); }
+      if (!clear(x, z)) continue; bits.push([x, z, 0.07 + Math.pow(rr(), 2.5) * 0.28, 0, Math.floor(rr() * clodP.length)]); i++; }
+  }
   const tg = new THREE.BufferGeometry();
-  { const nx = XS.length, nz = ZS.length, P = new Float32Array(nx * nz * 3), UV = new Float32Array(nx * nz * 2), I = new Uint32Array((nx - 1) * (nz - 1) * 6);
-    for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) { const v = j * nx + i, x = XS[i], z = ZS[j]; P[v * 3] = x; P[v * 3 + 1] = G0 + hgt(x, z); P[v * 3 + 2] = z; UV[v * 2] = x / TEX_DIRT; UV[v * 2 + 1] = -z / TEX_DIRT; }
-    let o = 0; for (let j = 0; j < nz - 1; j++) for (let i = 0; i < nx - 1; i++) { const a = j * nx + i, b = a + 1, c = a + nx, d = c + 1; I.set([a, c, b, b, c, d], o); o += 6; }
-    tg.setAttribute('position', new THREE.BufferAttribute(P, 3)); tg.setAttribute('uv', new THREE.BufferAttribute(UV, 2)); tg.setIndex(new THREE.BufferAttribute(I, 1)); tg.computeVertexNormals(); }
+  { const nx = XS.length, nz = ZS.length, NV = nx * nz, P = [], UV = [], N = [], GD = [], I = [];
+    const H = new Float32Array(NV);
+    for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) { const v = j * nx + i, x = XS[i], z = ZS[j]; H[v] = G0 + hgt(x, z); P.push(x, H[v], z); UV.push(x / TEX_DIRT, -z / TEX_DIRT); }
+    for (let j = 0; j < nz - 1; j++) for (let i = 0; i < nx - 1; i++) { const a = j * nx + i, b = a + 1, c = a + nx, d = c + 1; I.push(a, c, b, b, c, d); }
+    const grid = new THREE.BufferGeometry(); grid.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); grid.setIndex(I); grid.computeVertexNormals();
+    for (const v of grid.attributes.normal.array) N.push(v); grid.dispose();
+    // ground occlusion: crevices (positive laplacian of the height grid) + soft contact shadow around every stone / clod
+    const occ = new Float32Array(NV).fill(1);
+    for (let j = 1; j < nz - 1; j++) for (let i = 1; i < nx - 1; i++) { const v = j * nx + i, hx = (XS[i + 1] - XS[i - 1]) / 2, hz = (ZS[j + 1] - ZS[j - 1]) / 2;
+      const lap = (H[v - 1] + H[v + 1] - 2 * H[v]) / (hx * hx) + (H[v - nx] + H[v + nx] - 2 * H[v]) / (hz * hz); if (hx < 1.5) occ[v] = 1 - 0.28 * sstep(0.05, 0.6, lap); }
+    const lb = (A, x) => { let lo = 0, hi = A.length - 1; while (lo < hi) { const m = (lo + hi) >> 1; if (A[m] < x) lo = m + 1; else hi = m; } return lo; };
+    for (const [x, z, sz] of bits) { const R = sz * 2.2; for (let j = Math.max(0, lb(ZS, z - R) - 1); j < nz && ZS[j] <= z + R; j++) for (let i = Math.max(0, lb(XS, x - R) - 1); i < nx && XS[i] <= x + R; i++) {
+      const d = Math.hypot(XS[i] - x, ZS[j] - z) / (sz * 1.25); occ[j * nx + i] *= 1 - 0.5 * Math.exp(-d * d); } }
+    for (let v = 0; v < NV; v++) GD.push(occ[v], 0);
+    // append the stones / clods (flat-shaded, world box UVs in the dirt tile frame), half-buried, darker toward the ground
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), sc = new V(), tp = new V(), nm = new THREE.Matrix3();
+    for (const [x, z, sz, stone, k] of bits) {
+      const src = (stone ? stones : clodP)[k], gy = G0 + hgt(x, z), bury = stone ? 0.3 + rr() * 0.2 : 0.2 + rr() * 0.25;
+      q.setFromEuler(e.set((rr() - 0.5) * (stone ? 0.5 : 1.2), rr() * 6.28, (rr() - 0.5) * (stone ? 0.5 : 1.2)));
+      m.compose(tp.set(x, gy + 0.72 * sz * (1 - 2 * bury), z), q, sc.set(sz * (0.85 + rr() * 0.4), sz, sz * (0.85 + rr() * 0.4))); nm.getNormalMatrix(m);
+      const sp = src.attributes.position, sn = src.attributes.normal, base = P.length / 3;
+      for (let t = 0; t < sp.count; t += 3) {
+        const fn = new V(sn.getX(t), sn.getY(t), sn.getZ(t)).applyMatrix3(nm).normalize(), ax = Math.abs(fn.x), ay = Math.abs(fn.y), az = Math.abs(fn.z);
+        for (let c = t; c < t + 3; c++) { const w = new V(sp.getX(c), sp.getY(c), sp.getZ(c)).applyMatrix4(m);
+          P.push(w.x, w.y, w.z); N.push(fn.x, fn.y, fn.z);
+          const [u, vv] = ay >= ax && ay >= az ? [w.x, -w.z] : ax >= az ? [w.z, w.y] : [w.x, w.y]; UV.push(u / TEX_DIRT, vv / TEX_DIRT);
+          GD.push(0.5 + 0.5 * sstep(gy - 0.02, gy + sz * 0.45, w.y), stone ? 0.75 + rr() * 0.25 : 0.12); }
+      }
+      for (let c = 0; c < sp.count; c++) I.push(base + c);
+    }
+    tg.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); tg.setAttribute('normal', new THREE.Float32BufferAttribute(N, 3));
+    tg.setAttribute('uv', new THREE.Float32BufferAttribute(UV, 2)); tg.setAttribute('aGd', new THREE.Float32BufferAttribute(GD, 2)); tg.setIndex(I);
+    stones.concat(clodP).forEach(g => g.dispose()); }
   tg.userData.texScale = TEX_DIRT;
   const tm = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.96 });
   const terrK = { value: 0 }; // 0 until dirt_ground lands (a white placeholder is bound until then)
@@ -75,8 +149,8 @@ export function buildOutside({ THREE, scene, high, quality }) {
   const PHT = placeholders(THREE), trkU = { tTrkC: { value: PHT.map }, tTrkN: { value: PHT.normalMap }, trkK: { value: 0 } };
   tm.onBeforeCompile = sh => {
     sh.uniforms.terrK = terrK; Object.assign(sh.uniforms, trkU);
-    sh.vertexShader = 'varying vec3 vW;\n' + sh.vertexShader.replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvW=(modelMatrix*vec4(transformed,1.)).xyz;');
-    sh.fragmentShader = 'uniform float terrK, trkK; uniform sampler2D tTrkC, tTrkN; varying vec3 vW;\n' + NOISE + `
+    sh.vertexShader = 'attribute vec2 aGd; varying vec2 vGd; varying vec3 vW;\n' + sh.vertexShader.replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvW=(modelMatrix*vec4(transformed,1.)).xyz; vGd=aGd;');
+    sh.fragmentShader = 'uniform float terrK, trkK; uniform sampler2D tTrkC, tTrkN; varying vec3 vW; varying vec2 vGd;\n' + NOISE + `
       float trkMask(vec2 p){                                                              // where machines have worked the ground
         float pad=1.-smoothstep(.6,1.,length((p-vec2(4.,-42.))/vec2(56.,26.)));          // the worked yard: foreground to the berm
         float road=(1.-smoothstep(2.5,5.5,abs(p.x-(-6.+.2*(p.y+44.)+3.*sin(p.y*.08)))))*smoothstep(-33.,-40.,p.y)*smoothstep(-96.,-76.,p.y); // haul road to the berm
@@ -85,7 +159,7 @@ export function buildOutside({ THREE, scene, high, quality }) {
       .replace('#include <color_fragment>', `#include <color_fragment>
         vec3 tcol=diffuseColor.rgb;
         vec2 tuv=vec2(vW.x+1.6*sin(vW.z*.045), -vW.z)/3.;                                // ruts run along z (toward the dig), gently snaking
-        float wk=trkMask(vW.xz)*trkK;
+        float wk=trkMask(vW.xz)*trkK*(1.-vGd.y);
         tcol=mix(tcol, texture2D(tTrkC,tuv).rgb, wk);
         float n1=fbm2(vW.xz*.18), n2=vn2(vW.xz*2.3+7.), n3=vn2(vW.xz*11.), tr=.5+.5*sin(vW.x*3.2+n1*4.);
         vec3 dirt=mix(vec3(.26,.19,.14), vec3(.4,.31,.23), n1);
@@ -95,6 +169,9 @@ export function buildOutside({ THREE, scene, high, quality }) {
         #ifdef USE_MAP
         diffuseColor.rgb*=mix(vec3(1.), tcol*2.2, .75*terrK);
         #endif
+        { float lum=dot(diffuseColor.rgb,vec3(.3,.59,.11));                              // stones: greyer, a touch lighter than the soil they sit in
+          diffuseColor.rgb=mix(diffuseColor.rgb, vec3(lum)*vec3(1.08,1.02,.94)*(1.25+.3*(n2-.5)), vGd.y);
+          diffuseColor.rgb*=vGd.x; }                                                      // crevices + contact shadow
         float wash=smoothstep(-34.,-50.,vW.z)*smoothstep(-110.,-70.,vW.z)*smoothstep(95.,30.,abs(vW.x))*(.55+.6*fbm2(vW.xz*.05+9.));
         float bh=(n2*.35+n3*.1)*(1.-.45*terrK)+tr*.08*smoothstep(-20.,-60.,vW.z)*(1.-wk); // once the scans land their normals carry the grain (screen-space bump blocks up at grazing angles)`)
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
@@ -208,6 +285,7 @@ export function buildOutside({ THREE, scene, high, quality }) {
   group.traverse(o => { if (o.isMesh) o.castShadow = o.receiveShadow = false; });
   for (const k of keep) k.traverse(o => { if (o.isMesh) { o.castShadow = high && !o.isInstancedMesh && o.material !== MAT.glow; o.receiveShadow = high; } });
   terrain.receiveShadow = high;
+  terrain.castShadow = false; // stones carry baked contact shadows; LIGHT: flip castShadow for self-shadowed mounds in raking light if the bias holds
   // everything that never moves (truck, loader, tower bodies, the excavator undercarriage) baked to one mesh per material
   const baked = bakeStatic(THREE, group, [...(high ? [{ root: yard.truck, deep: true }] : []), { root: yard.loader, deep: true }, ...towers.map(t => ({ root: t, deep: true })), { root: exA.g, deep: false }], { shadow: high });
 

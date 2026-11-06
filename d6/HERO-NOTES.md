@@ -30,3 +30,11 @@ still dresses the chair + wall panels, brushed_metal the mullions / frame / desk
 TEX: (2026-11-05, flicker + black block) MODEL asks, both handled at runtime from hero3d.js for now, please fix at source:
 - zero-area triangles with zero-length vertex normals: 2 on the mouse (desk, ~(0.34, 0.77, 0.46)), 3 on a site prop (colour a0968a, non-indexed, at (42, 2.2, -66), (-38, 2.85, -84), (49, 0.76, -60)). normalize(0) is NaN on real GPUs and those slivers rasterise only on the odd frame; one NaN texel became a one-frame black block through bloom. hero3d.js now rewrites such normals to (0,1,0) at build, and every scene material's output goes through fin() (NaN / inf -> 0, clamp 2048), key suffix '-fin'.
 - terrain screen-space bump (bh, dFdx of value noise at 9 / 43 cm): it was half the frame-to-frame ground sparkle. My terrain patch now footprint-fades each octave and drops the noise octaves once dirt_ground lands (the scan normals carry the grain); please keep the `float bh=(n2*.35+n3*.1)*(1.-.45*terrK)+tr*.08*` text or tell me if you change it. Its normalize can hit det = 0 (NaN): guarded after it.
+
+MODEL: (2026-11-06, ground pass, per Devin "tumbleweed") The instanced rubble (site `rubble`, `M.rock`) is gone. Stones
+(angular convex hulls, half-buried) and clods (dig lip, haul-road shoulders) are merged into the terrain mesh itself, same
+`d6hero-terrain` material and dirt_ground / dirt_tracks roles. New terrain attribute `aGd` (vec2: occlusion multiplier from
+curvature + stone contact shadows, stone mask) read as `vGd` in the colour pass; the `float bh=` line and the vW / terrK /
+fbm2 anchors are unchanged so the LIGHT patch still applies. Spoil piles are now smooth repose cones with runnels (one
+flat-topped by the loader at -31,-61); twin tyre / track grooves run up the berms. LIGHT: terrain.castShadow is false; flip it
+for self-shadowed mounds at dawn if the shadow bias holds.
