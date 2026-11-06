@@ -14,7 +14,7 @@ const CFG = window.D5_CFG || {}, MM = CFG.mode === 'mars', AHEAD = CFG.ahead ?? 
 // D6.1 flags (Mars mode only): look 'lit' = front-left lit full disc + rim halo; beats = title / SpaceX lines / colony line on one track;
 // onProgress(p, beat) runs every frame the track is live.
 // rockets: Starships land early in the Jezero timelapse and a third is stacked on a pad later (d5/rockets.js, hull from the D6.1 footer)
-const ROCK = !!CFG.rockets, ROCK_SITES = { land: [[55, -150], [15, -168]], build: [-25, -100] };
+const ROCK = !!CFG.rockets, ARRIVE = 0.1, ROCK_SITES = { land: [[55, -150], [15, -168]], build: [-25, -100] };
 let rockMod = null; const rockP = ROCK ? Promise.all([import('./rockets.js'), import('../d61/foot-model-starship.js'), import('../d61/foot-model-kit.js')])
   .then(([r, s, k]) => (rockMod = { createRockets: r.createRockets, foot: { buildStarships: s.buildStarships, mergeAll: k.mergeAll } })).catch(e => console.warn('d5 rockets:', e)) : null;
 const LIT = MM && CFG.look === 'lit', MBEATS = MM && !!CFG.beats, onProg = MM && typeof CFG.onProgress === 'function' ? CFG.onProgress : null;
@@ -370,6 +370,7 @@ const qPanel = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 0.5)); 
 const started = (list, g) => { let n = 0; while (n < list.length && list[n].bt < g) n++; return n; }; // easeOut(x) > 0 exactly when bt < g
 // returns true when the build state (and so the shadow casters and sun) changed this frame
 function buildColony(g, t) {
+  const gR = g; if (ROCK) g = Math.max(0, (g - ARRIVE) / (1 - ARRIVE)); // rockets: the ships land first, the city build (and its day) runs on the rest
   const night = sstep(g, 0.35, 0.95), el = THREE.MathUtils.lerp(0.34, -0.05, sstep(g, 0.05, 1));
   colSun.set(-Math.cos(el), Math.sin(el), -Math.cos(el) * 0.22).normalize();
   // shadow camera: sit 600 units out along the sun, look at the colony centre; vertical half-extent = projected ground disc + tallest caster (cranes, domes)
@@ -383,10 +384,10 @@ function buildColony(g, t) {
   const lc = (g * 5) % 1, flying = g > 0.3; let ly = 0, burn = 0;
   if (lc < 0.35) { ly = Math.pow(1 - lc / 0.35, 2) * 320; burn = 1; } else if (lc > 0.65) { ly = Math.pow((lc - 0.65) / 0.35, 2) * 360; burn = 1; }
   lander.visible = plume.visible = flying && !ROCK; // rockets: the Starships replace the toy lander
-  if (rockets) rockets.update(g, t, night); lander.position.set(PAD.x, ly + 0.3, PAD.z);
+  if (rockets) rockets.update(gR, t, night); lander.position.set(PAD.x, ly + 0.3, PAD.z);
   plume.position.set(PAD.x, ly - 2, PAD.z); plume.scale.setScalar(burn * (18 + Math.sin(t * 40) * 2)); plume.material.opacity = burn * (0.6 + 0.4 * (1 - Math.min(1, ly / 60)));
   cranes.forEach(c => { c.jib.rotation.y = c.ph + g * 46 + t * 0.15; });
-  if (Math.abs(g - lastG) < 1e-4) return false; lastG = g;
+  if (Math.abs(gR - lastG) < 1e-4) return false; lastG = gR;
   // lists are sorted by bt, so the started instances are a prefix: draw count = how many have begun each stage
   const nPad = started(habI, g), nFrame = started(habI, g - 0.02), nShell = started(habI, g - 0.07);
   for (let i = 0; i < nPad; i++) {
@@ -410,6 +411,7 @@ function buildColony(g, t) {
   domes.forEach(d => {
     const s = easeOut((g - d.bt) / 0.1), gl = sstep(g, d.bt + 0.1, d.bt + 0.18);
     d.lattice.scale.set(1, Math.max(0.001, s), 1);
+    if (ROCK) d.g.visible = s > 0; // rockets: nothing of a dome (its planted floor included) before it starts
     d.glass.material.opacity = gl * 0.28; d.glow.material.opacity = gl * night * 0.28;
   });
   tubes.forEach(tb => { const k = easeOut((g - tb.bt) / 0.08); tb.g.scale.set(Math.max(0.001, k * 62), 1, 1); tb.g.visible = k > 0; });

@@ -7,36 +7,42 @@
 const sst = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 const cl01 = x => Math.min(1, Math.max(0, x)), eo = x => 1 - Math.pow(1 - cl01(x), 3);
 // arrival: [start, touchdown] per ship; build: hull bands (m from the feet) and when each one is lifted into place
-const LAND = [[0.012, 0.07], [0.04, 0.1]], DROP = 520;
+const LAND = [[0.0, 0.045], [0.018, 0.064]], DROP = 520; // both down, engines cut and dust settled by ~0.1: main.js holds the colony build until then (ARRIVE)
 const BANDS = [0, 10.2, 18.9, 27.5, 34.7, 52.2], LIFT_AT = [0.44, 0.5, 0.56, 0.62, 0.68], LIFT_LEN = 0.05;
 const PAD0 = 0.34, TOWER = [0.36, 0.44], FLAPS = [0.75, 0.81], SCAF_DROP = [0.83, 0.89];
 
 export function createRockets({ THREE, foot, colony, envMap, high, sites }) {
   const group = new THREE.Group(); colony.add(group);
   // ---------- ship parts from the footer builder: one ship at the origin, sorted into hull / flaps / dark ----------
-  const steelK = {}, darkK = {}, padK = {}, beaconK = {}, calls = [];
-  const out = foot.buildStarships({ THREE, B: { P: (m, g) => calls.push([m, g]) }, M: { stainless: steelK, dark: darkK, pad: padK, beacon: beaconK }, high, ships: [{ x: 0, z: 0, lod: 1 }] });
-  const base = out[0].y, hull = [], flaps = [], dark = [], bb = new THREE.Box3();
+  const steelK = {}, flapK = {}, darkK = {}, padK = {}, beaconK = {}, calls = [];
+  const out = foot.buildStarships({ THREE, B: { P: (m, g) => calls.push([m, g]) }, M: { stainless: steelK, flap: flapK, dark: darkK, pad: padK, beacon: beaconK }, high, ships: [{ x: 0, z: 0, lod: 1 }] });
+  const base = out[0].y, hull = [], flaps = [], bb = new THREE.Box3();
   for (const [m, g] of calls) {
     if (m === padK || m === beaconK) { g.dispose(); continue; }
     g.translate(0, -base, 0); g.computeBoundingBox(); bb.copy(g.boundingBox);
-    if (m === darkK) { dark.push(g); continue; }
+    // uniform stainless all round (as the real ships fly now): the half-lathe heat-tile shell is dropped whatever bucket it
+    // arrives in (tall and lopsided), the engine skirt and any other dark part joins the hull
+    const asym = Math.max(Math.abs(bb.min.x + bb.max.x), Math.abs(bb.min.z + bb.max.z));
+    if (bb.max.y - bb.min.y > 20 && asym > 2) { g.dispose(); continue; }
+    if (m === darkK) { hull.push(g); continue; }
+    if (m === flapK) { flaps.push(g); continue; } // the footer names its flap parts; older builds fall through to the bounds test
     const rad = Math.max(-bb.min.x, bb.max.x, -bb.min.z, bb.max.z), h = bb.max.y - bb.min.y;
     (rad > 4.8 && h > 1 && bb.max.y > 0.5 ? flaps : hull).push(g); // flaps + aerocovers stand proud of the 4.5 m hull; ring bands are thin
   }
   const merge = gs => { const g = foot.mergeAll(THREE, gs); let y0 = Infinity; const p = g.attributes.position; for (let i = 0; i < p.count; i++) y0 = Math.min(y0, p.getY(i)); g.userData.y0 = y0; return g; };
-  const all = merge([...hull, ...flaps]), hullG = merge(hull), flapG = merge(flaps), darkG = merge(dark);
-  const FEET = -Math.min(all.userData.y0, darkG.userData.y0); // lift so the leg pads touch y = 0
-  [all, hullG, flapG, darkG].forEach(g => { g.translate(0, FEET, 0); g.computeBoundingSphere(); });
-  [...hull, ...flaps, ...dark].forEach(g => g.dispose());
+  const hullG = merge(hull), flapG = merge(flaps);
+  const FEET = -hullG.userData.y0; // lift so the leg pads touch y = 0
+  [hullG, flapG].forEach(g => { g.translate(0, FEET, 0); g.computeBoundingSphere(); });
+  [...hull, ...flaps].forEach(g => g.dispose());
 
-  const steel = new THREE.MeshStandardMaterial({ color: 0xc2c4c8, metalness: 0.85, roughness: 0.3, envMap });
-  const tiles = new THREE.MeshStandardMaterial({ color: 0x18191c, metalness: 0.1, roughness: 0.75 });
+  // brushed stainless: Mars sky in the reflections plus a soft warm fill (emissive, eased down at night) so the shadow side reads dim steel, never black
+  const steel = new THREE.MeshStandardMaterial({ color: 0xc8cacd, metalness: 0.8, roughness: 0.34, envMap, envMapIntensity: 1.5, emissive: 0x2c2018, emissiveIntensity: 1 });
+  const flapSteel = steel.clone(); flapSteel.color.set(0x9a9da2);
   const orange = new THREE.MeshStandardMaterial({ color: 0xf0a35a, emissive: 0x3a1a00, roughness: 0.6 });
   const concrete = new THREE.MeshStandardMaterial({ color: 0x8a8078, roughness: 0.9 });
 
   // ---------- arrival: two parked ships, instanced ----------
-  const landSteel = new THREE.InstancedMesh(all, steel, LAND.length), landDark = new THREE.InstancedMesh(darkG, tiles, LAND.length);
+  const landSteel = new THREE.InstancedMesh(hullG, steel, LAND.length), landDark = new THREE.InstancedMesh(flapG, flapSteel, LAND.length);
   [landSteel, landDark].forEach(m => { m.castShadow = m.receiveShadow = true; m.frustumCulled = false; group.add(m); });
   const mtx = new THREE.Matrix4(), q = new THREE.Quaternion(), v = new THREE.Vector3(), one = new THREE.Vector3(1, 1, 1);
   const yaw = sites.land.map((s, i) => new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.6 + i * 1.9));
@@ -83,8 +89,8 @@ export function createRockets({ THREE, foot, colony, envMap, high, sites }) {
     m.customProgramCacheKey = () => depth ? 'd5clip-d' : 'd5clip'; return m;
   };
   const band = (geo, mat) => { const U = clipU(), m = new THREE.Mesh(geo, clipMat(mat, U)); m.customDepthMaterial = clipMat(null, U, true); m.castShadow = m.receiveShadow = true; m.position.copy(B); m.userData.U = U; group.add(m); return m; };
-  const stackS = band(hullG, steel), stackD = band(darkG, tiles), liftS = band(hullG, steel), liftD = band(darkG, tiles);
-  const flapM = new THREE.Mesh(flapG, steel); flapM.position.copy(B); flapM.castShadow = flapM.receiveShadow = true; group.add(flapM);
+  const stackS = band(hullG, steel), liftS = band(hullG, steel);
+  const flapM = new THREE.Mesh(flapG, flapSteel); flapM.position.copy(B); flapM.castShadow = flapM.receiveShadow = true; group.add(flapM);
   const pad = new THREE.Mesh(new THREE.CylinderGeometry(15, 16.5, 1.2, high ? 40 : 24).translate(0, 0.6, 0), concrete); pad.position.copy(B); pad.receiveShadow = pad.castShadow = true; group.add(pad);
   // tower: lattice of thin boxes, behind-left of the ship as the late camera sees it
   const box = (w, h, d, x, y, z) => new THREE.BoxGeometry(w, h, d).translate(x, y, z), TH = 74;
@@ -126,6 +132,7 @@ export function createRockets({ THREE, foot, colony, envMap, high, sites }) {
     dust.visible = dU.uPh.value.x > 0 && dU.uPh.value.x < 1 || dU.uPh.value.y > 0 && dU.uPh.value.y < 1; dU.uNight.value = night;
     // crane slews toward the hook while a band is in the air, drifts otherwise
     jib.rotation.y = toShip + 0.35 * Math.sin(g * 40 + t * 0.12) * (1 - sst(LIFT_AT[0] - 0.02, LIFT_AT[0], g) * (1 - sst(LIFT_AT[4] + LIFT_LEN, LIFT_AT[4] + LIFT_LEN + 0.03, g)));
+    steel.emissiveIntensity = flapSteel.emissiveIntensity = 1 - 0.75 * night;
     lU.uOn.value = sst(PAD0, PAD0 + 0.03, g) * (0.25 + 0.75 * night);
     if (Math.abs(g - lastG) < 1e-5) return; lastG = g;
     pad.scale.set(1, Math.max(0.001, eo((g - PAD0) / 0.03)), 1); pad.visible = g > PAD0;
@@ -134,13 +141,13 @@ export function createRockets({ THREE, foot, colony, envMap, high, sites }) {
     let top = BANDS[0], k = -1;
     for (let i = 0; i < LIFT_AT.length; i++) { if (g >= LIFT_AT[i] + LIFT_LEN) top = BANDS[i + 1]; else if (g >= LIFT_AT[i]) { k = i; break; } else break; }
     const cut = top + (top > 0 ? 0.001 : -10); // the first band includes the legs below y 0
-    stackS.userData.U.value.set(-10, cut); stackD.userData.U.value.set(-10, cut); stackS.visible = stackD.visible = top > 0;
+    stackS.userData.U.value.set(-10, cut); stackS.visible = top > 0;
     if (k >= 0) {
       const off = 34 * (1 - eo((g - LIFT_AT[k]) / LIFT_LEN));
-      for (const m of [liftS, liftD]) { m.userData.U.value.set(k ? BANDS[k] : -10, BANDS[k + 1]); m.position.set(bx, off, bz); }
+      for (const m of [liftS]) { m.userData.U.value.set(k ? BANDS[k] : -10, BANDS[k + 1]); m.position.set(bx, off, bz); }
       cable.visible = true; cable.scale.y = Math.max(0.1, TH + 1 - (BANDS[k + 1] + off) - 0.5);
     } else cable.visible = false;
-    liftS.visible = liftD.visible = k >= 0;
+    liftS.visible = k >= 0;
     const fk = eo((g - FLAPS[0]) / (FLAPS[1] - FLAPS[0])); flapM.visible = fk > 0; flapM.scale.set(0.5 + 0.5 * fk, 1, 0.5 + 0.5 * fk);
     const drop = sst(SCAF_DROP[0], SCAF_DROP[1], g);
     scaf.visible = g > LIFT_AT[0] && drop < 1; scaf.scale.set(1, Math.max(0.001, Math.min(1, (top + 5) / 52) * (1 - drop)), 1);
