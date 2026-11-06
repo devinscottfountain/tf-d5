@@ -212,7 +212,7 @@ function createDaylight({ THREE, renderer, scene, outside, siteLight, high, G0 }
   // sun: warm, low and raking at first, neutral and higher by the hand-off; shadows from a static frustum over the yard
   // (only the direction moves, with p). The room ignores it (roomOffSite zeroes directional lights): the window fill does that.
   const sun = new THREE.DirectionalLight(0xffffff, 0); sun.target.position.set(0, G0, -55); g.add(sun, sun.target);
-  if (high) { sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); Object.assign(sun.shadow.camera, { left: -80, right: 80, top: 80, bottom: -80, near: 10, far: 360 }); sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.05; sun.shadow.autoUpdate = false; }
+  if (high) { sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); Object.assign(sun.shadow.camera, { left: -62, right: 62, top: 62, bottom: -62, near: 40, far: 300 }); sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.12; sun.shadow.radius = 2; sun.shadow.autoUpdate = false; }
   // sky dome: blend the modeller's night sky (stars and all) into an analytic dawn / day sky with the sun disc and glow
   const skyD = { uZen: { value: new THREE.Color() }, uHor: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uSunC: { value: new THREE.Color() }, uSunDir: { value: sunDir }, uMix: { value: 0 } };
   g.traverse(o => { const m = o.material; if (!m?.isShaderMaterial || !m.uniforms?.cHor || m.userData.dayPatched) return;
@@ -259,6 +259,8 @@ function createDaylight({ THREE, renderer, scene, outside, siteLight, high, G0 }
   bake();
   const envMats = [], nightEnv = (() => { let t = null; g.traverse(o => { const k = o.material?.customProgramCacheKey?.call(o.material); if (!t && k === 'd6night-paint') t = o.material.envMap; }); return t; })();
   if (nightEnv) g.traverse(o => { const m = o.material; if (m?.envMap === nightEnv && !envMats.some(e => e[0] === m)) { m.envMap = envRT.texture; envMats.push([m, m.envMapIntensity]); } });
+  // terrain casts too (stockpiles, berms, clods read under the low sun); tight static frustum above, slope-scaled bias
+  if (high) g.traverse(o => { if (o.isMesh && o.material?.customProgramCacheKey?.call(o.material)?.startsWith('d6hero-terrain')) o.castShadow = true; });
   // light bases (after lightSite's tuning) so the day can scale them down to off
   const base = l => l && [l, l.intensity];
   const floods = [...(outside.spots || []), siteLight.rake, siteLight.sky, ...(siteLight.rims || [])].filter(Boolean).map(base);
@@ -271,8 +273,8 @@ function createDaylight({ THREE, renderer, scene, outside, siteLight, high, G0 }
     const vis = Math.min(1, Math.max(0, (K.el + 0.02) / 0.1));                         // the ridge holds the direct sun until ~0.08 rad
     sun.color.copy(sunCol); sun.intensity = K.sunI * vis;
     sun.position.copy(sun.target.position).addScaledVector(sunDir, 160);
-    if (high) { const on = sun.intensity > 0.001; if (on && sun.userData.p !== p) { sun.shadow.needsUpdate = true; sun.userData.p = p; } }
-    skyD.uZen.value.setRGB(...K.zen); skyD.uHor.value.setRGB(...K.hor); skyD.uGlow.value.setRGB(...K.glow); skyD.uSunC.value.copy(sunCol).multiplyScalar(60 * vis); skyD.uMix.value = K.mix;
+    if (high) sun.shadow.autoUpdate = sun.intensity > 0.001;   // no sun-shadow pass at night; with the sun up the machines move, so every frame
+    skyD.uZen.value.setRGB(...K.zen); skyD.uHor.value.setRGB(...K.hor); skyD.uGlow.value.setRGB(...K.glow); skyD.uSunC.value.copy(sunCol).multiplyScalar(25 * vis); skyD.uMix.value = K.mix;
     machU.value = K.mach;
     for (const [l, i] of floods) l.intensity = i * K.flood;
     if (moon) moon[0].intensity = moon[1] * K.moon;

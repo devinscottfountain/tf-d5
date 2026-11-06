@@ -90,7 +90,7 @@ export function createAtmosphere({ THREE, src, depth, cam }) {
         vec3 fogC=mix(hazeC,hazeLow,low);
         add+=fogC*(1.-T);
         { float mu=max(dot(dir,sunDir),0.);                                          // sun in the haze: forward scatter (dawn glow, ridge depth)
-          add+=sunC*(1.-T)*(.3+1.4*pow(mu,6.)+4.*pow(mu,60.)); }
+          add+=sunC*(1.-T)*(.3+1.4*pow(mu,6.)+2.*pow(mu,60.)); }
         for(int i=0;i<4;i++){ if(lampP[i].w<=0.) continue;
           vec3 s=lampP[i].xyz; float g=air(camPos,dir,t0,t1,s);
           float cosv=dot(dir,normalize(s-camPos)); float ph=.35+.65*pow(max(cosv,0.),24.);   // forward scatter: the glow hugs the lamp
