@@ -64,10 +64,11 @@ export function createAtmosphere({ THREE, src, depth, cam }) {
     near: { value: 0.05 }, far: { value: 2500 }, time: { value: 0 }, glassZ: { value: -2.2 }, glassT: { value: 0.68 },
     hazeD: { value: 0.0035 }, hazeH: { value: 0.09 }, hazeY0: { value: -1 }, hazeC: { value: new THREE.Color(0.014, 0.05, 0.17) }, hazeLow: { value: new THREE.Color(0.05, 0.045, 0.05) },
     lampP: { value: [0, 1, 2, 3].map(() => new THREE.Vector4(0, -999, 0, 0)) }, lampC: { value: [0, 1, 2, 3].map(() => new THREE.Color(0, 0, 0)) },
-    roomP: { value: new THREE.Vector3(0, 1.13, 0.3) }, roomC: { value: new THREE.Color(0, 0, 0) }
+    roomP: { value: new THREE.Vector3(0, 1.13, 0.3) }, roomC: { value: new THREE.Color(0, 0, 0) },
+    sunDir: { value: new THREE.Vector3(0, -1, 0) }, sunC: { value: new THREE.Color(0, 0, 0) }
   };
   const m = fsMat(THREE, u, `${NOISE3}${DEPTH}${FIN}
-    uniform sampler2D tColor, tDepth; uniform mat4 invProj, camWorld; uniform vec3 camPos, hazeC, hazeLow, roomC, roomP; uniform float time, glassZ, glassT, hazeD, hazeH, hazeY0;
+    uniform sampler2D tColor, tDepth; uniform mat4 invProj, camWorld; uniform vec3 camPos, hazeC, hazeLow, roomC, roomP, sunDir, sunC; uniform float time, glassZ, glassT, hazeD, hazeH, hazeY0;
     uniform vec4 lampP[4]; uniform vec3 lampC[4]; varying vec2 vUv;
     float air(vec3 o, vec3 dir, float t0, float t1, vec3 s){ vec3 so=s-o; float tc=dot(so,dir); float h=max(length(so-dir*tc),.04);
       return (atan((t1-tc)/h)-atan((t0-tc)/h))/h; }
@@ -88,6 +89,8 @@ export function createAtmosphere({ THREE, src, depth, cam }) {
         float low=exp(-max(y0-hazeY0,0.)*.25)*smoothstep(.25,-.05,dir.y);          // near the ground the haze picks up the work lights
         vec3 fogC=mix(hazeC,hazeLow,low);
         add+=fogC*(1.-T);
+        { float mu=max(dot(dir,sunDir),0.);                                          // sun in the haze: forward scatter (dawn glow, ridge depth)
+          add+=sunC*(1.-T)*(.3+1.4*pow(mu,6.)+4.*pow(mu,60.)); }
         for(int i=0;i<4;i++){ if(lampP[i].w<=0.) continue;
           vec3 s=lampP[i].xyz; float g=air(camPos,dir,t0,t1,s);
           float cosv=dot(dir,normalize(s-camPos)); float ph=.35+.65*pow(max(cosv,0.),24.);   // forward scatter: the glow hugs the lamp

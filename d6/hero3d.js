@@ -178,6 +178,114 @@ function guardOutput(THREE, root) {
   });
 }
 
+// ---------------------------------------------------------------- night to day across the scroll
+// Keys on hero p: night (copy up) -> blue hour -> sunrise behind the ridge (warm, raking, long shadows) -> neutral morning
+// daylight by the Series B hand-off (a daylight photo). Everything is uniforms / light values / one fixed-size PMREM target
+// rebaked every ENV_STEP of p, so scrolling never compiles. The sun rises a touch right of centre, between the H1 and the lead.
+const ENV_STEP = 0.03;
+const C3 = (r, g, b) => [r, g, b];
+const DAY_KEYS = [ // p, values (linear colours)
+  [0, { mix: 0, zen: C3(.002, .004, .012), hor: C3(.05, .16, .44), glow: C3(0, 0, 0), el: -.2, az: .12, sunI: 0, sunC: C3(1, .4, .15), hemiI: .2, hemiS: C3(.016, .037, .117), hemiG: C3(.007, .0044, .0027),
+    flood: 1, moon: 1, hazeC: C3(.014, .05, .17), hazeLow: C3(.05, .045, .05), hazeD: .0035, exp: 1, winI: 1, winC: C3(.36, .45, .72), envK: .6, mach: 0, scat: 0, city: 1 }],
+  [0.14, {}],                                                                                     // hold the night while the copy is fully up
+  [0.36, { mix: .5, zen: C3(.012, .03, .1), hor: C3(.3, .34, .55), glow: C3(.7, .3, .1), el: -.08, az: .14, hemiI: .3, hemiS: C3(.04, .06, .15), hemiG: C3(.015, .01, .007),
+    flood: .75, moon: .5, hazeC: C3(.05, .07, .16), hazeLow: C3(.12, .08, .07), hazeD: .004, exp: 1.04, winI: 1.2, winC: C3(.45, .5, .75), envK: .7, mach: .15, scat: .35, city: .7 }],
+  [0.5, { mix: .85, zen: C3(.05, .1, .26), hor: C3(1.1, .55, .25), glow: C3(1.2, .5, .16), el: .015, az: .18, sunI: .5, sunC: C3(1, .48, .2), hemiI: .5, hemiS: C3(.22, .22, .32), hemiG: C3(.12, .08, .05),
+    flood: .3, moon: .15, hazeC: C3(.2, .13, .09), hazeLow: C3(.24, .15, .09), hazeD: .005, exp: .86, winI: 2, winC: C3(1, .7, .5), envK: 1, mach: .45, scat: 1, city: .3 }],
+  [0.62, { mix: 1, zen: C3(.1, .2, .46), hor: C3(1.1, .75, .5), glow: C3(1.2, .65, .3), el: .11, az: .24, sunI: 2.2, sunC: C3(1, .64, .36), hemiI: .8, hemiS: C3(.35, .4, .55), hemiG: C3(.2, .15, .1),
+    flood: 0, moon: 0, hazeC: C3(.4, .3, .24), hazeLow: C3(.45, .32, .22), hazeD: .0045, exp: .8, winI: 2.8, winC: C3(1, .82, .65), envK: 1.2, mach: .7, scat: .9, city: 0 }],
+  [0.8, { zen: C3(.16, .32, .7), hor: C3(.85, .82, .8), glow: C3(1, .8, .55), el: .32, az: .34, sunI: 3, sunC: C3(1, .86, .7), hemiI: 1, hemiS: C3(.45, .55, .8), hemiG: C3(.25, .2, .15),
+    hazeC: C3(.42, .4, .4), hazeLow: C3(.45, .4, .35), hazeD: .004, exp: .7, winI: 3.4, winC: C3(.97, .92, .86), envK: 1.4, mach: 1, scat: .6 }],
+  [1, { zen: C3(.18, .36, .8), hor: C3(.8, .84, .9), glow: C3(.6, .55, .45), el: .6, az: .45, sunI: 3.4, sunC: C3(1, .96, .9), hemiI: 1.1, hemiS: C3(.45, .56, .85), hemiG: C3(.26, .21, .16),
+    hazeC: C3(.45, .47, .52), hazeLow: C3(.45, .42, .4), hazeD: .0035, exp: .66, winI: 3.6, winC: C3(.95, .95, .95), envK: 1.5, scat: .5 }],
+];
+for (let i = 1; i < DAY_KEYS.length; i++) DAY_KEYS[i][1] = { ...DAY_KEYS[i - 1][1], ...DAY_KEYS[i][1] };   // each key inherits what it does not set
+function dayKey(p, out) {
+  let i = 0; while (i < DAY_KEYS.length - 2 && p > DAY_KEYS[i + 1][0]) i++;
+  const [p0, a] = DAY_KEYS[i], [p1, b] = DAY_KEYS[i + 1], t0 = Math.min(1, Math.max(0, (p - p0) / (p1 - p0))), t = t0 * t0 * (3 - 2 * t0);
+  for (const k in a) { const x = a[k], y = b[k]; if (Array.isArray(x)) { const o = out[k] ||= [0, 0, 0]; for (let j = 0; j < 3; j++) o[j] = x[j] + (y[j] - x[j]) * t; } else out[k] = x + (y - x) * t; }
+  return out;
+}
+function createDaylight({ THREE, renderer, scene, outside, siteLight, high, G0 }) {
+  const g = outside.group, K = dayKey(0, {}), V3 = THREE.Vector3;
+  const sunDir = new V3(0, -1, 0), sunCol = new THREE.Color();
+  // sun: warm, low and raking at first, neutral and higher by the hand-off; shadows from a static frustum over the yard
+  // (only the direction moves, with p). The room ignores it (roomOffSite zeroes directional lights): the window fill does that.
+  const sun = new THREE.DirectionalLight(0xffffff, 0); sun.target.position.set(0, G0, -55); g.add(sun, sun.target);
+  if (high) { sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); Object.assign(sun.shadow.camera, { left: -80, right: 80, top: 80, bottom: -80, near: 10, far: 360 }); sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.05; sun.shadow.autoUpdate = false; }
+  // sky dome: blend the modeller's night sky (stars and all) into an analytic dawn / day sky with the sun disc and glow
+  const skyD = { uZen: { value: new THREE.Color() }, uHor: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uSunC: { value: new THREE.Color() }, uSunDir: { value: sunDir }, uMix: { value: 0 } };
+  g.traverse(o => { const m = o.material; if (!m?.isShaderMaterial || !m.uniforms?.cHor || m.userData.dayPatched) return;
+    const f = m.fragmentShader, end = 'gl_FragColor=vec4(c,1.); }';
+    if (!f.includes(end)) return;
+    Object.assign(m.uniforms, skyD); m.userData.dayPatched = true;
+    m.fragmentShader = 'uniform vec3 uZen, uHor, uGlow, uSunC, uSunDir; uniform float uMix;\n' + f.replace(end, `
+        { vec3 d=normalize(vD); float mu=max(dot(d,uSunDir),0.), eh=max(e,0.);
+          vec3 dsk=mix(uHor,uZen,pow(smoothstep(-.02,.55,e),.55));
+          dsk+=uGlow*(pow(mu,5.)*.5+pow(mu,40.)*1.4)*exp(-eh*2.5);                         // dawn glow hugging the sun
+          dsk+=uGlow*.22*exp(-eh*12.)*(.4+.6*mu);                                            // the band along the ridge
+          dsk+=uSunC*smoothstep(.99955,.9998,mu);                                            // disc (HDR: blooms)
+          c=mix(c,dsk,uMix); }
+        gl_FragColor=vec4(c,1.); }`);
+    m.needsUpdate = true; });
+  // machines: lift the night grade (desaturated, x0.34) back to full CAT yellow by day
+  const machU = { value: 0 };
+  g.traverse(o => { const m = o.material; if (!m?.isMeshStandardMaterial || m.userData.dayPatched) return;
+    const k = m.customProgramCacheKey?.call(m) || ''; if (!k.startsWith('d6night-')) return;
+    m.userData.dayPatched = true; const prev = m.onBeforeCompile;
+    m.onBeforeCompile = (sh, r) => { prev?.call(m, sh, r); const a = '.14) * .34;';
+      if (!sh.fragmentShader.includes(a)) return;
+      sh.uniforms.uMach = machU; sh.fragmentShader = 'uniform float uMach;\n' + sh.fragmentShader.replace(a, '.14+.86*uMach) * mix(.34,1.,uMach);'); };
+  });
+  // reflections: one fixed-size PMREM target, rebaked from a painted equirect as the sky changes (no recompile: same target)
+  const cv = document.createElement('canvas'); cv.width = 128; cv.height = 64; const cx = cv.getContext('2d'), img = cx.createImageData(128, 64);
+  const eq = new THREE.CanvasTexture(cv); eq.mapping = THREE.EquirectangularReflectionMapping; eq.colorSpace = THREE.SRGBColorSpace;
+  const pmrem = new THREE.PMREMGenerator(renderer); let envRT = null, bakedP = -1;
+  const enc = x => Math.round(255 * Math.pow(Math.min(1, Math.max(0, x)), 1 / 2.2));
+  function paint() {
+    const d = img.data;
+    for (let y = 0; y < 64; y++) { const el = (0.5 - (y + 0.5) / 64) * Math.PI, e = Math.sin(el);
+      for (let x = 0; x < 128; x++) { const az = ((x + 0.5) / 128 - 0.5) * 2 * Math.PI;   // three's equirect: u = atan(dir.z, dir.x)
+        const dx = Math.cos(el) * Math.cos(az), dz = Math.cos(el) * Math.sin(az), mu = Math.max(0, dx * sunDir.x + e * sunDir.y + dz * sunDir.z);
+        const i = (y * 128 + x) * 4, tH = Math.pow(Math.min(1, Math.max(0, (e + 0.02) / 0.57)), 0.55);
+        for (let c = 0; c < 3; c++) {
+          let v = e >= -0.02 ? K.hor[c] + (K.zen[c] - K.hor[c]) * tH + K.glow[c] * (Math.pow(mu, 5) * 0.5 + 0.22 * Math.exp(-Math.max(e, 0) * 12)) : K.hemiG[c] * K.hemiI * 0.5;
+          if (e < 0.03 && e > -0.03 && K.flood > 0 && (x === 30 || x === 70 || x === 100)) v += [1, .75, .45][c] * 0.8 * K.flood;   // site lamps on the night horizon
+          d[i + c] = enc(v * 0.8); }
+        d[i + 3] = 255; } }
+    cx.putImageData(img, 0, 0); eq.needsUpdate = true;
+  }
+  function bake() { paint(); envRT = pmrem.fromEquirectangular(eq, envRT); }
+  bake();
+  const envMats = [], nightEnv = (() => { let t = null; g.traverse(o => { const k = o.material?.customProgramCacheKey?.call(o.material); if (!t && k === 'd6night-paint') t = o.material.envMap; }); return t; })();
+  if (nightEnv) g.traverse(o => { const m = o.material; if (m?.envMap === nightEnv && !envMats.some(e => e[0] === m)) { m.envMap = envRT.texture; envMats.push([m, m.envMapIntensity]); } });
+  // light bases (after lightSite's tuning) so the day can scale them down to off
+  const base = l => l && [l, l.intensity];
+  const floods = [...(outside.spots || []), siteLight.rake, siteLight.sky, ...(siteLight.rims || [])].filter(Boolean).map(base);
+  const moon = base(outside.moon), hemi = outside.hemi, city = outside.city?.material;
+  const fog = scene.fog;
+  function update(p, renderer) {
+    dayKey(p, K);
+    sunDir.set(Math.sin(K.az) * Math.cos(K.el), Math.sin(K.el), -Math.cos(K.az) * Math.cos(K.el));
+    sunCol.setRGB(...K.sunC);
+    const vis = Math.min(1, Math.max(0, (K.el + 0.02) / 0.1));                         // the ridge holds the direct sun until ~0.08 rad
+    sun.color.copy(sunCol); sun.intensity = K.sunI * vis;
+    sun.position.copy(sun.target.position).addScaledVector(sunDir, 160);
+    if (high) { const on = sun.intensity > 0.001; if (on && sun.userData.p !== p) { sun.shadow.needsUpdate = true; sun.userData.p = p; } }
+    skyD.uZen.value.setRGB(...K.zen); skyD.uHor.value.setRGB(...K.hor); skyD.uGlow.value.setRGB(...K.glow); skyD.uSunC.value.copy(sunCol).multiplyScalar(60 * vis); skyD.uMix.value = K.mix;
+    machU.value = K.mach;
+    for (const [l, i] of floods) l.intensity = i * K.flood;
+    if (moon) moon[0].intensity = moon[1] * K.moon;
+    if (hemi) { hemi.intensity = K.hemiI; hemi.color.setRGB(...K.hemiS); hemi.groundColor.setRGB(...K.hemiG); }
+    if (city) city.opacity = K.city;
+    if (fog) fog.color.setRGB(...K.hazeC).multiplyScalar(0.2 + 0.6 * K.mix);
+    for (const [m, i] of envMats) m.envMapIntensity = i * K.envK;
+    if (Math.abs(p - bakedP) >= ENV_STEP || (p !== bakedP && (p === 0 || p === 1))) { bakedP = p; bake(); }
+    return K;
+  }
+  return { sun, sunDir, sunCol, K, update, dispose() { envRT?.dispose(); eq.dispose(); pmrem.dispose(); } };
+}
+
 // options: enhance 'auto' (default, runs on idle after ready) | 'manual' (page calls hero.enhance());
 // lite: no mirror / streaks / dust, cab without MSAA (default: coarse pointer, i.e. tablets)
 export function createHero({ THREE, host, quality = 'high', still = SERIES_B, canvas: cvIn, fadeOutside = true, enhance: enhanceMode = 'auto', lite } = {}) {
@@ -231,26 +339,28 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
   moonFill.position.set(0, 1.75, GLASS_Z + 0.03); moonFill.lookAt(0, 1.2, 6); scene.add(moonFill);
   const spill = { left: new THREE.Color(0.5, 0.62, 0.9), right: new THREE.Color(0.42, 0.74, 1.0), cab: new THREE.Color(1.0, 0.84, 0.66), still: new THREE.Color(0.78, 0.74, 0.7) };
   const siteLight = lightSite({ THREE, outside, high: HIGH, G0 });
+  const day = createDaylight({ THREE, renderer, scene, outside, siteLight, high: HIGH, G0 });
   guardOutput(THREE, scene);   // last: the other patches find materials by their original cache keys
 
   // ---------------------------------------------------------------- light-tower beams: additive cones, soft edges, drifting dust noise
   const coneU = { time, uG: { value: G0 } };
   const cones = new THREE.Group(); scene.add(cones);
   const spots = outside.spots || [];
-  if (HIGH) for (const s of spots) {
+  if (HIGH) for (const s of [...spots, siteLight.rake].filter(Boolean)) {
     s.updateMatrixWorld(); s.target.updateMatrixWorld();
     const a = s.getWorldPosition(new V3()), b = s.target.getWorldPosition(new V3()), len = a.distanceTo(b) * 1.12, ang = Math.min(0.6, (s.angle || 0.7) * 0.62);
     const g = new THREE.ConeGeometry(len * Math.tan(ang), len, 40, 1, true).translate(0, -len / 2, 0);
     const m = new THREE.Mesh(g, new THREE.ShaderMaterial({
       uniforms: { ...coneU, uCol: { value: new THREE.Color(1.0, 0.7, 0.4).multiplyScalar(0.05) } }, transparent: true, depthWrite: false, side: THREE.DoubleSide,
       blending: THREE.AdditiveBlending, fog: false, toneMapped: true,
-      vertexShader: `varying vec3 vW, vN; varying float vA; void main(){ vec4 w=modelMatrix*vec4(position,1.); vW=w.xyz; vN=normalize(mat3(modelMatrix)*normal); vA=1.-uv.y; gl_Position=projectionMatrix*viewMatrix*w; }`,
-      fragmentShader: `${NOISE3} uniform vec3 uCol; uniform float time, uG; varying vec3 vW, vN; varying float vA;
+      vertexShader: `varying vec3 vW, vN; varying float vA, vU; void main(){ vec4 w=modelMatrix*vec4(position,1.); vW=w.xyz; vN=normalize(mat3(modelMatrix)*normal); vA=1.-uv.y; vU=uv.x; gl_Position=projectionMatrix*viewMatrix*w; }`,
+      fragmentShader: `${NOISE3} uniform vec3 uCol; uniform float time, uG; varying vec3 vW, vN; varying float vA, vU;
         void main(){ vec3 V=normalize(cameraPosition-vW); float e=abs(dot(normalize(vN),V));
           float fall=pow(1.-vA,1.3)*smoothstep(0.,.05,vA)/(.15+vA*vA*3.);
           float n=(.45+.9*vn3(vW*.3+vec3(0.,-time*.22,time*.07)))*(.7+.6*vn3(vW*1.1+vec3(time*.09,time*.05,0.)));
           float gr=smoothstep(uG+.2,uG+2.8,vW.y);
-          gl_FragColor=vec4(uCol*pow(e,1.6)*fall*n*gr,1.); }`
+          float sh=.5+.8*vn3(vec3(vU*46.,vA*1.2,time*.03))*vn3(vec3(vU*13.+5.,vA*.6,time*.02));   // shafts: lens grid / dust striations along the beam
+          gl_FragColor=vec4(uCol*pow(e,1.6)*fall*n*sh*gr,1.); }`
     }));
     m.position.copy(a); m.quaternion.setFromUnitVectors(new V3(0, -1, 0), b.clone().sub(a).normalize()); m.renderOrder = 1; m.frustumCulled = false;
     cones.add(m);
@@ -301,14 +411,14 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
   const glassU = {
     time, tRefl: { value: mirror?.texture ?? null }, texM: { value: mirror?.texM ?? new THREE.Matrix4() }, tEnv: { value: room.env ?? null }, tSmudge: { value: null }, hasSm: { value: 0 }, uReflK: { value: 0 },
     uRefl: { value: 0.75 }, uEnv: { value: 0.35 }, uTint: room.glassU?.uTint ?? { value: 0.32 }, uTintC: room.glassU?.uTintC ?? { value: new THREE.Color(0x010304) },
-    uGhost: { value: new THREE.Vector2(0.0045, -0.003) }, uSmear: { value: 0.035 }
+    uGhost: { value: new THREE.Vector2(0.0045, -0.003) }, uSmear: { value: 0.035 }, uSunDir: { value: day.sunDir }, uSunC: { value: new THREE.Color(0, 0, 0) }
   };
   if (room.glass) {
     const old = room.glass.material;
     room.glass.material = new THREE.ShaderMaterial({
       uniforms: glassU, transparent: true, depthWrite: false, blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
       vertexShader: `uniform mat4 texM; varying vec3 vW; varying vec4 vR; void main(){ vec4 w=modelMatrix*vec4(position,1.); vW=w.xyz; vR=texM*w; gl_Position=projectionMatrix*viewMatrix*w; }`,
-      fragmentShader: `${NOISE} uniform sampler2D tRefl, tEnv, tSmudge; uniform float uRefl, uEnv, uTint, hasSm, uReflK, uSmear, time; uniform vec3 uTintC; uniform vec2 uGhost; varying vec3 vW; varying vec4 vR;
+      fragmentShader: `${NOISE} uniform sampler2D tRefl, tEnv, tSmudge; uniform float uRefl, uEnv, uTint, hasSm, uReflK, uSmear, time; uniform vec3 uTintC, uSunDir, uSunC; uniform vec2 uGhost; varying vec3 vW; varying vec4 vR;
         void main(){ vec3 V=normalize(vW-cameraPosition), N=vec3(0.,0.,1.), R=reflect(V,N);
           float ct=abs(dot(V,N)), F=.04+.96*pow(1.-ct,5.), F2=2.*F/(1.+F);                 // two panes
           float sm=hasSm>.5 ? texture2D(tSmudge,vW.xy*vec2(.42,.42)+vec2(.13,.4)).r : fbm2(vW.xy*vec2(2.5,1.2)+4.);
@@ -324,6 +434,8 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
             refl=mix(env,m,uReflK); }
           vec3 c=refl*F2*(.75+.6*sm)+uTintC*uTint;
           c+=refl*uSmear*sm*sm2*4.;                                                           // smudges catch the room light
+          { float fs=max(dot(V,uSunDir),0.);                                                  // low sun ahead: the dirt and wipe streaks light up
+            c+=uSunC*(pow(fs,4.)*(.05+1.1*sm*sm2+.3*sm)+pow(fs,36.)*(.15+.8*sm)); }
           gl_FragColor=vec4(c, uTint*(.88+.25*sm)); }`
     });
     room.glass.material.toneMapped = true; old?.dispose?.();
@@ -458,6 +570,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
     renderer.info.reset();
     if (enhT0) enh = Math.min(1, (now - enhT0) / FADE_MS);
     const p = prog, s = pose(p, clock);
+    const D = day.update(p);
     outside.update(clock); time.value = clock; screens.tick();
     cov = coverage(screenRect(sr));
     const glare = 1 - sstep(GLARE_COV[0], GLARE_COV[1], cov);   // 1 while the room is the picture, 0 once the screen is
@@ -473,8 +586,8 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
 
     // exposure ride: open a touch on the wide (the site), close as the screen fills frame, back to 1 for the hand-off.
     // the screens are compensated progressively so their pixels land as authored by the time they are the picture.
-    const ex = 1.06 - 0.13 * sstep(0.2, 0.68, p) + 0.07 * sstep(0.72, 0.93, p);
-    renderer.toneMappingExposure = ex; screens.setExposure(1 + (ex - 1) * sstep(0.45, 0.88, p));
+    const ex0 = 1.06 - 0.13 * sstep(0.2, 0.68, p) + 0.07 * sstep(0.72, 0.93, p), ex = ex0 * D.exp;   // D.exp: the day closes the lens
+    renderer.toneMappingExposure = ex; screens.setExposure((1 + (ex0 - 1) * sstep(0.45, 0.88, p)) * D.exp);   // screens compensate the day fully: readable throughout
     screens.setLevels?.(0.86, 0.95, 0.86);
     screens.setSubpixel?.(0.55 * sstep(0.5, 0.74, p) * glare);
 
@@ -483,20 +596,22 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
     if (mons.left?.light) { mons.left.light.color.copy(spill.left); mons.left.light.intensity = 2.3 * glow; }
     if (mons.right?.light) { mons.right.light.color.copy(spill.right); mons.right.light.intensity = 2.3 * glow; }
     if (mons.centre?.light) { mons.centre.light.color.copy(spill.cab).lerp(spill.still, mix); mons.centre.light.intensity = 2.8 * glow * (0.2 + 0.8 * lit); }
-    moonFill.intensity = (HIGH ? 0.55 : 0.4) * (1 - 0.4 * near);
+    moonFill.intensity = (HIGH ? 0.55 : 0.4) * D.winI * (1 - 0.4 * near); moonFill.color.setRGB(...D.winC);   // window fill: moonlight -> dawn -> daylight
 
     // atmosphere + beams + dust
     const ca = copyA ?? Math.max(0, 1 - p / COPY_OUT), lampDn = 1 - LAMP_COPY * sstep(0, 0.3, ca);   // full hold-down until the copy is nearly gone
-    const lampK = (1 - 0.5 * end) * LAMP_K * lampDn;
-    if (outside.lampHead) outside.lampHead.material.color.copy(outside.LAMP_ON).multiplyScalar(lampDn);
-    for (const [m, c] of siteGlow) m.color.copy(c).multiplyScalar(lampDn);
+    const lampK = (1 - 0.5 * end) * LAMP_K * lampDn * D.flood;
+    if (outside.lampHead) outside.lampHead.material.color.copy(outside.LAMP_ON).multiplyScalar(lampDn * Math.max(D.flood, 0.03));
+    for (const [m, c] of siteGlow) m.color.copy(c).multiplyScalar(lampDn * Math.max(D.flood, 0.08));
     if (atmo) {
       const au = atmo.uniforms; au.time.value = clock;
+      au.hazeC.value.setRGB(...D.hazeC); au.hazeLow.value.setRGB(...D.hazeLow); au.hazeD.value = D.hazeD;   // night blue -> warm dusty morning
+      if (au.sunDir) { au.sunDir.value.copy(day.sunDir); au.sunC.value.copy(day.sunCol).multiplyScalar(D.scat * 0.3); }
       for (let i = 0; i < spots.length && i < 4; i++) { spots[i].getWorldPosition(cv); au.lampP.value[i].set(cv.x, cv.y, cv.z, i === 0 ? 0 : 0.1 * lampK); au.lampC.value[i].copy(lampCol); }   // tower 0: no visible source, so no glow (its light stays)
       tmpC.copy(mons.centre?.light?.color ?? spill.cab).lerp(spill.left, 0.4); au.roomC.value.copy(tmpC).multiplyScalar(0.0022 * (1 - sstep(0.4, 0.62, p)) * glare * lit); // screen-light haze: follows what the screen shows, gone before it is the picture
       mons.centre.screen.getWorldPosition(au.roomP.value); au.roomP.value.z += 0.35;
     }
-    cones.children.forEach((c, i) => c.material.uniforms.uCol.value.setRGB(1.0, 0.7, 0.4).multiplyScalar((i === 0 ? 0.45 : 1) * 0.04 * lampK));   // tower 0's beam faint: its heads are dark
+    cones.children.forEach((c, i) => { const rk = i === cones.children.length - 1; c.material.uniforms.uCol.value.setRGB(...(rk ? [0.75, 0.82, 1.0] : [1.0, 0.7, 0.4])).multiplyScalar((i === 0 ? 0.45 : rk ? 0.35 : 1) * 0.05 * lampK); });   // tower 0 faint (dark heads), rake beam cool   // tower 0's beam faint: its heads are dark
 
     // lens: rack focus with shaped bokeh, fully sharp for the hand-off
     const dofK = HIGH ? 1 - sstep(0.88, 0.98, p) : 0;
@@ -507,7 +622,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
       dustU.pxScale.value = H * pr * cam.projectionMatrix.elements[5] * 0.5; dustU.amt.value = da;
       mons.centre.screen.getWorldPosition(dustU.lightP.value); dustU.lightC.value.copy(mons.centre.light?.color ?? spill.cab).lerp(spill.right, 0.35);
     }
-    post.bloom.strength = (0.66 - 0.42 * sstep(0.55, 1, p)) * (0.3 + 0.7 * glare); post.bloom.radius = 0.55; post.bloom.threshold = 1.0;   // sources and screens only, not lit props
+    post.bloom.strength = (0.66 - 0.42 * sstep(0.55, 1, p) + 0.15 * sstep(0.38, 0.5, p) * (1 - sstep(0.56, 0.7, p))) * (0.3 + 0.7 * glare);   // dawn: a gentle bloom bump post.bloom.radius = 0.55; post.bloom.threshold = 1.0;   // sources and screens only, not lit props
     lensU.barrel.value = 0.035 * (1 - s); lensU.vig.value = 0.6 - 0.32 * s; lensU.grain.value = 0.032 - 0.016 * s;
     lensU.leadK.value = W >= 768 ? LEAD_DARK * ca : 0;
     lensU.grade.value = 1 - end; lensU.hal.value = 0.12 * (1 - end) * glare; lensU.streak.value = 0.6 * (1 - end) * enh * glare;
@@ -524,6 +639,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
       ok = mirror.render(renderer, scene, cam, reflHide);
     }
     glassU.uReflK.value = ok ? reflK : 0;
+    glassU.uSunC.value.copy(day.sunCol).multiplyScalar(0.025 * D.scat * Math.min(1, Math.max(0, (D.el + 0.12) / 0.15)));   // sun on the window grime
 
     // hand-off pass follows the projected screen (canvas pixels: the canvas runs at DPR)
     const hu = hand.uniforms, ha = sstep(HAND_IN[0], HAND_IN[1], p); hu.amt.value = ha; hu.outFade.value = fadeOutside ? sstep(HAND_IN[0], 1, p) : 0;
@@ -689,7 +805,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
       if (dead) return;
       running = false; dead = true; cancelAnimationFrame(raf);
       try { texApi?.dispose?.(); } catch (_) { /* best effort */ }
-      room.dispose(); outside.dispose(); cab.dispose(); screens.dispose(); mirror?.dispose(); atmo?.dispose(); streak?.dispose(); post.dof.dispose?.();
+      day.dispose(); room.dispose(); outside.dispose(); cab.dispose(); screens.dispose(); mirror?.dispose(); atmo?.dispose(); streak?.dispose(); post.dof.dispose?.();
       for (const o of [...cones.children, dust, ...backRoom.children].filter(Boolean)) { o.geometry?.dispose(); o.material?.dispose(); }
       room.glass?.material?.dispose?.();
       // passes: their own dispose where they have one, plus every target / material they hold (D5 passes miss some)
