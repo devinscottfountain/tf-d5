@@ -36,7 +36,8 @@ export function buildFooterScene({ THREE, quality = 'high' } = {}) {
     foliage: S({ color: 0xffffff, roughness: 0.7, vertexColors: true, alphaTest: 0.5, side: THREE.DoubleSide }, 'foliage'),   // leaf cards, cutout
     soil: S({ color: 0x24170f, roughness: 1 }),
     hab: S({ color: 0xcdc8bf, roughness: 0.62, metalness: 0.05 }, 'habitat_panel'),
-    stainless: S({ color: 0xc8cbcf, roughness: 0.26, metalness: 1 }, 'stainless'),
+    stainless: S({ color: 0xc8cbcf, roughness: 0.3, metalness: 1, envMapIntensity: 1.4 }, 'stainless'),
+    flap: S({ color: 0x9a9da2, roughness: 0.36, metalness: 1, envMapIntensity: 1.2 }, 'stainless'),
     rover: S({ color: 0xe4e1da, roughness: 0.48 }, 'rover_paint'),
     dark: S({ color: 0x121315, roughness: 0.55, metalness: 0.2 }),
     solar: S({ color: 0x0e1828, roughness: 0.22, metalness: 0.7 }),
@@ -59,6 +60,19 @@ export function buildFooterScene({ THREE, quality = 'high' } = {}) {
       #include <opaque_fragment>`);
   };
   M.glass.customProgramCacheKey = () => 'd61-glass';
+  // steel: the side facing us mirrors the dark sky behind the camera, so add the soft dusk-dome fill a real hull picks up
+  // (cool grey, brighter toward the top) and a warm grazing rim from the glow. Shadow side reads dim steel, never black.
+  const steelU = { uFill: { value: new THREE.Color(0.055, 0.05, 0.05) }, uRim: { value: new THREE.Color(0.5, 0.26, 0.11) } };
+  for (const m of [M.stainless, M.flap]) {
+    m.onBeforeCompile = sh => {
+      Object.assign(sh.uniforms, steelU);
+      sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nuniform vec3 uFill; uniform vec3 uRim;')
+        .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+          { vec3 wn = inverseTransformDirection(normal, viewMatrix); float g = 1.0 - abs(dot(normal, normalize(vViewPosition)));
+            totalEmissiveRadiance += diffuseColor.rgb * (uFill * (0.7 + 0.5 * clamp(wn.y, 0.0, 1.0)) + uRim * pow(g, 4.0)); }`);
+    };
+    m.customProgramCacheKey = () => 'd61-steel';
+  }
   // foliage: leaves between us and the glow transmit it (strongest at grazing), plus a faint grow-light fill
   const leafU = { uBack: { value: new THREE.Color(0.55, 0.42, 0.12) } };
   M.foliage.map = leafAtlas(THREE);
@@ -109,11 +123,12 @@ export function buildFooterScene({ THREE, quality = 'high' } = {}) {
   // foliage: leaf cards use the procedural atlas (leafAtlas), not the tiling foliage role
   bind(M.hab, 'habitat_panel', { color: 0xffffff, normalScale: 0.5 });
   bind(M.stainless, 'stainless', { color: 0xffffff, maps: ['normalMap', 'roughnessMap'], normalScale: 0.3, roughness: 1 });
+  bind(M.flap, 'stainless', { maps: ['normalMap', 'roughnessMap'], normalScale: 0.3, roughness: 1.1 });
   bind(M.rover, 'rover_paint', { color: 0xffffff, normalScale: 0.4 });
   tb.bind(M.glass, 'dome_glass', { maps: ['roughnessMap'], custom: set => {
     if (set.roughnessMap && M.glass.roughnessMap !== set.roughnessMap) { M.glass.roughnessMap = set.roughnessMap; M.glass.roughness = 1; fitUV(M.glass, set); }
     if (set.dirtMap) glassU.uDust.value = set.dirtMap; } });
-  M.stainless.metalnessMap = null; // ORM blue channel unused: steel is metal everywhere
+  M.stainless.metalnessMap = M.flap.metalnessMap = null; // ORM blue channel unused: steel is metal everywhere
 
   // ---------------------------------------------------------------- per frame: beacons blink, leaves breathe with the glow
   const beacon = M.beacon.color.clone();
@@ -129,7 +144,7 @@ export function buildFooterScene({ THREE, quality = 'high' } = {}) {
   return {
     root, lights, update,
     applyTextures(tex) { tb.apply(tex); },
-    anchors: { domes: colony.domes, rover: colony.rover, ships, glass: M.glass, foliage: leafU.uBack },
+    anchors: { steel: steelU, domes: colony.domes, rover: colony.rover, ships, glass: M.glass, foliage: leafU.uBack },
     materials: M, stats: { tris: Math.round(tris), drawCalls: calls, instances: inst },
     dispose() { root.traverse(o => o.isMesh && o.geometry.dispose()); terrain.dispose(); M.foliage.map?.dispose(); Object.values(M).forEach(m => m.dispose()); black.dispose(); },
   };
