@@ -13,6 +13,10 @@ const q = (s, r = document) => r.querySelector(s), qa = (s, r = document) => [..
 const CFG = window.D5_CFG || {}, MM = CFG.mode === 'mars', AHEAD = CFG.ahead ?? 1; // AHEAD: viewports before the track to wake up
 // D6.1 flags (Mars mode only): look 'lit' = front-left lit full disc + rim halo; beats = title / SpaceX lines / colony line on one track;
 // onProgress(p, beat) runs every frame the track is live.
+// rockets: Starships land early in the Jezero timelapse and a third is stacked on a pad later (d5/rockets.js, hull from the D6.1 footer)
+const ROCK = !!CFG.rockets, ROCK_SITES = { land: [[55, -150], [15, -168]], build: [-25, -100] };
+let rockMod = null; const rockP = ROCK ? Promise.all([import('./rockets.js'), import('../d61/foot-model-starship.js'), import('../d61/foot-model-kit.js')])
+  .then(([r, s, k]) => (rockMod = { createRockets: r.createRockets, foot: { buildStarships: s.buildStarships, mergeAll: k.mergeAll } })).catch(e => console.warn('d5 rockets:', e)) : null;
 const LIT = MM && CFG.look === 'lit', MBEATS = MM && !!CFG.beats, onProg = MM && typeof CFG.onProgress === 'function' ? CFG.onProgress : null;
 const host = q('.d5-canvas') || (MM ? document.body.appendChild(Object.assign(document.createElement('div'), { className: 'd5-canvas' })) : null);
 
@@ -263,6 +267,8 @@ fabs.forEach(l => (l.col = new THREE.Color().setHSL(0.07, 0.08, 0.55 + rnd() * 0
 const byBt = (a, b) => a.bt - b.bt, habAll = [...habs].sort(byBt), fabI = [...fabs].sort(byBt); // stable sort
 // low tier: every other hab in build order is dropped, so the city keeps its full extent at half the instances
 if (!HIGH) habAll.forEach((l, i) => (l.skip = i % 2 === 1));
+if (ROCK) habAll.forEach(l => { // keep the landing spots and the build pad clear of habs
+  if (ROCK_SITES.land.some(([x, z]) => Math.hypot(l.x - x, l.z - z) < l.r + 16) || Math.hypot(l.x - ROCK_SITES.build[0], l.z - ROCK_SITES.build[1]) < l.r + 30) l.skip = true; });
 const habI = habAll.filter(l => !l.skip);
 const shell = new THREE.InstancedMesh(HAB.habShellGeo, HAB.habShellMat, habI.length); shell.customDepthMaterial = HAB.habShellDepthMat;
 const habGlass = new THREE.InstancedMesh(HAB.habGlassGeo, HAB.habGlassMat, habI.length); habGlass.receiveShadow = true; // same matrices as shell (glass/opaque split is hashed from position)
@@ -354,6 +360,9 @@ const cranes = craneLots.filter((l, i) => i % Math.max(1, Math.floor(craneLots.l
   g.add(mast, jib); g.traverse(o => { if (o.isMesh) o.castShadow = true; }); colony.add(g); return { g, jib, bt: l.bt, ph: i * 1.7 };
 });
 
+let rockets = null;
+const mkRockets = () => (rockets = rockMod.createRockets({ THREE, foot: rockMod.foot, colony, envMap: marsEnv, high: HIGH, sites: ROCK_SITES }));
+if (ROCK) { if (rockMod) mkRockets(); else rockP.then(() => { if (rockMod) { mkRockets(); inWorld('colony', () => compileIn(rockets.group)); } }); } // normally loaded long before the colony is built
 let lastG = -1;
 const mtx = new THREE.Matrix4(), q4 = new THREE.Quaternion(), yAx = new THREE.Vector3(0, 1, 0), v3 = new THREE.Vector3(), s3 = new THREE.Vector3(), q0 = new THREE.Quaternion();
 const skyCol = new THREE.Color(), dayH = new THREE.Color(0.78, 0.54, 0.36), duskH = new THREE.Color(0.2, 0.14, 0.13);
@@ -373,7 +382,8 @@ function buildColony(g, t) {
   // lander cycle: descend on a burn, sit, lift off; repeats a few times across the scroll
   const lc = (g * 5) % 1, flying = g > 0.3; let ly = 0, burn = 0;
   if (lc < 0.35) { ly = Math.pow(1 - lc / 0.35, 2) * 320; burn = 1; } else if (lc > 0.65) { ly = Math.pow((lc - 0.65) / 0.35, 2) * 360; burn = 1; }
-  lander.visible = plume.visible = flying; lander.position.set(PAD.x, ly + 0.3, PAD.z);
+  lander.visible = plume.visible = flying && !ROCK; // rockets: the Starships replace the toy lander
+  if (rockets) rockets.update(g, t, night); lander.position.set(PAD.x, ly + 0.3, PAD.z);
   plume.position.set(PAD.x, ly - 2, PAD.z); plume.scale.setScalar(burn * (18 + Math.sin(t * 40) * 2)); plume.material.opacity = burn * (0.6 + 0.4 * (1 - Math.min(1, ly / 60)));
   cranes.forEach(c => { c.jib.rotation.y = c.ph + g * 46 + t * 0.15; });
   if (Math.abs(g - lastG) < 1e-4) return false; lastG = g;
