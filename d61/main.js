@@ -171,16 +171,16 @@ function init() {
     else if (!on && !v.paused) v.pause();
   };
 
-  // ---------- hero: scrolls past and sinks under the desk into black (6.1: no hand-off to the card) ----------
-  // The 3D hero runs p 0..1 over the whole pin (createHero exit:'under' fades to #000 itself); the host also fades out
-  // over the last stretch, so a hero without that exit still ends on black. Photo / phone path: a slow push into black.
-  const heroST = ST.create({ trigger: intro, start: 'top top', end: 'bottom bottom' });
-  const HOST_OUT = [0.92, 1];
+  // ---------- hero: a short pin for the copy fade, then it scrolls off like a normal section (6.1: no hand-off) ----------
+  // p runs 0..1 from the page top until the hero's bottom edge reaches the viewport top (the canvas keeps rendering while it
+  // leaves, the camera pans down and the sunrise completes, createHero exit 'under'). Photo / phone path: slight parallax.
+  const heroST = ST.create({ trigger: intro, start: 'top top', end: 'bottom top' });
+  const pinFrac = () => Math.max(0.15, 1 - innerHeight / Math.max(1, intro.offsetHeight)); // share of p spent pinned
   function hero3dFrame(p) {
     copyFrame(p);
     css(dim, 'opacity', '0');
     css(shade, 'opacity', (1 - sstep(0.12, 0.6, p)).toFixed(3));
-    const fv = heroFade.v * (1 - sstep(HOST_OUT[0], HOST_OUT[1], p)), k = heroIntro.k;
+    const fv = heroFade.v, k = heroIntro.k;
     css(heroHost, 'opacity', fv.toFixed(3)); css(heroHost, 'visibility', fv > 0 ? 'visible' : 'hidden');
     css(heroHost, 'transform', k < 1 ? `scale(${(1 + 0.1 * (1 - k)).toFixed(4)})` : 'none');
     css(media, 'visibility', heroFade.v >= 1 ? 'hidden' : 'visible');
@@ -189,7 +189,7 @@ function init() {
   // run the renderer only while the stage is on screen, the loader is leaving and the canvas is still visible
   function heroRunFrame(p, sr) {
     if (!hero) return;
-    const want = heroOn && heroLive && sr.bottom > 0 && sr.top < innerHeight && p < HOST_OUT[1];
+    const want = heroOn && heroLive && sr.bottom > 0 && sr.top < innerHeight && p < 1;
     if (want && !heroRun) { heroRun = true; if (!D6.t.heroStart) stamp('heroStart'); hero.setProgress(p); hero.start(); hero.renderOnce(); }
     else if (!want && heroRun) { heroRun = false; hero.stop(); }
     D6.heroRun = heroRun;
@@ -198,18 +198,19 @@ function init() {
   let copyOpLast = -1;
   // hero copy leaves with opacity + a short lift (no blur: it smeared a ghost H1)
   function copyFrame(p) {
-    const f = clamp01(p / 0.42);
+    const f = clamp01(p / (0.9 * pinFrac())); // gone by the end of the pin
     css(copy, 'opacity', (1 - f).toFixed(3));
     if (hero && typeof hero.setCopyOpacity === 'function' && f !== copyOpLast) { copyOpLast = f; hero.setCopyOpacity(1 - f); } // lamps etc. can follow the H1
     css(copy, 'transform', f > 0.001 ? `translate3d(0,${(-24 * ease(f)).toFixed(2)}px,0)` : 'none');
     css(copy, 'visibility', f >= 1 ? 'hidden' : 'visible');
   }
-  // photo hero (phones, reduced motion, no WebGL): the still pushes in a touch and dims to black
+  // photo hero (phones, reduced motion, no WebGL): a touch of push while pinned, then the still lags the page as it leaves
   function heroFrame(p) {
     if (heroOn) return hero3dFrame(p);
-    const z = RM ? 0 : ease(clamp01(p / 0.9));
-    css(media, 'transformOrigin', '50% 60%'); css(media, 'transform', `scale(${(1 + 0.14 * z + 0.1 * (1 - heroIntro.k)).toFixed(4)})`);
-    css(dim, 'opacity', '0'); css(media, 'opacity', (1 - sstep(0.45, 0.95, p)).toFixed(3));
+    const pf = pinFrac(), z = RM ? 0 : ease(clamp01(p / pf)), past = RM ? 0 : Math.max(0, -stage.getBoundingClientRect().top);
+    css(media, 'transformOrigin', '50% 50%');
+    css(media, 'transform', `translate3d(0,${(0.3 * past).toFixed(1)}px,0) scale(${(1 + 0.05 * z + 0.1 * (1 - heroIntro.k)).toFixed(4)})`);
+    css(dim, 'opacity', '0'); css(media, 'opacity', '1');
     copyFrame(p);
   }
 
