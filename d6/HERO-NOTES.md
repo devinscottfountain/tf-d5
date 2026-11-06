@@ -38,3 +38,8 @@ curvature + stone contact shadows, stone mask) read as `vGd` in the colour pass;
 fbm2 anchors are unchanged so the LIGHT patch still applies. Spoil piles are now smooth repose cones with runnels (one
 flat-topped by the loader at -31,-61); twin tyre / track grooves run up the berms. LIGHT: terrain.castShadow is false; flip it
 for self-shadowed mounds at dawn if the shadow bias holds.
+
+MODEL: (2026-11-06) ATLAS Cyber Shroud (d6/assets/models/cyber-shroud.glb) is mounted on the excavator cab roof by
+`attachShroud` in hero-model-machines.js, called from hero-outside after the first terrain draw + idle (high tier only).
+Quantized positions are expanded to float, creased normals at 30 deg, MTL colours folded into the machine paint / metal /
+glass materials (vertex colours), so 3 meshes and no new programs. `outside.shroud` is the group once loaded.

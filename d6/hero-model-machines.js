@@ -520,3 +520,51 @@ export function buildMachines({ THREE, high = true, MAT = machineMaterials(THREE
     dispose() { for (const g of disposables) g.dispose(); rams.length = 0; },
   };
 }
+
+// ------------------------------------------------------------ TerraFirma ATLAS Cyber Shroud on the excavator cab roof
+// Real part (d6/assets/models/cyber-shroud.glb, metres, Z-up as exported: brackets on -z, connector end at x~0, vented
+// end at x~1.33). Mounted connector end aft, seated on the roof guard bars, centred over the cab, true scale in the
+// upper-structure's space so it swings with the house. The 7 MTL colours fold into the machine materials (paint / metal /
+// glass, night-graded with everything else) with vertex colours + grime data: three draws, no new shader programs.
+// Lazy: call after the first frame; nothing here blocks ready.
+export async function attachShroud({ THREE, exA, MAT, url }) {
+  const [{ GLTFLoader }, { MeshoptDecoder }, { toCreasedNormals }] = await Promise.all([
+    import('three/addons/loaders/GLTFLoader.js'), import('three/addons/libs/meshopt_decoder.module.js'), import('three/addons/utils/BufferGeometryUtils.js')]);
+  const loader = new GLTFLoader(); loader.setMeshoptDecoder(MeshoptDecoder);
+  const gltf = await loader.loadAsync(url);
+  gltf.scene.updateMatrixWorld(true);
+  // model -> upper structure: Z-up to Y-up (model y becomes -z), centre the footprint, base on the roof guard (y 2.19)
+  const place = new THREE.Matrix4().makeTranslation(0.6, 2.19, -1.0)
+    .multiply(new THREE.Matrix4().makeRotationX(-Math.PI / 2)).multiply(new THREE.Matrix4().makeTranslation(-0.636, 0.381, 0.011));
+  // MTL colour -> [kind, linear-ish sRGB hex]: off-white powder coat, dark anodised greys, sensor window, CAT yellow
+  const pick = c => { const r = c.r, g = c.g, b = c.b;
+    if (r > 0.9 && g > 0.9 && b > 0.9) return ['paint', 0xe6e4de];
+    if (r > 0.9 && g > 0.6 && b < 0.2) return ['paint', 0xfab601];
+    if (b > r + 0.1 && b > 0.85) return ['glass', 0x8fb8d0];
+    const l = (r + g + b) / 3; return ['metal', l > 0.7 ? 0x55585d : l > 0.5 ? 0x45484d : 0x2c2f33]; };
+  const by = {}, col = new THREE.Color();
+  gltf.scene.traverse(o => {
+    if (!o.isMesh) return;
+    const [kind, hex] = pick(o.material.color); col.set(hex);
+    // positions arrive quantized (int16 + a node scale): expand to float before transforming
+    const sp = o.geometry.attributes.position, F = new Float32Array(sp.count * 3);
+    for (let i = 0; i < sp.count; i++) { F[i * 3] = sp.getX(i); F[i * 3 + 1] = sp.getY(i); F[i * 3 + 2] = sp.getZ(i); }
+    let g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(F, 3)); if (o.geometry.index) g.setIndex(Array.from(o.geometry.index.array));
+    g.applyMatrix4(new THREE.Matrix4().multiplyMatrices(place, o.matrixWorld)); g = g.toNonIndexed();
+    g = toCreasedNormals(g, Math.PI / 6);
+    const n = g.attributes.position.count, C = new Float32Array(n * 3), G = new Float32Array(n * 3), p = g.attributes.position;
+    for (let i = 0; i < n; i++) { C[i * 3] = col.r; C[i * 3 + 1] = col.g; C[i * 3 + 2] = col.b; G[i * 3] = p.getY(i) + 1.1; G[i * 3 + 1] = 0.12; G[i * 3 + 2] = 0; }
+    g.setAttribute('color', new THREE.BufferAttribute(C, 3)); g.setAttribute('aG', new THREE.BufferAttribute(G, 3));
+    (by[kind] ||= []).push(g);
+    o.geometry.dispose(); o.material.dispose?.();
+  });
+  const group = new THREE.Group(); group.name = 'cyber-shroud';
+  for (const kind in by) {
+    const gs = by[kind], cnt = gs.reduce((s, g) => s + g.attributes.position.count, 0), geo = new THREE.BufferGeometry();
+    for (const a of ['position', 'normal', 'color', 'aG']) { const A = new Float32Array(cnt * 3); let off = 0; for (const g of gs) { A.set(g.attributes[a].array, off); off += g.attributes[a].array.length; } geo.setAttribute(a, new THREE.BufferAttribute(A, 3)); }
+    gs.forEach(g => g.dispose());
+    const m = new THREE.Mesh(geo, MAT[kind]); m.castShadow = kind !== 'glass'; m.receiveShadow = true; m.userData.part = 'cyber-shroud'; group.add(m);
+  }
+  exA.up.add(group);
+  return group;
+}

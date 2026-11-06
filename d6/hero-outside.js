@@ -3,7 +3,7 @@
 // The room floor sits 1 m above the site; the camera looks along -z.
 // Terrain is a non-uniform grid: 0.6 m cells over the worked yard (the stepped dig, ruts, spoil, berm read as real
 // relief), opening out to 6 m toward the hills.
-import { buildMachines, bakeStatic } from './hero-model-machines.js';
+import { buildMachines, bakeStatic, attachShroud } from './hero-model-machines.js';
 import { NOISE, rng, sstep } from './hero-glsl.js';
 import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
 import { texBinder, placeholders } from './hero-model-kit.js';
@@ -321,11 +321,19 @@ export function buildOutside({ THREE, scene, high, quality }) {
     exPose(exA, t, 1);
     const s = Math.sin(t * 0.13); dozer.position.set(dz0.x + s * 2.4 * Math.cos(0.35), dz0.y, dz0.z - s * 2.4 * Math.sin(0.35));
   }
+  // TerraFirma Cyber Shroud on the excavator cab: fetched once the first frame has drawn (never delays ready), high tier only
+  let shroud = null, dead = false;
+  if (high) { let armed = false;
+    terrain.onBeforeRender = () => { if (armed) return; armed = true; terrain.onBeforeRender = () => {};
+      const go = () => attachShroud({ THREE, exA, MAT, url: new URL('./assets/models/cyber-shroud.glb', import.meta.url).href })
+        .then(g => { if (dead) { exA.up.remove(g); g.traverse(o => o.geometry?.dispose()); } else shroud = g; }).catch(e => console.warn('cyber-shroud', e));
+      (typeof requestIdleCallback === 'function' ? requestIdleCallback(go, { timeout: 2000 }) : setTimeout(go, 500)); }; }
   update(0);
   const api = {
     group, update, spots, lampHead, LAMP_ON, hemi, moon, skyU, hgt, site, cones: site.cones, city,
     applyHeroTextures: tex => tb.apply(tex),
-    dispose() { live.delete(api); site.dispose(); group.traverse(o => { if (o.geometry) o.geometry.dispose(); }); tm.dispose(); sky.material.dispose(); night.dispose(); city.material.dispose(); Object.values(MAT).forEach(m => m.dispose()); yard.towers[0].material.dispose(); yard.towers[1].material.dispose(); yard.dispose(); }
+    get shroud() { return shroud; },
+    dispose() { dead = true; live.delete(api); site.dispose(); group.traverse(o => { if (o.geometry) o.geometry.dispose(); }); tm.dispose(); sky.material.dispose(); night.dispose(); city.material.dispose(); Object.values(MAT).forEach(m => m.dispose()); yard.towers[0].material.dispose(); yard.towers[1].material.dispose(); yard.dispose(); }
   };
   live.add(api);
   return api;
