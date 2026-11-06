@@ -523,7 +523,7 @@ export function buildMachines({ THREE, high = true, MAT = machineMaterials(THREE
 
 // ------------------------------------------------------------ TerraFirma ATLAS Cyber Shroud on the excavator cab roof
 // Real part (d6/assets/models/cyber-shroud.glb, metres, Z-up as exported: brackets on -z, connector end at x~0, vented
-// end at x~1.33). Mounted connector end aft, seated on the roof guard bars, centred over the cab, true scale in the
+// end at x~1.33). Mounted vented end toward the boom (front), seated on the roof guard bars, centred over the cab, true scale in the
 // upper-structure's space so it swings with the house. The 7 MTL colours fold into the machine materials (paint / metal /
 // glass, night-graded with everything else) with vertex colours + grime data: three draws, no new shader programs.
 // Lazy: call after the first frame; nothing here blocks ready.
@@ -535,6 +535,7 @@ export async function attachShroud({ THREE, exA, MAT, url }) {
   gltf.scene.updateMatrixWorld(true);
   // model -> upper structure: Z-up to Y-up (model y becomes -z), centre the footprint, base on the roof guard (y 2.19)
   const place = new THREE.Matrix4().makeTranslation(0.6, 2.19, -1.0)
+    .multiply(new THREE.Matrix4().makeRotationY(Math.PI)) // Devin: small vented end faces the boom (front)
     .multiply(new THREE.Matrix4().makeRotationX(-Math.PI / 2)).multiply(new THREE.Matrix4().makeTranslation(-0.636, 0.381, 0.011));
   // MTL colour -> [kind, linear-ish sRGB hex]: off-white powder coat, dark anodised greys, sensor window, CAT yellow
   const pick = c => { const r = c.r, g = c.g, b = c.b;
