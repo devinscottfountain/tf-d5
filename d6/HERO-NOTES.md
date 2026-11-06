@@ -43,3 +43,11 @@ MODEL: (2026-11-06) ATLAS Cyber Shroud (d6/assets/models/cyber-shroud.glb) is mo
 `attachShroud` in hero-model-machines.js, called from hero-outside after the first terrain draw + idle (high tier only).
 Quantized positions are expanded to float, creased normals at 30 deg, MTL colours folded into the machine paint / metal /
 glass materials (vertex colours), so 3 meshes and no new programs. `outside.shroud` is the group once loaded.
+
+MODEL: (2026-11-06) Right monitor = live mini Mission Control (`d6/hero-mini.js`, `createMiniControl`), wired inside
+hero-screens.js: created lazily on idle after the 4th tick(), compiled (compileAsync) before it is shown, rendered from
+screens.tick() at <= 30 fps (so only while the hero renders). Real media set with setScreenMedia(2, el) wins; null brings the
+mini back. `screens.miniPaused = true` stops it (LIGHT/page: set it once monitor 2 is off-screen if you want the savings).
+Click API (no hero3d change needed): `import { bindScreenClicks, pickHeroScreen } from './hero-screens.js'`;
+`bindScreenClicks({ THREE, hero, onClick: i => ..., indices: [2] })` -> { pick(x, y), dispose() }.
+LIGHT: if you'd rather expose it on the hero object, `pickScreen: (x, y) => pickHeroScreen({ THREE, hero: api }, x, y)`.

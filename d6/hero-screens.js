@@ -283,12 +283,26 @@ export function createScreens({ THREE, renderer, high, stillUrl, cab }) {
     return t;
   }
   const whenSized = (el, fn) => { if (el.tagName === 'VIDEO' && !el.videoWidth) el.addEventListener('loadedmetadata', fn, { once: true }); else if (el.tagName === 'IMG' && !el.naturalWidth) el.addEventListener('load', fn, { once: true }); };
-  function fitMedia(i) { const m = media[i]; if (m) cover(aspects[i], mats[i].uniforms.uMCover.value, elAspect(m.el)); }
+  function fitMedia(i) { const m = media[i]; if (m) cover(aspects[i], mats[i].uniforms.uMCover.value, elAspect(m.el)); else if (i === 2 && mini) cover(aspects[2], right.uniforms.uMCover.value, mini.aspect); }
+  // ---------------------------------------------------------------- right screen: live miniature of the Solutions control mode
+  // (hero-mini.js). Built lazily a few frames after the first one on idle, compiled before it is shown, then rendered
+  // into its target at <= 30 fps from tick(), i.e. only while the hero renders. Real media set on screen 2 wins.
+  let mini = null, miniState = 0, miniFrames = 0, miniLast = 0;
+  const idleCb = fn => (typeof requestIdleCallback === 'function' ? requestIdleCallback(fn, { timeout: 2500 }) : setTimeout(fn, 400));
+  function showMini() { if (!mini || media[2]) return; const u = right.uniforms; u.tMedia.value = mini.texture; u.uMedia.value = 1; u.uMUI.value = 0; fitMedia(2); }
+  function startMini() {
+    miniState = 1;
+    idleCb(async () => {
+      try { const { createMiniControl } = await import('./hero-mini.js'); if (miniState < 0) return;
+        const m = createMiniControl({ THREE, renderer, quality: high ? 'high' : 'low' }); await m.warm();
+        if (miniState < 0) { m.dispose(); return; } mini = m; miniState = 2; miniLast = performance.now(); showMini();
+      } catch (e) { console.warn('hero-mini', e); miniState = 3; } });
+  }
   // screen i (0 left, 1 centre cab feed, 2 right) shows el, cover-fit; null restores the procedural feed. opts.ui keeps the UI overlay on top.
   function setScreenMedia(i, el, opts = {}) {
     const m = mats[i]; if (!m) return null;
     const prev = media[i]; if (prev && prev.tex !== stillTexCur()) { prev.tex.dispose(); owned.delete(prev.tex); }
-    if (!el) { media[i] = null; m.uniforms.uMedia.value = 0; m.uniforms.tMedia.value = null; return null; }
+    if (!el) { media[i] = null; m.uniforms.uMedia.value = 0; m.uniforms.tMedia.value = null; if (i === 2) showMini(); return null; }
     const t = mediaTex(el); media[i] = { el, tex: t }; m.uniforms.tMedia.value = t; m.uniforms.uMedia.value = 1;
     if (i === 1) m.uniforms.uUI.value = opts.ui ? 1 : 0; if (i === 2) m.uniforms.uMUI.value = opts.ui ? 1 : 0;
     if (opts.level !== undefined) m.uniforms.uLevel.value = opts.level;
@@ -312,7 +326,30 @@ export function createScreens({ THREE, renderer, high, stillUrl, cab }) {
     setSubpixel(v) { for (const m of mats) m.uniforms.uSub.value = v; },
     setLevels(l, c, r) { left.uniforms.uLevel.value = l; centre.uniforms.uLevel.value = c; right.uniforms.uLevel.value = r; },
     setExposure(e) { aces.uExp.value = e; },
-    tick() { for (const t of polled) if (t.image.readyState >= 2) t.needsUpdate = true; },
-    dispose() { polled.clear(); owned.forEach(t => t.dispose()); [left, right, centre].forEach(m => { for (const k in m.uniforms) { const v = m.uniforms[k].value; if (v && v.isTexture && v !== cab.texture) v.dispose(); } m.dispose(); }); }
+    tick() { for (const t of polled) if (t.image.readyState >= 2) t.needsUpdate = true;
+      if (!miniState && ++miniFrames > 3) startMini();
+      if (mini && !media[2] && !this.miniPaused) { const now = performance.now(), dt = Math.min(0.1, (now - miniLast) / 1000); miniLast = now; mini.update(dt, now / 1000); } },
+    get mini() { return mini; }, miniPaused: false,
+    dispose() { miniState = -1; if (mini) { if (right.uniforms.tMedia.value === mini.texture) right.uniforms.tMedia.value = null; mini.dispose(); mini = null; } polled.clear(); owned.forEach(t => t.dispose()); [left, right, centre].forEach(m => { for (const k in m.uniforms) { const v = m.uniforms[k].value; if (v && v.isTexture && v !== cab.texture) v.dispose(); } m.dispose(); }); }
   };
+}
+
+// ---------------------------------------------------------------- click / hover on the hero monitors (page wiring)
+// pick(clientX, clientY) -> 0 left | 1 centre | 2 right | -1, a raycast against the three screen planes of a live hero.
+// bindScreenClicks wires a click + hover cursor for the screens in `indices` (default: the right one) and calls onClick(i).
+export function pickHeroScreen({ THREE, hero }, clientX, clientY) {
+  const el = hero?.renderer?.domElement, cam = hero?.camera, sc = hero?.scene; if (!el || !cam || !sc) return -1;
+  const r = el.getBoundingClientRect(); if (r.width < 2 || r.height < 2) return -1;
+  const x = (clientX - r.left) / r.width * 2 - 1, y = -((clientY - r.top) / r.height * 2 - 1); if (x < -1 || x > 1 || y < -1 || y > 1) return -1;
+  const names = ['screen-left', 'screen-centre', 'screen-right'], objs = names.map(n => sc.getObjectByName(n)).filter(Boolean); if (!objs.length) return -1;
+  const rc = pickHeroScreen._rc ||= new THREE.Raycaster(); rc.setFromCamera(new THREE.Vector2(x, y), cam);
+  const hit = rc.intersectObjects(objs, false)[0]; return hit ? names.indexOf(hit.object.name) : -1;
+}
+export function bindScreenClicks({ THREE, hero, onClick, indices = [2], target = window, cursorEl = document.documentElement, enabled = () => true }) {
+  let over = false;
+  const pick = (cx, cy) => (enabled() ? pickHeroScreen({ THREE, hero }, cx, cy) : -1);
+  const move = e => { const on = indices.includes(pick(e.clientX, e.clientY)); if (on !== over) { over = on; cursorEl.style.cursor = on ? 'pointer' : ''; } };
+  const click = e => { const i = pick(e.clientX, e.clientY); if (indices.includes(i)) onClick?.(i, e); };
+  target.addEventListener('pointermove', move, { passive: true }); target.addEventListener('click', click);
+  return { pick, dispose() { target.removeEventListener('pointermove', move); target.removeEventListener('click', click); if (over) cursorEl.style.cursor = ''; } };
 }
