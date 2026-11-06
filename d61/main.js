@@ -175,7 +175,7 @@ function init() {
   // The 3D hero runs p 0..1 over the whole pin (createHero exit:'under' fades to #000 itself); the host also fades out
   // over the last stretch, so a hero without that exit still ends on black. Photo / phone path: a slow push into black.
   const heroST = ST.create({ trigger: intro, start: 'top top', end: 'bottom bottom' });
-  const HOST_OUT = [0.8, 1];
+  const HOST_OUT = [0.92, 1];
   function hero3dFrame(p) {
     copyFrame(p);
     css(dim, 'opacity', '0');
