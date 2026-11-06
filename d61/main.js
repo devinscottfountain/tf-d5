@@ -28,7 +28,6 @@ const HERO3D = (() => {
   const o = new URLSearchParams(location.search).get('hero'); if (o === '3d') return true; if (o === '0') return false;
   return !RM && innerWidth >= 768 && !(matchMedia('(pointer: coarse)').matches && innerWidth < 820);
 })();
-const P_CARD = 0.85;   // hero progress at which the 3D screen has become the Series B card
 const D6 = (window.__d6 = window.__d61 = { quality: QUALITY, reduced: RM, hero3d: HERO3D, t: {}, v: '6.1' });
 const stamp = k => (D6.t[k] = Math.round(performance.now())); // QA timeline
 
@@ -37,7 +36,7 @@ if (page && gsap && ST) init();
 function init() {
   const stage = q('.d6-stage'), intro = q('.d6-intro'), media = q('.d6-hero-media'), heroImg = q('.d6-hero-img');
   const kbHero = q('.d6-hero-media .d6-kb'), kbSb = q('.d6-sb .d6-kb');
-  const sb = q('.d6-sb'), sbUi = q('.d6-sb-ui'), sbTarget = q('.d6-sb-target'), dim = q('.d6-hero-dim'), copy = q('.d6-hero-copy');
+  const sb = q('.d6-sb'), dim = q('.d6-hero-dim'), copy = q('.d6-hero-copy');
   const shade = q('.d6-hero-shade'), sbImg = q('.d6-sb-img'), sbVid = q('.d6-sb-video');
   const mission = q('.d6-mission'), missionIn = q('.d6-mission-in'), sol = q('.d6-sol'), tabs = qa('.d6-tab'), hud = q('.d6-hud');
   const solStage = q('.d6-sol-stage'), tabsEl = q('.d6-tabs'), hudCards = [q('.d6-tele'), q('.d6-blade')];
@@ -77,7 +76,7 @@ function init() {
   // hero: the API once built; heroOn: the canvas is the visible hero; heroLive: the loader is leaving (rendering allowed)
   // It is released when Mars loads (GPU memory: it would coexist with solutions + D5) and rebuilt when the stage comes
   // back within ~1.5 viewports; the photo path covers the gap and the canvas crossfades over it once its first frame is in.
-  let hero = null, heroOn = false, heroLive = skipLoader, heroRun = false, heroKey = '', heroGen = 0, heroBuilding = null, heroHost = null;
+  let hero = null, heroOn = false, heroLive = skipLoader, heroRun = false, heroGen = 0, heroBuilding = null, heroHost = null;
   const heroFade = { v: 0 };
   let fontsIn = null;
   function buildHero(again) {
@@ -92,10 +91,11 @@ function init() {
     ]);
     const p = Promise.all([import('../d6/hero3d.js'), fontsIn]).then(([m]) => {
       if (gen !== heroGen) return false;
-      measure(); stamp(again ? 'heroRebuild' : 'heroBuild');
-      hero = m.createHero({ THREE, host, quality: QUALITY, still: sbImg.currentSrc || sbImg.src });
+      stamp(again ? 'heroRebuild' : 'heroBuild');
+      // 6.1: exit 'under' (the camera sinks under the desk into black); no card target. An older hero ignores the option.
+      hero = m.createHero({ THREE, host, quality: QUALITY, still: sbImg.currentSrc || sbImg.src, exit: 'under' });
       D6.heroApi = hero; copyOpLast = -1; // a rebuilt hero gets the copy opacity again
-      hero.setTarget(cardR, cardRad); heroKey = rectKey(); stamp(again ? 'heroRebuilt' : 'heroBuilt');
+      stamp(again ? 'heroRebuilt' : 'heroBuilt');
       if (sbVid?.classList.contains('is-on')) hero.setMedia(sbVid);
       return hero.ready;
     }).then(ok => { if (ok === false || gen !== heroGen) return false; swapIn(again); return true; }).catch(e => {
@@ -122,7 +122,7 @@ function init() {
     if (!heroLive || (again && !seen)) heroFade.v = 1; // behind the loader or off screen: instant
     else {
       // the first 3D frame is drawn before the crossfade starts, so the poster never shows through a blank canvas
-      hero.setProgress(clamp01(heroST.progress / P_CARD)); hero.renderOnce();
+      hero.setProgress(heroST.progress); hero.renderOnce();
       gsap.to(heroFade, { v: 1, duration: again ? 0.4 : 0.9, ease: 'power2.inOut' });
     }
     kbHeroTw?.pause();
@@ -141,8 +141,7 @@ function init() {
   } else { loaderEl?.remove(); fontsGate.then(() => { if (h1Split) { h1Split.revert(); h1Split = null; } }); afterLoader(); }
 
   // ---------- Ken Burns drift on the stills (the video slot replaces them when a source is set) ----------
-  // the Series B drift runs on a proxy: with the 3D hero it is weighted in only after the card has taken over, so the
-  // card matches the canvas exactly at the swap in both scroll directions
+  // the Series B drift runs on a proxy written into the card's media layer while the card is on screen
   let kbHeroTw = null, kbSbTw = null, kbOn = null; const kbS = { scale: 1, xPercent: 0, yPercent: 0 };
   if (!RM) {
     kbHeroTw = gsap.fromTo(kbHero, { scale: 1.0, xPercent: 0.6, yPercent: 0.3 }, { scale: 1.045, xPercent: -0.8, yPercent: -0.5, duration: 18, ease: 'sine.inOut', yoyo: true, repeat: -1 });
@@ -151,9 +150,10 @@ function init() {
   // both drifts pause while the stage is off screen (the hero one stays paused under the 3D canvas)
   const kbFrame = vis => {
     if (vis === kbOn) return; kbOn = vis;
-    if (kbSbTw) vis ? kbSbTw.resume() : kbSbTw.pause();
     if (kbHeroTw) vis && !heroOn ? kbHeroTw.resume() : kbHeroTw.pause();
   };
+  let kbSbOn = null;
+  const kbFrameSb = vis => { if (vis !== kbSbOn) { kbSbOn = vis; if (kbSbTw) vis ? kbSbTw.resume() : kbSbTw.pause(); } };
   const kbSbFrame = w => {
     const s = 1 + (kbS.scale - 1) * w, x = kbS.xPercent * w, y = kbS.yPercent * w;
     css(kbSb, 'transform', w <= 0 ? 'none' : `translate3d(${x.toFixed(3)}%,${y.toFixed(3)}%,0) scale(${s.toFixed(4)})`);
@@ -171,42 +171,26 @@ function init() {
     else if (!on && !v.paused) v.pause();
   };
 
-  // ---------- hero -> Series B ----------
-  let cardR = { x: 0, y: 0, w: 1, h: 1 }, cardRad = 6;
-  const rectKey = () => [cardR.x, cardR.y, cardR.w, cardR.h, cardRad].map(v => v.toFixed(2)).join(',');
-  function measure() {
-    const s = stage.getBoundingClientRect(), t = sbTarget.getBoundingClientRect();
-    cardR = { x: t.left - s.left, y: t.top - s.top, w: t.width, h: t.height };
-    cardRad = parseFloat(getComputedStyle(sb).borderTopLeftRadius) || 6;
-    // the hero solves its end pose so the screen corners land exactly on the card rect
-    if (hero) { const k = rectKey(); if (k !== heroKey) { heroKey = k; hero.setTarget(cardR, cardRad); } }
-  }
+  // ---------- hero: scrolls past and sinks under the desk into black (6.1: no hand-off to the card) ----------
+  // The 3D hero runs p 0..1 over the whole pin (createHero exit:'under' fades to #000 itself); the host also fades out
+  // over the last stretch, so a hero without that exit still ends on black. Photo / phone path: a slow push into black.
   const heroST = ST.create({ trigger: intro, start: 'top top', end: 'bottom bottom' });
-  let rmCard = -1;
-  // 3D path: the canvas dollies into the centre monitor; the DOM card sits fixed on the card rect and takes over at hp ~1
+  const HOST_OUT = [0.8, 1];
   function hero3dFrame(p) {
-    const hp = clamp01(p / P_CARD);
     copyFrame(p);
     css(dim, 'opacity', '0');
-    css(shade, 'opacity', (1 - sstep(0.12, 0.6, hp)).toFixed(3)); // gone well before the hand-off (it would tint the canvas, not the card)
-    // canvas: intro push like the photo had, visible until the card has fully taken over
-    const fv = heroFade.v, k = heroIntro.k;
-    css(heroHost, 'opacity', fv.toFixed(3)); css(heroHost, 'visibility', fv > 0 && hp < 1 ? 'visible' : 'hidden');
+    css(shade, 'opacity', (1 - sstep(0.12, 0.6, p)).toFixed(3));
+    const fv = heroFade.v * (1 - sstep(HOST_OUT[0], HOST_OUT[1], p)), k = heroIntro.k;
+    css(heroHost, 'opacity', fv.toFixed(3)); css(heroHost, 'visibility', fv > 0 ? 'visible' : 'hidden');
     css(heroHost, 'transform', k < 1 ? `scale(${(1 + 0.1 * (1 - k)).toFixed(4)})` : 'none');
-    css(media, 'visibility', fv >= 1 ? 'hidden' : 'visible');
-    hero.setProgress(hp);
-    css(sb, 'left', cardR.x.toFixed(2) + 'px'); css(sb, 'top', cardR.y.toFixed(2) + 'px');
-    css(sb, 'width', cardR.w.toFixed(2) + 'px'); css(sb, 'height', cardR.h.toFixed(2) + 'px');
-    css(sb, 'borderRadius', cardRad + 'px');
-    css(sb, 'opacity', hp >= 0.995 ? '1' : '0');
-    sbUiFrame(hp >= 0.995);
-    kbSbFrame(RM ? 0 : sstep(P_CARD + 0.01, 1, p));
+    css(media, 'visibility', heroFade.v >= 1 ? 'hidden' : 'visible');
+    hero.setProgress(p);
   }
-  // run the renderer only while the stage is on screen, the loader is leaving and the canvas is the visible layer
+  // run the renderer only while the stage is on screen, the loader is leaving and the canvas is still visible
   function heroRunFrame(p, sr) {
     if (!hero) return;
-    const want = heroOn && heroLive && sr.bottom > 0 && sr.top < innerHeight && p < P_CARD;
-    if (want && !heroRun) { heroRun = true; if (!D6.t.heroStart) stamp('heroStart'); hero.setProgress(clamp01(p / P_CARD)); hero.start(); hero.renderOnce(); }
+    const want = heroOn && heroLive && sr.bottom > 0 && sr.top < innerHeight && p < HOST_OUT[1];
+    if (want && !heroRun) { heroRun = true; if (!D6.t.heroStart) stamp('heroStart'); hero.setProgress(p); hero.start(); hero.renderOnce(); }
     else if (!want && heroRun) { heroRun = false; hero.stop(); }
     D6.heroRun = heroRun;
   }
@@ -220,82 +204,33 @@ function init() {
     css(copy, 'transform', f > 0.001 ? `translate3d(0,${(-24 * ease(f)).toFixed(2)}px,0)` : 'none');
     css(copy, 'visibility', f >= 1 ? 'hidden' : 'visible');
   }
-  // Series B card UI: comes in once the card has settled (play, title, scale, 300 ms apart), goes quietly on the way back
-  const sbParts = [q('.d6-play'), q('.d6-sb-title'), q('.d6-sb-scale')].filter(Boolean);
-  gsap.set(sbParts, { opacity: 0 });
-  let sbUiOn = false;
-  function sbUiFrame(on) {
-    css(sbUi, 'opacity', '1');
-    if (on === sbUiOn) return; sbUiOn = on;
-    gsap.killTweensOf(sbParts);
-    if (on) gsap.fromTo(sbParts, { opacity: 0, y: RM ? 0 : 10 }, { opacity: 1, y: 0, duration: 0.6, stagger: 0.3, ease: 'power3.out' });
-    else gsap.to(sbParts, { opacity: 0, duration: 0.25, ease: 'power2.out' });
-    css(sbUi, 'pointerEvents', on ? 'auto' : 'none');
-    uiInert(!on);
-  }
-  // keyboard: the card UI is out of the tab order (and the a11y tree) until the card has settled
-  const sbFocusables = qa('a, button, [tabindex]', sbUi);
-  function uiInert(off) {
-    sbUi.inert = off; if (off) sbUi.setAttribute('aria-hidden', 'true'); else sbUi.removeAttribute('aria-hidden');
-    for (const el of sbFocusables) off ? el.setAttribute('tabindex', '-1') : el.removeAttribute('tabindex');
-    if (off && sbUi.contains(document.activeElement)) document.activeElement.blur();
-  }
-  css(sbUi, 'pointerEvents', 'none'); uiInert(true);
-  // phones: no zoom morph; the photo eases in a touch and the full-width 4:5 card crossfades over it on its own rect
-  function mobileFrame(p) {
-    const zA = RM ? 0 : ease(clamp01(p / 0.6));
-    css(media, 'transformOrigin', '50% 55%'); css(media, 'transform', `scale(${(1 + 0.12 * zA + 0.1 * (1 - heroIntro.k)).toFixed(4)})`);
-    css(dim, 'opacity', (0.35 * zA).toFixed(3));
-    copyFrame(p);
-    css(sb, 'left', cardR.x + 'px'); css(sb, 'top', cardR.y + 'px'); css(sb, 'width', cardR.w + 'px'); css(sb, 'height', cardR.h + 'px');
-    css(sb, 'borderRadius', cardRad + 'px');
-    if (RM) {
-      const on = p > 0.45 ? 1 : 0;
-      if (on !== rmCard) { rmCard = on; gsap.to(sb, { opacity: on, duration: 0.45, overwrite: true }); gsap.to(media, { opacity: 1 - on, duration: 0.45 }); }
-    } else { css(sb, 'opacity', sstep(0.3, 0.55, p).toFixed(3)); css(media, 'opacity', (1 - sstep(0.45, 0.65, p)).toFixed(3)); }
-    sbUiFrame(RM ? p > 0.45 : p >= 0.55);
-    kbSbFrame(RM ? 0 : 1);
-  }
-
+  // photo hero (phones, reduced motion, no WebGL): the still pushes in a touch and dims to black
   function heroFrame(p) {
     if (heroOn) return hero3dFrame(p);
-    if (mobile()) return mobileFrame(p);
-    const W = stage.clientWidth, H = stage.clientHeight;
-    const iw = heroImg.naturalWidth || 1920, ih = heroImg.naturalHeight || 1080;
-    const c = Math.max(W / iw, H / ih), dw = iw * c, dh = ih * c, ox = (W - dw) / 2, oy = (H - dh) / 2;
-    // the monitor rect as drawn: cover fit, then the Ken Burns layer (scale about the centre + percent shift)
-    const kS = gsap.getProperty(kbHero, 'scale'), kX = gsap.getProperty(kbHero, 'xPercent') / 100 * W, kY = gsap.getProperty(kbHero, 'yPercent') / 100 * H;
-    const kx = x => W / 2 + kS * (x - W / 2) + kX, ky = y => H / 2 + kS * (y - H / 2) + kY;
-    const x0 = kx(ox + focus[0] * dw), y0 = ky(oy + focus[1] * dh), x1 = kx(ox + focus[2] * dw), y1 = ky(oy + focus[3] * dh);
-    const px = (x0 + x1) / 2, py = (y0 + y1) / 2;
-    const zA = RM ? 0 : ease(clamp01(p / 0.55)), zB = RM ? 0 : ease(clamp01((p - 0.38) / 0.47));
-    const s = (1 + 0.85 * zA) * (1 + 0.5 * zB) * (1 + 0.1 * (1 - heroIntro.k));
-    const shift = 0.32 * zA, tx = (W / 2 - px) * shift, ty = (H / 2 - py) * shift;
-    css(media, 'transformOrigin', `${px.toFixed(1)}px ${py.toFixed(1)}px`);
-    css(media, 'transform', `translate3d(${tx.toFixed(2)}px,${ty.toFixed(2)}px,0) scale(${s.toFixed(4)})`);
-    css(dim, 'opacity', (0.5 * zA).toFixed(3));
-    copyFrame(p); // copy fades and lifts out as we push in (frame 2)
-    if (RM) {
-      // no scrubbed zoom: the card simply crossfades in at its final size
-      const on = p > 0.45 ? 1 : 0;
-      if (on !== rmCard) { rmCard = on; gsap.to(sb, { opacity: on, duration: 0.45, overwrite: true }); gsap.to(media, { opacity: 1 - on, duration: 0.45 }); }
-      css(sb, 'left', cardR.x + 'px'); css(sb, 'top', cardR.y + 'px'); css(sb, 'width', cardR.w + 'px'); css(sb, 'height', cardR.h + 'px');
-      css(sb, 'borderRadius', cardRad + 'px');
-      sbUiFrame(on === 1);
-      kbSbFrame(0);
-      return;
-    }
-    css(media, 'opacity', (1 - sstep(0.5, 0.8, p)).toFixed(3)); // after the RM branch: there gsap owns the fade
-    // the monitor screen grows into the Series B card
-    const sx = v => px + tx + s * (v - px), sy = v => py + ty + s * (v - py);
-    const r = { x: lerp(sx(x0), cardR.x, zB), y: lerp(sy(y0), cardR.y, zB) };
-    r.w = lerp(sx(x1) - sx(x0), cardR.w, zB); r.h = lerp(sy(y1) - sy(y0), cardR.h, zB);
-    css(sb, 'left', r.x.toFixed(1) + 'px'); css(sb, 'top', r.y.toFixed(1) + 'px');
-    css(sb, 'width', r.w.toFixed(1) + 'px'); css(sb, 'height', r.h.toFixed(1) + 'px');
-    css(sb, 'borderRadius', (cardRad * zB).toFixed(2) + 'px');
-    css(sb, 'opacity', sstep(0.36, 0.5, p).toFixed(3));
-    sbUiFrame(zB >= 0.995);
+    const z = RM ? 0 : ease(clamp01(p / 0.9));
+    css(media, 'transformOrigin', '50% 60%'); css(media, 'transform', `scale(${(1 + 0.14 * z + 0.1 * (1 - heroIntro.k)).toFixed(4)})`);
+    css(dim, 'opacity', '0'); css(media, 'opacity', (1 - sstep(0.45, 0.95, p)).toFixed(3));
+    copyFrame(p);
+  }
+
+  // ---------- Series B: a plain section after the hero, revealed as it rises out of the black ----------
+  const sbParts = [q('.d6-play'), q('.d6-sb-title'), q('.d6-sb-scale')].filter(Boolean);
+  let sbUiOn = false;
+  function sbUiFrame(on) {
+    if (on === sbUiOn) return; sbUiOn = on;
+    gsap.killTweensOf(sbParts);
+    if (on) gsap.fromTo(sbParts, { opacity: 0, y: RM ? 0 : 10 }, { opacity: 1, y: 0, duration: 0.6, stagger: 0.2, ease: 'power3.out' });
+  }
+  gsap.set(sbParts, { opacity: 0 });
+  // reveal: fade + a slight rise and scale, scrubbed while the card's top travels the lower part of the viewport
+  function sbFrame(r) {
+    if (!sb || !r) return;
+    const H = innerHeight, k = RM ? (r.top < H * 0.9 ? 1 : 0) : sstep(H * 1.0, H * 0.35, r.top);
+    css(sb, 'opacity', (RM ? k : 0.15 + 0.85 * k).toFixed(3));
+    css(sb, 'transform', k >= 1 || RM ? 'none' : `translate3d(0,${((1 - k) * 60).toFixed(1)}px,0) scale(${(0.94 + 0.06 * k).toFixed(4)})`);
+    if (k >= 0.85) sbUiFrame(true);
     kbSbFrame(RM ? 0 : 1);
+    kbFrameSb(r.bottom > 0 && r.top < H);
   }
 
   // ---------- mission + solutions ----------
@@ -455,10 +390,28 @@ function init() {
     if (flow !== navFlow) { navFlow = flow; navShade.classList.toggle('is-flow', flow); }
     on = on || flow; if (on !== navShadeOn) { navShadeOn = on; navShade.classList.toggle('is-on', on); }
   };
+  // ---------- hero right monitor (index 2, live mini Mission Control) -> Solutions, Orchestration mode ----------
+  // hit test from the hero (pickScreen, d6/hero-mini work); guarded until it lands. Same path as a tab click (Lenis aware).
+  const MC_SCREEN = 2;
+  const goMC = () => tabs[1]?.click();
+  const pickMC = e => !!(hero && heroRun && heroOn && typeof hero.pickScreen === 'function' && hero.pickScreen(e.clientX, e.clientY) === MC_SCREEN);
+  let mcHover = false;
+  addEventListener('pointermove', e => {
+    if (e.pointerType !== 'mouse') return;
+    const on = heroST.progress < 0.6 && !e.target.closest?.('a, button') && pickMC(e);
+    if (on !== mcHover) { mcHover = on; stage.style.cursor = on ? 'pointer' : ''; }
+  }, { passive: true });
+  stage.addEventListener('click', e => { if (!e.target.closest('a, button') && heroST.progress < 0.6 && pickMC(e)) { e.preventDefault(); goMC(); } });
+  // keyboard: a visually hidden button in the hero that does the same (shows itself on focus)
+  const mcBtn = document.createElement('button');
+  mcBtn.type = 'button'; mcBtn.className = 'd61-mc-btn'; mcBtn.textContent = 'Try Mission Control';
+  mcBtn.addEventListener('click', goMC); copy.after(mcBtn);
+  D6.goMC = goMC;
+
   const flowEls = [q('.d61-ben'), q('.d61-tech'), q('.d61-cta')].filter(Boolean);
 
   // ---------- clipping containers must never scroll (focusing a link inside used to shove the card up) ----------
-  for (const el of [stage, sb, solStage, sbUi]) el?.addEventListener('scroll', () => { if (el.scrollTop || el.scrollLeft) { el.scrollTop = 0; el.scrollLeft = 0; } });
+  for (const el of [stage, sb, solStage, q('.d6-sb-ui')]) el?.addEventListener('scroll', () => { if (el.scrollTop || el.scrollLeft) { el.scrollTop = 0; el.scrollLeft = 0; } });
 
   // ---------- Series B play: stub dialog until the film is in ----------
   const play = q('.d6-play');
@@ -485,7 +438,10 @@ function init() {
     modalBack = document.activeElement;
     modal = document.createElement('div');
     modal.className = 'd6-modal'; modal.setAttribute('role', 'dialog'); modal.setAttribute('aria-modal', 'true'); modal.setAttribute('aria-label', 'Series B film');
-    modal.innerHTML = '<div class="d6-modal-msg">Series B film coming soon</div><button class="d6-modal-x" type="button" aria-label="Close"><span></span><span></span></button>';
+    // the message is authored in Webflow (.d61-sb-modal-msg, hidden in the card section)
+    const msg = (q('.d61-sb-modal-msg')?.textContent || '').trim() || 'Series B film coming soon';
+    modal.innerHTML = '<div class="d6-modal-msg"></div><button class="d6-modal-x" type="button" aria-label="Close"><span></span><span></span></button>';
+    q('.d6-modal-msg', modal).textContent = msg;
     modal.addEventListener('click', e => { if (e.target === modal || e.target.closest('.d6-modal-x')) closeModal(); });
     page.appendChild(modal);
     document.addEventListener('keydown', modalKeys, true);
@@ -699,13 +655,13 @@ function init() {
 
   // ---------- frame ----------
   const after = q('.d6-after');
-  measure(); measureRail(); measureMission();
-  let released = false, stageClear = false; const grain = q('.d6-stage .d6-grain');
+  measureRail(); measureMission();
+  let released = false;
   function frame() {
     // all layout reads first, then this frame's style writes (no forced layout mid-frame)
     if (solRunning || !geo) measureSolGeo();
     const p = heroST.progress, sr = stage.getBoundingClientRect(), marsTop = marsTrack.getBoundingClientRect().top;
-    const introBottom = intro.getBoundingClientRect().bottom;
+    const introBottom = intro.getBoundingClientRect().bottom, sbR = sb?.getBoundingClientRect();
     const afterTop = after ? after.getBoundingClientRect().top : 1e9, exitPx = scrollY - solST.end;
     const mr = missionIn.getBoundingClientRect(), morphNow = enterST.progress; // the mission copy under the nav also gets the shade
     const flowRs = flowEls.map(el => el.getBoundingClientRect()), navB = innerHeight * 0.14;
@@ -714,31 +670,24 @@ function init() {
     if (HERO3D && D6.t.heroRelease) released = true;
     if (HERO3D && released && !hero && !heroBuilding && marsTop > innerHeight * 2.5 && introBottom > -1.5 * innerHeight) buildHero(true);
     if (sr.bottom > 0) heroFrame(p);
-    // once the card has taken over, nothing else in the stage paints: the sticky stage's black (and the dimmed photo
-    // layers) would otherwise cover the topo map below the card while the stage scrolls away
-    const cardOnly = p >= 0.9;
-    if (cardOnly !== stageClear) {
-      stageClear = cardOnly; css(stage, 'backgroundColor', cardOnly ? 'transparent' : '');
-      for (const el of [dim, shade, grain]) if (el) css(el, 'visibility', cardOnly ? 'hidden' : ''); // grain: stage wide, would show on the clear stage
-      if (!heroOn) css(media, 'visibility', cardOnly ? 'hidden' : 'visible');
-    }
+    sbFrame(sbR);
     heroRunFrame(p, sr);
     kbFrame(sr.bottom > 0 && sr.top < innerHeight);
-    for (const v of vids) vidOn(v, v.classList.contains('d6-hero-video') ? !heroOn && sr.bottom > 0 && p < 0.8 : sr.bottom > 0 && p > 0.3);
+    for (const v of vids) vidOn(v, v.classList.contains('d6-hero-video') ? !heroOn && sr.bottom > 0 && p < 0.8 : !!sbR && sbR.bottom > 0 && sbR.top < innerHeight);
     solFrame(mr.top, exitPx); solMaskFrame(morphNow); const marsOp = marsFrame(marsTop, exitPx, afterTop); railFrame();
     solcFrame(marsOp, afterTop, marsTop, solcW); techFrame(techR); footFrame(footR);
     // nav shade: over the hero / Series B media, the mission copy passing under it, and the Mars layer (colony is bright)
     const flow = flowRs.some(r => r.top < navB && r.bottom > 0) || (mr.top < navB && mr.bottom > 40 && morphNow < 0.3);
-    navShadeFrame((sr.bottom > innerHeight * 0.15 && p > 0.12) || (marsOp > 0 && afterTop > innerHeight * 0.15), flow);
+    navShadeFrame((sr.bottom > innerHeight * 0.15 && p > 0.12) || (!!sbR && sbR.top < innerHeight * 0.15 && sbR.bottom > innerHeight * 0.1) || (marsOp > 0 && afterTop > innerHeight * 0.15), flow);
   }
   gsap.ticker.add(frame);
   let rz = 0;
   addEventListener('resize', () => { cancelAnimationFrame(rz); rz = requestAnimationFrame(() => {
-    if (hero) { hero.resize(); heroKey = ''; } measure(); measureRail(); measureMission(); solApi?.resize?.();
+    if (hero) hero.resize(); measureRail(); measureMission(); solApi?.resize?.();
     tGo(tIdx, true); try { foot?.resize?.(); } catch (_) { /* footer gone */ } footLogo();
   }); });
   addEventListener('pointermove', e => { if (hero && heroRun && e.pointerType === 'mouse') hero.setPointer(e.clientX / innerWidth * 2 - 1, e.clientY / innerHeight * 2 - 1); }, { passive: true });
-  ST.addEventListener('refresh', () => { measure(); measureRail(); measureMission(); });
+  ST.addEventListener('refresh', () => { measureRail(); measureMission(); });
   D6.hero = p => heroFrame(p); // QA hooks
   D6.st = { heroST, missionST, enterST, solST, outST, marsST };
 
