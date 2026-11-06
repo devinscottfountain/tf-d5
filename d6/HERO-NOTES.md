@@ -53,3 +53,5 @@ Click API (no hero3d change needed): `import { bindScreenClicks, pickHeroScreen 
 LIGHT: if you'd rather expose it on the hero object, `pickScreen: (x, y) => pickHeroScreen({ THREE, hero: api }, x, y)`.
 
 TEX: (2026-11-06) createHero({ exit: 'under' }) (6.1): camera holds the wide room, night -> full day by p 0.7, then p 0.75..1 drops past the monitors and the desk edge into the shadow under the desk (existing legs / modesty panel / cable tray read fine, no model change needed). The canvas itself lands on #000 at p=1 (exposure stops down from 0.84, black over 0.9..1); hero.exitAlpha(p) = 1 - smoothstep(0.9, 1, p) if the page wants it. hero.pickScreen(x, y) wraps pickHeroScreen. Default exit 'zoom' (D6) unchanged.
+
+TEX: (2026-11-06, rev) exit 'under' is now a scroll, not a fly-through: room framing holds, camera pedestals 0.3 m down and tilts 4 deg down with smoothstep(p); night held to p 0.12, full day at p 0.93 (blue hour ~0.3, sunrise ~0.45-0.6). No under-desk ending, no self fade; exitAlpha() returns 1.
