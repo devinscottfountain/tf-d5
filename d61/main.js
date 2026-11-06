@@ -279,14 +279,17 @@ function init() {
   let hintDone = false;
   function onGame() { if (!hintDone && hudOn) { hintDone = true; hint.classList.remove('is-on'); } }
 
-  // tabs: click animates the scene and scrolls to that mode's stretch of the pin
-  let curMode = 0, hudOn = false, clickLock = null;
+  // tabs: click animates the scene and scrolls to that tab's stretch of the pin. 6.1 order: Orchestration, Planning,
+  // Execution; each card's data-mode is the scene's mode id (0 plan, 1 control, 2 exec), so the tab index maps to a mode
+  const TAB_MODE = tabs.map((t, i) => (t.dataset.mode != null && t.dataset.mode !== '' ? +t.dataset.mode : [1, 0, 2][i]));
+  let curMode = -1, hudOn = false, clickLock = null; // curMode: active tab index
   const setActive = i => { if (i === curMode) return; curMode = i; tabs.forEach((t, k) => t.classList.toggle('is-active', k === i)); };
+  setActive(0);
   const modeY = i => solST.start + ((i + 0.06) / 3) * (solST.end - solST.start);
   tabs.forEach((t, i) => t.addEventListener('click', e => {
     e.preventDefault();
     const y = modeY(i), dist = Math.abs(y - scrollY), dur = Math.min(1.8, 0.6 + dist / 2500);
-    clickLock = { mode: i, until: performance.now() + dur * 1000 + 150 };
+    clickLock = { tab: i, until: performance.now() + dur * 1000 + 150 };
     setActive(i); // solFrame holds the clicked mode until the scroll lands on it (setMode's tween would be reset by the scroll inputs)
     const l = smooth(); l ? l.scrollTo(y, { duration: dur }) : scrollTo({ top: y, behavior: RM ? 'auto' : 'smooth' });
   }));
@@ -316,11 +319,12 @@ function init() {
   }
   function solFrame(missionTop, exitPx) {
     const topo = clamp01(missionST.progress), morph = clamp01(enterST.progress), sp = solST.progress;
-    let modeF = Math.min(sp * 3, 2.9999), mode = Math.floor(modeF), modeT = mode === 2 ? clamp01(sp * 3 - 2) : modeF - mode;
-    if (clickLock) { if (performance.now() > clickLock.until) clickLock = null; else { mode = clickLock.mode; modeT = 0.06; } }
+    const tabF = Math.min(sp * 3, 2.9999); let tab = Math.floor(tabF), modeT = tab === 2 ? clamp01(sp * 3 - 2) : tabF - tab;
+    if (clickLock) { if (performance.now() > clickLock.until) clickLock = null; else { tab = clickLock.tab; modeT = 0.06; } }
+    const mode = TAB_MODE[tab] ?? tab; // the scene eases between modes on its own clock (control -> overhead plan included)
     scene.topo = topo; scene.morph = morph; scene.mode = mode; scene.modeT = modeT; scene.flatten = mode === 2 ? sstep(0, 0.55, modeT) : 0;
     scene.missionTop = Math.round(Math.max(missionTop, restMission));
-    setActive(mode);
+    setActive(tab);
     const on = mode === 1 && morph >= 0.999 && exitPx <= 0;
     if (on !== hudOn) { hudOn = on; hud.classList.toggle('is-on', on); hint.classList.toggle('is-on', on && !hintDone); }
     const mo = 1 - sstep(0, 0.3, morph);
@@ -394,7 +398,7 @@ function init() {
   // ---------- hero right monitor (index 2, live mini Mission Control) -> Solutions, Orchestration mode ----------
   // hit test from the hero (pickScreen, d6/hero-mini work); guarded until it lands. Same path as a tab click (Lenis aware).
   const MC_SCREEN = 2;
-  const goMC = () => tabs[1]?.click();
+  const goMC = () => tabs[Math.max(0, TAB_MODE.indexOf(1))]?.click(); // the Mission Control tab (first in 6.1)
   const pickMC = e => !!(hero && heroRun && heroOn && typeof hero.pickScreen === 'function' && hero.pickScreen(e.clientX, e.clientY) === MC_SCREEN);
   let mcHover = false;
   addEventListener('pointermove', e => {
