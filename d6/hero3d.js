@@ -260,7 +260,8 @@ function createDaylight({ THREE, renderer, scene, outside, siteLight, high, G0 }
   const envMats = [], nightEnv = (() => { let t = null; g.traverse(o => { const k = o.material?.customProgramCacheKey?.call(o.material); if (!t && k === 'd6night-paint') t = o.material.envMap; }); return t; })();
   if (nightEnv) g.traverse(o => { const m = o.material; if (m?.envMap === nightEnv && !envMats.some(e => e[0] === m)) { m.envMap = envRT.texture; envMats.push([m, m.envMapIntensity]); } });
   // terrain casts too (stockpiles, berms, clods read under the low sun); tight static frustum above, slope-scaled bias
-  if (high) g.traverse(o => { if (o.isMesh && o.material?.customProgramCacheKey?.call(o.material)?.startsWith('d6hero-terrain')) o.castShadow = true; });
+  // (only while the sun is up: at night the floods' shadow maps skip the terrain's ~250k triangles)
+  const terr = []; if (high) g.traverse(o => { if (o.isMesh && o.material?.customProgramCacheKey?.call(o.material)?.startsWith('d6hero-terrain')) terr.push(o); });
   // light bases (after lightSite's tuning) so the day can scale them down to off
   const base = l => l && [l, l.intensity];
   const floods = [...(outside.spots || []), siteLight.rake, siteLight.sky, ...(siteLight.rims || [])].filter(Boolean).map(base);
@@ -273,7 +274,8 @@ function createDaylight({ THREE, renderer, scene, outside, siteLight, high, G0 }
     const vis = Math.min(1, Math.max(0, (K.el + 0.02) / 0.1));                         // the ridge holds the direct sun until ~0.08 rad
     sun.color.copy(sunCol); sun.intensity = K.sunI * vis;
     sun.position.copy(sun.target.position).addScaledVector(sunDir, 160);
-    if (high) sun.shadow.autoUpdate = sun.intensity > 0.001;   // no sun-shadow pass at night; with the sun up the machines move, so every frame
+    if (high) { const on = sun.intensity > 0.001; sun.shadow.autoUpdate = on; for (const t of terr) t.castShadow = on;
+      for (const [l] of floods) if (l.castShadow) l.shadow.autoUpdate = l.intensity > 0.001; }   // lights at 0 skip their shadow pass   // no sun-shadow pass at night; with the sun up the machines move, so every frame
     skyD.uZen.value.setRGB(...K.zen); skyD.uHor.value.setRGB(...K.hor); skyD.uGlow.value.setRGB(...K.glow); skyD.uSunC.value.copy(sunCol).multiplyScalar(25 * vis); skyD.uMix.value = K.mix;
     machU.value = K.mach;
     for (const [l, i] of floods) l.intensity = i * K.flood;
