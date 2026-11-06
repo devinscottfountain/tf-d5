@@ -51,3 +51,5 @@ mini back. `screens.miniPaused = true` stops it (LIGHT/page: set it once monitor
 Click API (no hero3d change needed): `import { bindScreenClicks, pickHeroScreen } from './hero-screens.js'`;
 `bindScreenClicks({ THREE, hero, onClick: i => ..., indices: [2] })` -> { pick(x, y), dispose() }.
 LIGHT: if you'd rather expose it on the hero object, `pickScreen: (x, y) => pickHeroScreen({ THREE, hero: api }, x, y)`.
+
+TEX: (2026-11-06) createHero({ exit: 'under' }) (6.1): camera holds the wide room, night -> full day by p 0.7, then p 0.75..1 drops past the monitors and the desk edge into the shadow under the desk (existing legs / modesty panel / cable tray read fine, no model change needed). The canvas itself lands on #000 at p=1 (exposure stops down from 0.84, black over 0.9..1); hero.exitAlpha(p) = 1 - smoothstep(0.9, 1, p) if the page wants it. hero.pickScreen(x, y) wraps pickHeroScreen. Default exit 'zoom' (D6) unchanged.

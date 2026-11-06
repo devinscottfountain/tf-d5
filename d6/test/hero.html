@@ -21,7 +21,7 @@ const qs = new URLSearchParams(location.search);
 const host = document.getElementById('host');
 if (qs.has('noui')) document.body.classList.add('noui');
 // ?enh=manual: no auto enhance; ?lite / ?lite=0 force the tablet path either way; ?lean: still-frame DONE right at ready (else after enhance)
-const hero = createHero({ THREE, host, quality: qs.get('q') || 'high', still: qs.get('still') || SERIES_B, enhance: qs.get('enh') === 'manual' ? 'manual' : 'auto', lite: qs.has('lite') ? qs.get('lite') !== '0' : undefined });
+const hero = createHero({ THREE, host, quality: qs.get('q') || 'high', still: qs.get('still') || SERIES_B, enhance: qs.get('enh') === 'manual' ? 'manual' : 'auto', lite: qs.has('lite') ? qs.get('lite') !== '0' : undefined, exit: qs.get('exit') || undefined });
 window.HERO = hero;
 const card = document.getElementById('card'), tgt = document.getElementById('tgt'), info = document.getElementById('info');
 document.getElementById('cimg').src = qs.get('still') || SERIES_B; document.getElementById('cimg').crossOrigin = 'anonymous';
