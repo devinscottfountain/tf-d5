@@ -36,7 +36,7 @@ const LAMP_K = 1;                                   // tower lamp glow (atmosphe
 const LAMP_COPY = 0.3;                              // lamp glow / head / beam held down this much while the hero copy is up
 const COPY_OUT = 0.42 / 0.85;                       // hero p where main.js has faded the copy out (page p 0.42 / P_CARD 0.85)
 const LEAD_DARK = 0.34;
-const UNDER = [0.75], DAY_END = 0.7;                // exit 'under': drop starts / full daylight reached (hero p)                             // in-frame falloff behind the lead copy (tone-mapped, scaled by copy opacity)
+const UNDER_DAY = [0.12, 0.93];                     // exit 'under': night held until the copy is gone, full day just before the hero leaves                             // in-frame falloff behind the lead copy (tone-mapped, scaled by copy opacity)
 // texture roles the hero's materials actually bind (night_sky_hdr, rubber_track, tyre_track_decal are not used)
 // order = stream order: what fills the first frame (ground, ridge, machine, desk) before the room detail
 const HERO_ROLES = ['dirt_ground', 'dirt_tracks', 'desk_laminate', 'excavator_paint', 'rock_ridge', 'glass_smudge', 'black_plastic', 'brushed_metal', 'concrete_floor', 'gravel', 'rusty_metal', 'fabric_chair', 'carpet', 'ceiling_panel'];
@@ -308,9 +308,9 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
 
 function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhanceMode, lite, renderer, exit }) {
   const HIGH = quality !== 'low';
-  // exit 'under' (6.1): no zoom hand-off. The camera holds the wide room while night turns to day (full day by DAY_END),
-  // then from UNDER[0] drops past the monitors and the desk edge into the shadow under the desk; the page fades the
-  // canvas to black with exitAlpha(p). exit 'zoom' (default, D6): the solved dolly into the centre screen.
+  // exit 'under' (6.1): no zoom hand-off. The room framing holds while night turns to day across the whole scroll (night
+  // until UNDER_DAY[0], full day at UNDER_DAY[1]); the camera pedestals and tilts down with p while the page scrolls the
+  // section away. exit 'zoom' (default, D6): the solved dolly into the centre screen.
   const UNDER_MODE = exit === 'under';
   const COARSE = lite ?? coarsePointer();
   const RICH = HIGH && !COARSE;                      // mirror, streaks, dust, cab MSAA
@@ -537,26 +537,20 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
   let focusDist = SITE_FOCUS, rackT = 0;
   const uA = new V3(), uB = new V3(), uLook = new V3(), uQ = new Q(), uE = new THREE.Euler(0, 0, 0, 'YXZ');
   function poseUnder(p, t) {
-    // hold: a slow push-in over the day (window stays in frame); drop: y leads, z follows, so the lens clears the desk
-    // edge (top 0.745 m, front z ~0.68) well below it, the edge, stands and keyboard sliding up through frame in silhouette
-    const h = sstep(0, UNDER[0], p), u = Math.min(1, Math.max(0, (p - UNDER[0]) / (1 - UNDER[0])));
-    const uy = sstep(0, 0.68, u), uz = sstep(0.22, 1, u);
-    uA.set(POS0[0], POS0[1], POS0[2] - 0.32 * h);
-    cam.position.set(uA.x, uA.y + (0.36 - uA.y) * uy, uA.z + (0.28 - uA.z) * uz);
-    m4.lookAt(uA, uLook.set(LOOK0[0], LOOK0[1], LOOK0[2]), new V3(0, 1, 0)); uQ.setFromRotationMatrix(m4);
-    uE.set(-0.12 * sstep(0, 0.55, u) + 0.05 * sstep(0.55, 1, u), 0, 0.012 * Math.sin(Math.PI * u)); // tilt down into the drop, a breath of roll
+    // a scroll, not a fly-through: the room framing holds while the camera pedestals down and tilts down with p, so the
+    // desk and monitors drift up the frame like parallax as the page carries the hero section away
+    const h = sstep(0, 1, p);
+    cam.position.set(POS0[0], POS0[1] - 0.3 * h, POS0[2] - 0.08 * h);
+    m4.lookAt(uA.set(POS0[0], POS0[1], POS0[2]), uLook.set(LOOK0[0], LOOK0[1], LOOK0[2]), new V3(0, 1, 0)); uQ.setFromRotationMatrix(m4);
+    uE.set(-0.07 * h, 0, 0);
     cam.quaternion.copy(uQ).multiply(dq.setFromEuler(uE));
-    const k = 1 - 0.6 * sstep(0.85, 1, p);
     sx += (ptrX - sx) * 0.06; sy += (ptrY - sy) * 0.06;
-    eu.set(k * (0.0019 * nP(t * 0.45) - sy * 0.012), k * (0.0024 * nY(t * 0.38) - sx * 0.02), k * 0.0009 * nR(t * 0.3));
+    eu.set(0.0019 * nP(t * 0.45) - sy * 0.012, 0.0024 * nY(t * 0.38) - sx * 0.02, 0.0009 * nR(t * 0.3));
     cam.quaternion.multiply(dq.setFromEuler(eu));
-    const kp = k * (1 - uy);                                   // no pointer parallax under the desk (it would clip the legs)
-    cam.position.x += kp * (sx * 0.07) + k * 0.004 * nX(t * 0.5); cam.position.y += kp * sy * 0.035 + k * 0.0035 * nZ(t * 0.62); cam.position.z += k * 0.003 * nX(t * 0.33 + 9);
-    rackT = sstep(UNDER[0] - 0.02, UNDER[0] + 0.12, p);       // site -> the desk edge passing close
-    focusDist = 1 / ((1 - rackT) / SITE_FOCUS + rackT / 0.9);
-    const a = W / H, f0 = a >= 1.2 ? FOV0 : Math.min(62, Math.max(FOV0, 2 * Math.atan(0.3 / a) * 180 / Math.PI));
-    cam.fov = f0 * (1 + 0.06 * sstep(0.2, 1, u)); cam.aspect = W / H; cam.updateProjectionMatrix();   // a touch wider as it drops
-    cam.updateMatrixWorld();
+    cam.position.x += sx * 0.07 + 0.004 * nX(t * 0.5); cam.position.y += sy * 0.035 + 0.0035 * nZ(t * 0.62); cam.position.z += 0.003 * nX(t * 0.33 + 9);
+    rackT = 0; focusDist = SITE_FOCUS;
+    const a = W / H; cam.fov = a >= 1.2 ? FOV0 : Math.min(62, Math.max(FOV0, 2 * Math.atan(0.3 / a) * 180 / Math.PI));
+    cam.aspect = a; cam.updateProjectionMatrix(); cam.updateMatrixWorld();
     return 0;
   }
   function pose(p, t) {
@@ -604,7 +598,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
     renderer.info.reset();
     if (enhT0) enh = Math.min(1, (now - enhT0) / FADE_MS);
     const p = prog, s = pose(p, clock);
-    const pz = UNDER_MODE ? 0 : p, pd = UNDER_MODE ? Math.min(1, p / DAY_END) : p;   // pz: zoom-only ramps, pd: time of day
+    const pz = UNDER_MODE ? 0 : p, pd = UNDER_MODE ? (p < UNDER_DAY[0] ? p / UNDER_DAY[0] * 0.14 : Math.min(1, 0.14 + 0.86 * (p - UNDER_DAY[0]) / (UNDER_DAY[1] - UNDER_DAY[0]))) : p;   // pz: zoom-only ramps, pd: time of day
     const D = day.update(pd);
     outside.update(clock); time.value = clock; screens.tick();
     cov = coverage(screenRect(sr));
@@ -617,11 +611,11 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
     if (live) cu.uUI.value = 1 - sstep(FEED_DIP[0] - 0.04, FEED_DIP[1], pz);
     cabAcc += dt;
     if (mix < 0.98 && live && (HIGH || cabAcc > 1 / 30)) { cabAcc = 0; cab.update(clock); cab.render(renderer); }
-    const near = UNDER_MODE ? 0.4 * sstep(UNDER[0], 1, p) : sstep(0.0, 0.7, p), end = sstep(0.86, 0.97, pz);
+    const near = UNDER_MODE ? 0 : sstep(0.0, 0.7, p), end = sstep(0.86, 0.97, pz);
 
     // exposure ride: open a touch on the wide (the site), close as the screen fills frame, back to 1 for the hand-off.
     // the screens are compensated progressively so their pixels land as authored by the time they are the picture.
-    const ex0 = 1.06 - 0.13 * sstep(0.2, 0.68, pz) + 0.07 * sstep(0.72, 0.93, pz), ex = ex0 * D.exp * (UNDER_MODE ? 1 - 0.9 * sstep(0.84, 1, p) : 1);   // under: the lens stops down into the shadow   // D.exp: the day closes the lens
+    const ex0 = 1.06 - 0.13 * sstep(0.2, 0.68, pz) + 0.07 * sstep(0.72, 0.93, pz), ex = ex0 * D.exp;   // D.exp: the day closes the lens
     renderer.toneMappingExposure = ex; screens.setExposure((1 + (ex0 - 1) * sstep(0.45, 0.88, p)) * D.exp);   // screens compensate the day fully: readable throughout
     screens.setLevels?.(0.86, 0.95, 0.86);
     screens.setSubpixel?.(0.55 * sstep(0.5, 0.74, pz) * glare);
@@ -652,7 +646,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
     const dofK = HIGH ? 1 - sstep(0.88, 0.98, pz) : 0;
     const aperture = (3.2 + 6 * near) * dofK, maxblur = 16 / 1600 * dofK;      // CoC px per dioptre and max CoC radius, at 1600 px wide
     if (dust) {
-      const da = enh * (1 - (UNDER_MODE ? sstep(0.88, 1, p) : sstep(0.7, 0.9, p))) * glare; dust.visible = da > 0.001;
+      const da = enh * (1 - (UNDER_MODE ? 0 : sstep(0.7, 0.9, p))) * glare; dust.visible = da > 0.001;
       const bw = W * pr; dustU.focus.value = focusDist; dustU.cocK.value = aperture * bw / 1600; dustU.maxC.value = maxblur * bw;
       dustU.pxScale.value = H * pr * cam.projectionMatrix.elements[5] * 0.5; dustU.amt.value = da;
       mons.centre.screen.getWorldPosition(dustU.lightP.value); dustU.lightC.value.copy(mons.centre.light?.color ?? spill.cab).lerp(spill.right, 0.35);
@@ -667,7 +661,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
     post.update(pu);
 
     // window reflection: half res, every frame while the glass is in the shot (skipped, no mips, once it is not)
-    const reflK = mirror ? enh * (1 - (UNDER_MODE ? sstep(0.82, 0.95, p) : sstep(MIRROR_OFF[0], MIRROR_OFF[1], p))) : 0;
+    const reflK = mirror ? enh * (1 - (UNDER_MODE ? 0 : sstep(MIRROR_OFF[0], MIRROR_OFF[1], p))) : 0;
     let ok = false;
     if (reflK > 0.001) {
       const rw = Math.max(1, Math.round(W * pr / 2)), rh = Math.max(1, Math.round(H * pr / 2));
@@ -678,7 +672,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
     glassU.uSunC.value.copy(day.sunCol).multiplyScalar(0.025 * D.scat * Math.min(1, Math.max(0, (D.el + 0.12) / 0.15)));   // sun on the window grime
 
     // hand-off pass follows the projected screen (canvas pixels: the canvas runs at DPR)
-    const hu = hand.uniforms, ha = sstep(HAND_IN[0], HAND_IN[1], pz); hu.amt.value = ha; hu.outFade.value = fadeOutside && !UNDER_MODE ? sstep(HAND_IN[0], 1, p) : 0; hu.blackK.value = UNDER_MODE ? sstep(0.9, 1, p) : 0;   // under: the canvas itself lands on #000 at p=1
+    const hu = hand.uniforms, ha = sstep(HAND_IN[0], HAND_IN[1], pz); hu.amt.value = ha; hu.outFade.value = fadeOutside && !UNDER_MODE ? sstep(HAND_IN[0], 1, p) : 0; hu.blackK.value = 0;
     if (ha > 0) { const r = p >= 1 ? target : sr; hu.rect.value.set(r.x / W, 1 - (r.y + r.h) / H, (r.x + r.w) / W, 1 - r.y / H); hu.res.value.set(W * DPR, H * DPR); hu.rad.value = targetRad * DPR * sstep(HAND_IN[0], 1, p); }
     atmoRan = false;
     post.render();
@@ -828,8 +822,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
     setTarget(rect, radius) { if (!rect) { autoTarget = true; } else { target = { x: rect.x ?? rect.left, y: rect.y ?? rect.top, w: rect.w ?? rect.width, h: rect.h ?? rect.height }; autoTarget = false; } if (radius !== undefined) targetRad = radius; solve(); },
     screenRect() { pose(prog, clock); return screenRect(); },   // zoom exit only
     exit,
-    // exit 'under': canvas opacity the page applies (cross-fade to its #000 over p 0.9..1); always 1 for the zoom exit
-    exitAlpha(p = prog) { return UNDER_MODE ? 1 - sstep(0.9, 1, Math.min(1, Math.max(0, +p || 0))) : 1; },
+    exitAlpha() { return 1; },   // kept for older page code: the hero never fades itself (the page scrolls it away)
     setPointer(x, y) { ptrX = Math.max(-1, Math.min(1, x)); ptrY = Math.max(-1, Math.min(1, y)); },
     // hero copy opacity 0..1 as the page draws it (lamp glow toned down and the lead falloff while it is up); null: derive from p
     setCopyOpacity(a) { copyA = a == null ? null : Math.min(1, Math.max(0, +a || 0)); },
