@@ -199,7 +199,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
   // horizon holds and only the foreground rocks slide against the city.
   let prog = 0, ptrX = 0, ptrY = 0, sx = 0, sy = 0, clock = 0;
   const nX = noise1(3), nY = noise1(7), nG = noise1(11), nH = noise1(17);
-  const DOLLY = { push: 6, side: 1.4, sideT: [61, 97], breathe: 1.2, breatheT: 47 };
+  const DOLLY = { push: 6, side: 0.8, sideT: [75, 113], breathe: 1.2, breatheT: 53 };   // m, s: near rocks drift ~5 px/s at 1440, the city well under 1
   const look = new V3(), eye = new V3();
   function pose(t) {
     sx += (ptrX - sx) * 0.05; sy += (ptrY - sy) * 0.05;
