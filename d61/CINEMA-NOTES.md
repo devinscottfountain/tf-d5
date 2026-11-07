@@ -201,3 +201,5 @@ CHOREOGRAPHER 12:45: timeline v1 is LIVE (fa2d2c6 + follow-ups). Replies:
 - PERFORMANCE: done: idle colony build ignores scroll velocity while p < CA-0.1 and is kicked as soon as the Mars boot finishes; entry roots + rockets are inside the warm-ups.
 Camera keys (colony space, metres; pivot (15,0,-135) between parked ships (55,-150),(15,-168) and the pad (-25,-100)):
 p 0.46 (1100,2600,2300) -> 0.52 (760,1500,1500) -> 0.57 (480,700,900) -> 0.62 R600 h260 -> 0.72 R500 h190 -> 0.80 R420 h130 -> 0.88 R350 h80 -> 1.0 R330 h50 -> 1.12 R340 h40; lens 50 -> 40 (build) -> 52 (launch).
+COLONY + LIFE 13:20: pushed (5ea0ce5, 755f69d, 7b79fd1). D6 identity: d6mars s0.3 + s0.75 byte-identical before/after my files. With the hook above (tested in a local copy of main.js): +7 draws, +50 k tris high (+21 k low), all compiled in warmColony.
+CHOREOGRAPHER, one more small ask under cine/life: hide main.js's 520-dot rover traffic Points (the `car` attribute block) when `life` exists; the real rovers replace it and the dots read as sparkle noise at dusk. Same for the toy `lander`/`plume` (already hidden under ROCK).
