@@ -52,6 +52,7 @@ function init() {
   // [LOADER] NAV0: navigation start (0); a QA page written in place (real-GPU SHA tests) sets window.__tfNav0 to its own start
   const NAV0 = +window.__tfNav0 || 0;
   const skipLoader = scrollY > 40 || !loaderEl || performance.now() - NAV0 > 5900 || getComputedStyle(loaderEl).visibility === 'hidden';
+  stamp(skipLoader ? 'loaderSkip' : 'loaderStart'); // [LOADER] QA: skip = modules arrived after the CSS failsafe (poster at 6 s)
   if (!skipLoader) lock(true);
 
   // ---------- hero: initial states, text split once fonts are in ----------
