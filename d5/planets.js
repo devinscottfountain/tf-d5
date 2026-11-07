@@ -3,6 +3,7 @@
 //   -> { earth, moon, mars, clouds, earthAtmo, marsAtmo, ready, loadDeferred, update({ t, intro, camPos }) }
 // ready: Earth maps decoded + uploaded. loadDeferred(): idempotent, fetches the Moon/Mars maps, resolves when swapped in
 // (also fires on its own after deferAfter ms, 0 disables).
+import { createMarsAir } from './sky.js';
 // All shaders output LINEAR HDR (the composer's OutputPass does ACES + sRGB). Colour maps are sRGB textures,
 // so the GPU decodes them to linear on sampling. No per-frame allocations.
 
@@ -217,6 +218,89 @@ void main(){
   gl_FragColor = vec4(col, 1.);
 }`;
 
+// Mars, cine hero (D6.1 cine, on top of look 'lit'): same uniforms as the lit shader, plus
+// - analytic silhouette: the mesh is 1.5% oversize, every pixel ray-casts the true sphere and the limb gets exact pixel coverage
+//   (alpha), so the edge never stair-steps or shimmers at any size
+// - albedo: map local contrast (unsharp against a blurred mip) + sub-texel regolith detail faded by footprint (no shimmer)
+// - polar caps: the map's white cap kept cool and bright (the warm grade no longer turns it orange), edge broken by noise
+// - terminator: crisp but soft (a few degrees of penumbra + dust twilight), not the wide feather
+// - limb: thin dust haze over the disc toward the edge, brighter on the lit side, meets the atmosphere shell
+const MARS_CINE_FRAG = /* glsl */ `
+uniform sampler2D tMap, tNorm; uniform vec3 uSun; uniform float uSunI, uRelief, uDomes, uBump, uR;
+varying vec3 vP; varying vec2 vUv; varying vec3 vV;
+${GLSL_COMMON}
+float lumA(vec2 uv){ return dot(texture2D(tMap, uv).rgb, vec3(.35, .5, .15)); }
+void main(){
+  vec3 c = vP + vV, rd = normalize(-vV);                      // object-space camera and view ray
+  float b = dot(c, rd), q = sqrt(max(dot(c, c) - b * b, 0.)); // closest approach of the ray to the centre
+  float fw = max(fwidth(q), 1e-5), cov = clamp(0.5 - (q - uR) / fw, 0., 1.);
+  if (cov <= 0.) discard;
+  float th = -b - sqrt(max(uR * uR - q * q, 0.));
+  vec3 p = normalize(c + rd * th);                           // hit point (or the tangent point on the limb pixel)
+  vec3 V = -rd, L = normalize(uSun);
+  float mu = dot(p, L);
+  vec2 uv = dirToUv(p);
+  // derivatives from the smooth uv of the mesh (the atan seam would blow up dFdx of uv)
+  vec2 gx = dFdx(vUv), gy = dFdy(vUv); gx.x = clamp(gx.x, -.004, .004); gy.x = clamp(gy.x, -.004, .004);
+  vec3 alb = textureGrad(tMap, uv, gx, gy).rgb;
+  vec3 blur = textureGrad(tMap, uv, gx * 6., gy * 6.).rgb;
+  float slant = 1. - max(dot(p, -rd), 0.);
+  alb = max(alb + (alb - blur) * 0.55 * (1. - smoothstep(0.5, 0.85, slant)), 0.); // local contrast: crater rims, chasma walls, dune fields (eased off toward the foreshortened limb)
+  vec2 fwu = max(abs(gx), abs(gy));
+  vec2 st = clamp(fwu * 1.2, vec2(1. / 4096., 1. / 2048.), vec2(0.004));
+  float hx = lumA(uv + vec2(st.x, 0.)) - lumA(uv - vec2(st.x, 0.)), hy = lumA(uv + vec2(0., st.y)) - lumA(uv - vec2(0., st.y));
+  vec3 nt = textureGrad(tNorm, uv, gx, gy).rgb * 2. - 1.; nt.xy *= uRelief;
+  nt.xy -= vec2(hx, hy) * uBump * (1.5 / 4096.) / st.x;
+  // sub-texel regolith: only where a map texel covers several pixels; fades out before it can alias
+  float tex = 4096. * max(fwu.x, fwu.y * 2.), dk = 1. - smoothstep(0.35, 0.9, tex);
+  if (dk > 0.) { float n = fbm3(p * 900.) - 0.5; alb *= 1. + n * 0.22 * dk; nt.xy += vec2(fbm3(p * 700. + 3.) - .5, fbm3(p * 700. + 9.) - .5) * 0.5 * dk; }
+  vec3 N = perturb(p, normalize(nt), 1.);
+  // ice: the map's own caps (bright, unsaturated), edge broken up so it is not a smooth band
+  float lat = asin(clamp(p.y, -1., 1.)), mx = max(alb.r, max(alb.g, alb.b)), sat = (mx - min(alb.b, min(alb.r, alb.g))) / max(mx, 1e-3);
+  float ice = smoothstep(0.62, 0.85, mx) * (1. - smoothstep(0.18, 0.42, sat));
+  ice = max(ice, smoothstep(1.39, 1.45, abs(lat) + (fbm3(p * 22.) - 0.5) * 0.07));
+  ice *= smoothstep(1.05, 1.25, abs(lat));
+  vec3 rust = pow(alb, vec3(1.22)) * 1.32; float l = dot(rust, vec3(.3, .55, .15));
+  rust = max(mix(vec3(l), rust, 1.18), 0.) * vec3(1.0, 0.92, 0.70);   // rich butterscotch rust, a touch more saturated than lit
+  vec3 frost = vec3(0.80, 0.78, 0.76) * (0.7 + 0.2 * l);
+  vec3 A = mix(rust, frost, ice * 0.85);                     // subtle: a pale cap, not a white sticker
+  vec3 sunCol = sunTrans(mu, vec3(0.05, 0.085, 0.15));
+  // terminator: Lambert with a few degrees of penumbra (the sun's disc + a little dust forward-scatter), then near black
+  float gate = smoothstep(-0.035, 0.09, mu);
+  float m0 = max(dot(N, L) + 0.04, 0.) / 1.04 * gate, m1 = max(dot(p, V), 0.05);
+  float val = mix(m0, 2. * m0 / (m0 + m1), 0.12);
+  vec3 col = A * sunCol * val * uSunI;
+  col += A * vec3(0.95, 0.60, 0.36) * 0.03 * smoothstep(-0.05, 0.6, mu);           // dust fill, day side only
+  col += vec3(0.95, 0.45, 0.22) * 0.016 * exp(-pow((mu - 0.01) / 0.07, 2.));         // thin warm twilight band on the terminator
+  col += A * vec3(0.5, 0.3, 0.25) * 0.004 * (1. - smoothstep(-0.2, 0.05, mu));       // whisper of night so the dark side still has shape
+  // limb haze: optical depth of a thin dust layer grows as 1/cos toward the edge; brighter on the lit side, a faint blue forward lobe
+  float hz = clamp(pow(slant, 5.) * 0.45 + pow(slant, 16.) * 0.5, 0., 0.7);
+  float lit = smoothstep(-0.06, 0.45, mu);
+  vec3 haze = vec3(1.0, 0.70, 0.46) * 0.55 * uSunI * sunCol * lit;  // pale butterscotch dust, lit by the same sun
+  col = mix(col, haze, hz * smoothstep(-0.1, 0.2, mu));
+  col += vec3(1.0, 0.80, 0.56) * pow(slant, 10.) * smoothstep(0.1, 0.7, mu) * 0.6 * uSunI;   // bright lit limb
+  float dome = smoothstep(0.9, 0.97, vnoise(p * 380.)) * smoothstep(0.62, 0.72, fbm3(p * 4.) * 1.35);
+  col += vec3(1., 0.68, 0.3) * dome * (1. - smoothstep(-0.12, 0.05, mu)) * 2.4 * uDomes;
+  gl_FragColor = vec4(col * cov, cov);                       // premultiplied: the AA'd limb blends over the stars
+}`;
+
+// Phobos (cine): tiny dark potato for scale and parallax. Lit by the same key light as Mars (copied in onBeforeRender).
+const PHOBOS_VERT = /* glsl */ `
+varying vec3 vN; varying vec3 vO;
+void main(){ vN = normal; vO = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.); }`;
+const PHOBOS_FRAG = /* glsl */ `
+uniform vec3 uSun; uniform float uSunI, uA;
+varying vec3 vN; varying vec3 vO;
+${GLSL_COMMON}
+void main(){
+  vec3 N = normalize(vN), L = normalize(uSun);
+  float n = fbm3(vO * 9.);
+  vec3 alb = vec3(0.075, 0.064, 0.056) * (0.8 + 0.4 * n);
+  float m0 = max(dot(N, L), 0.);
+  vec3 col = alb * m0 * uSunI * 2.2 + alb * 0.02;
+  gl_FragColor = vec4(col * uA, uA);
+}`;
+
 // ---------------------------------------------------------------------------------------------
 // Atmosphere shell: single scattering (Rayleigh + Mie), analytic ray/sphere, 16 view samples x 3 light samples.
 // Samples cluster around the ray's lowest point so a thin limb is resolved. Premultiplied output.
@@ -273,7 +357,8 @@ void main(){
 }`;
 
 // ---------------------------------------------------------------------------------------------
-export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS, assetBase, deferAfter = 20000, skip = null, look = '' }) { // skip: map names never fetched (D5 Mars mode); look 'lit': D6.1 Mars shader
+export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS, assetBase, deferAfter = 20000, skip = null, look = '', cine }) {
+  const CINE = look === 'lit' && (cine ?? (globalThis.D5_CFG && globalThis.D5_CFG.cine) ?? true); // D6.1 cinematic pass: only ever on top of the lit look // skip: map names never fetched (D5 Mars mode); look 'lit': D6.1 Mars shader
   const R_EARTH = 10, R_MOON = 2.7, R_MARS = 6;
   const anis = Math.min(8, renderer.capabilities.getMaxAnisotropy());
   const loader = new THREE.TextureLoader(); loader.setCrossOrigin('anonymous');
@@ -343,9 +428,50 @@ export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS
     uSun: sunVec(), uSunI: { value: 2.2 }, uRelief: { value: 1.25 }, uDomes: { value: 1 }
   };
   if (look === 'lit') marsU.uBump = { value: 11 };
-  const mars = new THREE.Mesh(new THREE.SphereGeometry(R_MARS, look === 'lit' ? 256 : 192, look === 'lit' ? 128 : 96), // lit: the full limb is on show, keep it round when big
-    new THREE.ShaderMaterial({ vertexShader: PLANET_VERT, fragmentShader: look === 'lit' ? MARS_LIT_FRAG : MARS_FRAG, uniforms: marsU }));
+  if (CINE) marsU.uR = { value: R_MARS };
+  const mars = CINE
+    ? new THREE.Mesh(new THREE.SphereGeometry(R_MARS * 1.015, 192, 96), // oversize: the shader cuts the true limb with pixel coverage
+      new THREE.ShaderMaterial({ vertexShader: PLANET_VERT, fragmentShader: MARS_CINE_FRAG, uniforms: marsU, transparent: true,
+        blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor }))
+    : new THREE.Mesh(new THREE.SphereGeometry(R_MARS, look === 'lit' ? 256 : 192, look === 'lit' ? 128 : 96), // lit: the full limb is on show, keep it round when big
+      new THREE.ShaderMaterial({ vertexShader: PLANET_VERT, fragmentShader: look === 'lit' ? MARS_LIT_FRAG : MARS_FRAG, uniforms: marsU }));
   mars.position.copy(MARS); scene.add(mars);
+  if (CINE) mars.renderOrder = 1; // transparent now: after the sky (-10/-9), before the atmosphere shell (2)
+
+  // ---------- Phobos (cine) ----------
+  // Rides as a child of Mars so it hides and compiles with it, but its world matrix is written in onBeforeRender: it sits on a fixed
+  // arc above and a little right of the disc as seen down the approach line, so it never lands in the title gap or the beat-2 copy.
+  let phobos = null;
+  if (CINE) {
+    const g = new THREE.IcosahedronGeometry(1, 4), pa = g.attributes.position, v = new THREE.Vector3();
+    const h = (x, y, z) => { const s = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719) * 43758.5453; return s - Math.floor(s); };
+    for (let i = 0; i < pa.count; i++) {
+      v.fromBufferAttribute(pa, i);
+      let r = 1 + 0.10 * Math.sin(v.x * 3.1 + 1) * Math.cos(v.y * 2.3) + 0.06 * Math.sin(v.z * 5.3 + v.x * 2);
+      r -= 0.22 * Math.exp(-v.distanceToSquared({ x: 0.85, y: 0.25, z: 0.46 }) / 0.09);            // Stickney
+      r -= 0.05 * h(Math.round(v.x * 6), Math.round(v.y * 6), Math.round(v.z * 6));
+      v.multiplyScalar(r); v.x *= 1.25; v.z *= 0.88; pa.setXYZ(i, v.x, v.y, v.z);
+    }
+    g.computeVertexNormals();
+    const pu = { uSun: { value: new THREE.Vector3(1, 0, 0) }, uSunI: marsU.uSunI, uA: { value: 1 } };
+    phobos = new THREE.Mesh(g, new THREE.ShaderMaterial({ vertexShader: PHOBOS_VERT, fragmentShader: PHOBOS_FRAG, uniforms: pu, transparent: true,
+      blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor }));
+    phobos.frustumCulled = false; phobos.renderOrder = 1; phobos.matrixAutoUpdate = false; mars.add(phobos);
+    const app = new THREE.Vector3(30, 10, 38).normalize(), up = new THREE.Vector3(0, 1, 0).addScaledVector(app, -app.y).normalize(), rt = new THREE.Vector3().crossVectors(up, app);
+    const ax = up.clone().multiplyScalar(0.85).addScaledVector(rt, 0.55).normalize(); // screen 'up and a little right' as seen down the approach line
+    const pq = new THREE.Quaternion(), ps = new THREE.Vector3(), pp = new THREE.Vector3(), pe = new THREE.Euler(), mq = new THREE.Quaternion();
+    phobos.alpha = 1; phobos.size = 0.12; phobos.orbit = 1.75 * R_MARS; phobos.phase = null; // phase: null = drifts with time
+    phobos.onBeforeRender = (r, sc, camera) => {
+      const a = phobos.phase ?? (0.3 + 0.18 * Math.sin(phobosT * 0.011));   // a slow drift on its arc (depth changes, so it parallaxes against Mars)
+      pp.copy(ax).multiplyScalar(Math.cos(a)).addScaledVector(app, Math.sin(a)).multiplyScalar(phobos.orbit).add(mars.position);
+      pe.set(0.3, phobosT * 0.05, 0.2); pq.setFromEuler(pe);
+      phobos.matrixWorld.compose(pp, pq, ps.setScalar(phobos.size));
+      mq.copy(pq).invert(); pu.uSun.value.copy(marsU.uSun.value).applyQuaternion(mars.quaternion).applyQuaternion(mq);
+      const dc = camera.position.distanceTo(mars.position);
+      pu.uA.value = phobos.alpha * THREE.MathUtils.smoothstep(dc, 13, 20); // gone before the approach turns the camera onto the limb
+    };
+  }
+  let phobosT = 0;
 
   // ---------- atmospheres ----------
   // betas are per planet radius (physical Earth values: R 5.8/13.5/33.1e-6 per m * 6371 km); heights are fractions of the radius, stretched ~3x for the camera
@@ -379,7 +505,7 @@ export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS
   // spin: extra yaw so main.js can park a given city under the camera; hole: world direction kept free of cloud
   function update({ t = 0, intro = 1, camPos, spin = 0, hole } = {}) {
     earth.rotation.y = spin + t * EARTH_SPIN; clouds.rotation.y = spin + t * CLOUD_SPIN;
-    if (hole) { clouds.updateMatrixWorld(); hq.copy(clouds.quaternion).invert(); hv.copy(hole).applyQuaternion(hq); cloudU.uHole.value.set(hv.x, hv.y, hv.z, 1); } moon.rotation.y = t * 0.01; mars.rotation.y = t * 0.02;
+    if (hole) { clouds.updateMatrixWorld(); hq.copy(clouds.quaternion).invert(); hv.copy(hole).applyQuaternion(hq); cloudU.uHole.value.set(hv.x, hv.y, hv.z, 1); } moon.rotation.y = t * 0.01; mars.rotation.y = t * 0.02; phobosT = t;
     sunInto(earth, earthU.uSun); sunInto(clouds, cloudU.uSun); sunInto(moon, moonU.uSun); sunInto(mars, marsU.uSun);
     earthU.uCloudOff.value = (earth.rotation.y - clouds.rotation.y) / (2 * Math.PI);   // cloud deck slides over the ground
     earthU.uGrow.value = 0.03 + 0.97 * intro;                                          // city lights spread on load
@@ -388,5 +514,9 @@ export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS
       const side = inside ? THREE.BackSide : THREE.FrontSide; if (a.material.side !== side) { a.material.side = side; a.material.needsUpdate = true; }
     }
   }
-  return { earth, moon, mars, clouds, earthAtmo, marsAtmo, ready: Promise.all(pending), loadDeferred, update };
+  // ---------- cine: Mars air (entry veil + colony sky dome with the Jezero far ground), driven by main.js through entry(e, ctx) ----------
+  let air = null;
+  if (CINE) { air = createMarsAir({ THREE }); scene.add(air.dome, air.veil); }
+  return { earth, moon, mars, clouds, earthAtmo, marsAtmo, phobos, air, entry: air ? air.entry : undefined, entryRoots: air ? air.roots : undefined,
+    ready: Promise.all(pending), loadDeferred, update };
 }
