@@ -449,7 +449,7 @@ const cPosC = CSH && new THREE.CatmullRomCurve3(CSH.map(k => k.pos), false, 'cen
 const cIdx = CSH && pchip(CSH.map(k => k.p), CSH.map((k, i) => i / (CSH.length - 1))), cFov = CSH && pchip(CSH.map(k => k.p), CSH.map(k => k.fov));
 // cine: scroll -> the colony's build clock gR (rockets.js table: land 0-0.064, ARRIVE 0.1, ignite 0.8, liftoff 0.83, 1.0 ~1.2 km up)
 const gOf = CINE ? (() => { const f = pchip([0.49, 0.62, 0.88, 0.9, 1.12], [0, 0.1, 0.8, 0.83, 1]); return p => (p <= 0.49 ? 0 : p >= 1.12 ? 1 : clamp01(f(p))); })() : p => clamp01((p - CA) / (1 - CA));
-const LIFT_G = 0.83, rockW = new THREE.Vector3(), rockL = new THREE.Vector3();
+const LIFT_G = 0.83, rockW = new THREE.Vector3(), rockL = new THREE.Vector3(), camUpY = new THREE.Vector3(0, 1, 0);
 // the ship's mid-body (world) at build clock g: rockets.launch.pos when rockets.js gives it, else its published climb over the pad
 function shipAt(g, out, now) {
   const r = colonyAPI && colonyAPI.rockets, L = r && r.launch;
@@ -462,7 +462,12 @@ function colCam(p, outPos, outLook) {
   // launch: from liftoff the aim leaves the pivot for the climbing ship, a beat behind it (the ship at a slightly earlier clock)
   const g = gOf(q), k = sstep(g, LIFT_G + 0.004, LIFT_G + 0.05);
   if (k > 0) { shipAt(g, rockL, true); rockW.copy(rockL).sub(outLook); outLook.addScaledVector(rockW, k * 0.85); } // never quite on it: the column trails into frame from below
-  return cFov(q);
+  // as the closing section rises over the lower frame the aim tips down under the ship, so it climbs into the top third above it
+  const dn = 0.26 * sstep(q, 0.97, 1.1);
+  if (dn > 0) { rockW.copy(outLook).sub(outPos); rockL.crossVectors(rockW, camUpY).normalize(); outLook.copy(outPos).add(rockW.applyAxisAngle(rockL, -dn)); }
+  // portrait: open the lens so the ships, the pad and the hub still share the width (about 70% of the landscape field across)
+  const f = cFov(q); if (cam.aspect >= 1) return f;
+  return 2 * THREE.MathUtils.radToDeg(Math.atan(Math.tan(THREE.MathUtils.degToRad(f / 2)) * Math.min(2.2, 1.12 / cam.aspect)));
 }
 
 // sun + anamorphic flare: two additive sprites, the streak is what sells the Expanse feel
