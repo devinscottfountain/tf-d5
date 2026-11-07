@@ -87,7 +87,9 @@ function init() {
   // the import resolves). build: createHero's sync scene build. compile: compileAsync jobs settled. tex: first-frame textures
   // on the GPU, by nominal texels. frame: a frame with them drawn and presented (hero.real). No 3D hero: page only.
   const HERO_MODS = 27; // static graph of d6/hero3d.js minus three itself (recount if the hero's imports change)
-  const prog = createProgress(HERO3D ? { page: 5, modules: 25, build: 10, compile: 25, tex: 30, frame: 5 } : { page: 1 });
+  // sol: the solutions scene (module, topo fetch + parse, sync build + first resize, ~100 ms on an M4 Pro) is built behind the
+  // loader once the hero has compiled (while its textures download), so that task never lands on a live frame after the reveal
+  const prog = createProgress(HERO3D ? { page: 5, modules: 25, build: 10, compile: 25, tex: 25, sol: 5, frame: 5 } : { page: 2, sol: 1 });
   D6.progress = prog;
   const pageDone = { fonts: 0, poster: 0 }, pageStep = k => { pageDone[k] = 0.5; prog.set('page', pageDone.fonts + pageDone.poster); };
   const bootEv = ev => {
@@ -125,7 +127,7 @@ function init() {
       D6.heroApi = hero; copyOpLast = -1; // a rebuilt hero gets the copy opacity again
       stamp(again ? 'heroRebuilt' : 'heroBuilt'); if (!again) prog.set('build', 1);
       if (sbVid?.classList.contains('is-on')) hero.setMedia(sbVid);
-      hero.ready.then(ok => ok && stamp(again ? 'heroReady2' : 'heroReady'));
+      hero.ready.then(ok => { if (!ok) return; stamp(again ? 'heroReady2' : 'heroReady'); if (!again) warmSolutions(); });
       return hero.real || hero.ready; // swap in only on a real frame (never flat placeholder materials)
     }).then(ok => (ok === false || gen !== heroGen || again ? ok : heroBench().then(() => ok)))
       .then(ok => { if (ok === false || gen !== heroGen) return false; swapIn(again); return true; }).catch(e => {
@@ -147,7 +149,15 @@ function init() {
   const heroReady = buildHero(false);
   D6.heroReady = heroReady;
   // no 3D hero after all (no WebGL, build error): nothing left to wait for, the poster is the hero
-  heroReady.then(ok => { if (ok) stamp('heroReal'); else { stamp('heroNone'); for (const k of Object.keys(prog.weights)) if (k !== 'page') prog.set(k, 1); } });
+  heroReady.then(ok => { if (ok) stamp('heroReal'); else { stamp('heroNone'); for (const k of Object.keys(prog.weights)) if (k !== 'page' && k !== 'sol') prog.set(k, 1); warmSolutions(); } });
+  // [LOADER] solutions built while the loader is still up (capped at 2.5 s; after a fallback / skip, afterLoader's idle path)
+  let solWarm = null;
+  function warmSolutions() {
+    if (solWarm) return solWarm;
+    const fin = () => { prog.set('sol', 1); stamp('solWarm'); };
+    if (heroLive) { fin(); return (solWarm = Promise.resolve()); }
+    return (solWarm = idleP(400).then(() => Promise.race([Promise.resolve(loadSolutions()), new Promise(r => setTimeout(r, 2500))])).then(fin, fin));
+  }
   function releaseHero() {
     if (!HERO3D || (!hero && !heroBuilding)) return;
     heroGen++; heroBuilding = null; stamp('heroRelease');
@@ -257,7 +267,10 @@ function init() {
   function heroRunFrame(p, sr) {
     if (!hero) return;
     const want = heroOn && heroLive && sr.bottom > 0 && sr.top < innerHeight && p < 1;
-    if (want && !heroRun) { heroRun = true; if (!D6.t.heroStart) stamp('heroStart'); hero.setProgress(p); hero.start(); hero.renderOnce(); }
+    if (want && !heroRun) {
+      heroRun = true; const first = !D6.t.heroStart; if (first) stamp('heroStart'); hero.setProgress(p); hero.start();
+      if (!(first && p < 0.001)) hero.renderOnce(); // [LOADER] the reveal frame: the canvas already holds the frame drawn behind the loader
+    }
     else if (!want && heroRun) { heroRun = false; hero.stop(); }
     D6.heroRun = heroRun;
   }
