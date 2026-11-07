@@ -63,3 +63,23 @@ Flag: createPlanets/createSky read `opts.cine`, default `!!window.D5_CFG.cine`, 
 - Stars (createSky, cine): AA point stars (no sub-pixel shimmer), faint unresolved Milky Way star haze, stronger band. No API change.
 
 GRADE -> CHOREOGRAPHER (one line in d5/main.js, please): `createPost({ THREE, renderer, scene, cam, cine: CINE })`. The cine look is opt-in per createPost call ONLY (not read from D5_CFG), because d6/hero3d.js also calls createPost and the hero can be rebuilt after Mars has set D5_CFG. Until that line lands the Mars run keeps the D6 post. After it: `post.cine === true`, `post.fx` knobs as above, `postArg.ca` ignored.
+
+## PERFORMANCE 11:30: BASELINE (live page @10c5f43, pre-cine). Owners: please act on your rows
+Rig: Devin's pane is an **Apple M4 Pro** (not an Air), Chrome 152 / ANGLE Metal, emulated 1440x900 CSS @ DPR 2, 120 Hz. Pane reported "hidden" but rAF ran unthrottled at 120 Hz; numbers below are provisional until re-measured with the pane visible. Two methods: (a) frame dt over a constant 0.6 vp/s scripted scroll from a cold load; (b) sync bench = render + 1 px readPixels (true CPU+GPU cost per frame). GPU timer queries are available but on ANGLE Metal they read 2-3x the real cost, so (b) is the number to trust. Air estimate = bench x ~3.3 (M1 8c) / x ~2.4 (M2 10c), GPU bound.
+| section | dt p50 / p95 / worst (ms, M4 Pro) | bench ms (M4 Pro) | est. M1 Air | draws / ktri | hitches |
+|---|---|---|---|---|---|
+| hero (d6/hero3d) | 16.6 / 16.8 / 41.6 (capped at 60) | **13.1** (canvas 2880x1800, post 1.5) | ~40 | 258 / 440 | GC: heap drops >2 MB every ~12 frames |
+| solutions | 8.3 / 9.2 / 16.6 | - | - | 19-27 / 16-40 | 8-10 links while on screen |
+| pre-mars (benefits/tech) | 8.3 / 9.3 / **100** | - | - | d5 30 / 84 | d5 boot warm-up: 30 links + 111 ms planets.js task + 72 ms three task, while the page scrolls |
+| mars beat 1-3 (p<0.45) | 8.3 / 9.3 / 9.4 | 4.1-4.7 (2160x1350) | ~14-15 | 31 / 85 | none |
+| mars entry->colony (p .45-.6) | 8.3 / 9.2 / **125-317** | 4.7-6.9 | ~16-23 | 45 / 271 | **38 program links at arrival** (colony built + compiled on screen) |
+| colony (p .6-.75) | 8.3 / 9.2 / 33 | 6.9-7.7 | ~23-25 | 108 / 481 | - |
+| colony late + launch (p .75-1) | 8.3 / 9.3 / **1008** | 7.5-8.0 | ~25-27 | 146-200 / 1.5-2.0 M | **footer import + compile + texture uploads while the colony renders: 1008 ms frame, LoAFs 906 + 988 ms (foot-tex.js go)**; footer canvas also draws every frame here while the colony draws |
+| CTA | 8.3 / 9.2 / 9.3 | - | - | footer 39 / 265 | - |
+| footer | 8.3 / 9.3 / 9.4 | 4.2 (2160x1350) | ~14 | 38 / 265 | 18 links on first frame |
+Worst offenders, in order:
+1. **FOOTER + LOADER (d61/main.js footFrame)**: footer loads at `r.top < 2H`, which lands mid-colony (p ~0.8): ~1 s freeze. Fix (PERFORMANCE will do it via perf.js idle queue, small diff in footFrame): import + build + compile during Mars beats 1-2 (planet only, ~4 ms frames) in idle callbacks; textures one per idle slot, never while the colony is on screen.
+2. **CHOREOGRAPHER (d5/main.js)**: `calm()` requires `|smV| < 0.02`, so any steady scroll starves the idle colony build and `ensureColony()` + warm runs synchronously at the swap (125-317 ms, 38 links). Ask: let `scheduleColony` run its chunks in idle time regardless of scroll velocity while `sm < CA - 0.1` (still only with `timeRemaining() > 8`), and kick it as soon as boot is done; the new cine roots (`planets.entryRoots()`, rockets, colony sky dome) must be inside `precompile`/`warmColony`. I will verify with `renderer.info.programs` deltas.
+3. **HERO (d6/hero3d.js, no listed owner; LOADER/coordinator)**: 13 ms per frame on M4 Pro = ~30 fps on an Air at 1440p. Canvas is sized at full DPR 2 while post runs at 1.5; its own adaptive pr only reacts at avg >22 ms. Perf.js will drive it through a small `setPixelRatio`-style hook (note to follow) and it should drop to post 1.0 on Airs. Plus ~2 MB/12 frames garbage: worth a look for per-frame allocations.
+4. **colony steady state**: ~7-8 ms here = ~23-27 ms on an M1 Air at DPR 1.5. Governor first step DPR 1.5 -> 1.25 -> 1.0 (2.25x fewer pixels) is the main lever; GRADE `setPostQuality` next; then shadows/particles.
+5. Two contexts drawing at once (colony + footer at the track end, p .75-1): perf.js will gate footer frames while d5 is drawing.
