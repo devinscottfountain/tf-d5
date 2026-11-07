@@ -4,6 +4,34 @@
 // (Mars dust scatters strongly forward; the small aureole runs a touch cooler, the broad band warm).
 // Haze: exponential-height dust, optical depth integrated along the ray, inscatter = sky radiance toward the horizon.
 
+// D6.1 shared film look: VERBATIM copy of CINE_GLSL in d5/post.js (ACES Hill fit + warm grade + grain). Change both or neither.
+export const CINE_GLSL = /* glsl */ `
+const mat3 cACI=mat3(.59719,.07600,.02840, .35458,.90834,.13383, .04823,.01566,.83777);
+const mat3 cACO=mat3(1.60475,-.10208,-.00327, -.53108,1.10813,-.07276, -.07367,-.00605,1.07602);
+vec3 cRRT(vec3 v){ vec3 a=v*(v+.0245786)-.000090537, b=v*(.983729*v+.4329510)+.238081; return a/b; }
+// exposed scene-linear -> display-linear: a hair warm white balance, then ACES (Hill fit; three's ACESFilmic is this after its /0.6)
+vec3 cineTone(vec3 c){ return clamp(cACO*cRRT(cACI*(c*vec3(1.025,1.,.96))),0.,1.); }
+vec3 cineOETF(vec3 c){ c=max(c,0.); return mix(c*12.92, 1.055*pow(c,vec3(1./2.4))-.055, step(.0031308,c)); }
+// display-encoded grade. Vibrance (rust ground and teal sky a touch richer, already-saturated plumes left alone),
+// shadow toe lift (rich, not crushed; true black stays black), teal-leaning shadows, warm lifted highlights.
+vec3 cineGrade(vec3 o){
+  float l=dot(o,vec3(.2126,.7152,.0722));
+  float mx=max(o.r,max(o.g,o.b)), mn=min(o.r,min(o.g,o.b)), s=(mx-mn)/max(mx,1e-4);
+  o=max(mix(vec3(l),o,1.05+.14*(1.-s)),0.);
+  vec3 u=1.-clamp(o,0.,1.); o+=.16*o*u*u*u*u;
+  float sh=6.*l*(1.-l)*(1.-l)*(1.-l);
+  o+=sh*vec3(-.010,.003,.012);
+  o+=smoothstep(.5,1.,l)*vec3(.022,.008,-.014);
+  return clamp(o,0.,1.);
+}
+float cH12(vec2 p){ vec3 p3=fract(vec3(p.xyx)*.1031); p3+=dot(p3,p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
+// light temporal grain on display values (strongest in the mids, like film) + a 1/255 dither so dark gradients never band
+vec3 cineGrain(vec3 o, vec2 fc, float t, float amt){
+  float g=cH12(fc+fract(t*7.31)*vec2(97.,57.))-.5, l=dot(o,vec3(.299,.587,.114));
+  return o+g*amt*(.35+2.4*l*(1.-l))+(cH12(fc*1.37+13.)-.5)/255.;
+}
+`;
+
 export const NOISE = /* glsl */ `
 float fh(vec2 p){ p=fract(p*vec2(443.897,441.423)); p+=dot(p,p.yx+19.19); return fract((p.x+p.y)*p.x); }
 float fvn(vec2 x){ vec2 i=floor(x),f=fract(x); f=f*f*(3.-2.*f);
@@ -116,17 +144,13 @@ void main(){
   gl_FragColor=vec4(c,1.);
 }`;
 
-// final: bloom, logo halo, exposure, ACES (Hill fit), grade, vignette (lower half held down for the type), grain, sRGB
+// final: bloom, logo halo, exposure, shared tone + grade (CINE_GLSL, same as the Mars run), vignette (lower half held down
+// for the type), sRGB, shared grain
 export const FINAL_FRAG = /* glsl */ `
+${CINE_GLSL}
 uniform sampler2D tSrc, tB0, tB1, tB2, tB3, tB4; uniform vec4 uBw; uniform float uBw4, uBloom, uExp, uGrain, uTime, uVig, uLow, uTop;
 uniform vec4 uLogo; uniform float uHalo; uniform vec3 uHaloC; uniform vec2 uRes;
 varying vec2 vUv;
-const mat3 ACI=mat3(.59719,.07600,.02840, .35458,.90834,.13383, .04823,.01566,.83777);
-const mat3 ACO=mat3(1.60475,-.10208,-.00327, -.53108,1.10813,-.07276, -.07367,-.00605,1.07602);
-vec3 rrt(vec3 v){ vec3 a=v*(v+.0245786)-.000090537, b=v*(.983729*v+.4329510)+.238081; return a/b; }
-vec3 aces(vec3 c){ return clamp(ACO*rrt(ACI*c),0.,1.); }
-vec3 oetf(vec3 c){ return mix(c*12.92, 1.055*pow(c,vec3(1./2.4))-.055, step(.0031308,c)); }
-float h12(vec2 p){ vec3 p3=fract(vec3(p.xyx)*.1031); p3+=dot(p3,p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
 void main(){
   vec3 c=texture2D(tSrc,vUv).rgb;
   vec3 b=texture2D(tB0,vUv).rgb*uBw.x+texture2D(tB1,vUv).rgb*uBw.y+texture2D(tB2,vUv).rgb*uBw.z+texture2D(tB3,vUv).rgb*uBw.w;
@@ -137,20 +161,13 @@ void main(){
   // halo: a faint warm lift of the haze around the logotype (uLogo = centre xy, half size zw, in uv, y up)
   vec2 hq=(vUv-uLogo.xy)/max(uLogo.zw*vec2(1.25,2.2),vec2(1e-3));
   c+=uHaloC*uHalo*exp(-dot(hq,hq)*1.6);
-  c=aces(c*uExp);
-  // grade: warm the shadows a hair, keep blacks black
-  c=pow(c,vec3(1.,1.02,1.05));
+  c=cineTone(c*uExp);
   // vignette: edges (Figma ellipses), the lower half held down for the logotype and links, top melts into the page
   float yt=1.-vUv.y; vec2 e=(vUv-vec2(.5,.56))*vec2(1.,1.25);
   float v=mix(1.,1.-uVig,smoothstep(.3,.95,length(e)*1.3));
   v*=mix(1.,1.-uLow,smoothstep(.33,.78,yt));
   v*=smoothstep(0.,uTop,yt);
   c*=v;
-  vec3 o=oetf(c);
-  // grain on luminance (film-ish, stronger in the mids), plus a dither so the dark gradients never band
-  float g=h12(gl_FragCoord.xy+fract(uTime*7.31)*vec2(97.,57.))-.5;
-  float l=dot(o,vec3(.299,.587,.114));
-  o+=g*uGrain*(.35+2.4*l*(1.-l));
-  o+=(h12(gl_FragCoord.xy*1.37+13.)-.5)/255.;
-  gl_FragColor=vec4(o,1.);
+  vec3 o=cineGrade(cineOETF(c));
+  gl_FragColor=vec4(clamp(cineGrain(o,gl_FragCoord.xy,uTime,uGrain),0.,1.),1.);
 }`;

@@ -143,11 +143,22 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
   for (let i = 0; i < LV * 2; i++) blurMats.push(fsMat(BLUR_FRAG, { tSrc: { value: null }, uDir: { value: new THREE.Vector2() } }));
   const finU = {
     tSrc: { value: rtA.texture }, tB0: { value: rtL[0].texture }, tB1: { value: rtL[1].texture }, tB2: { value: rtL[2].texture }, tB3: { value: rtL[3].texture }, tB4: { value: rtL[LV - 1].texture },
-    uBw: { value: new THREE.Vector4(0.46, 0.3, 0.15, 0.06) }, uBw4: { value: 0.03 }, uBloom: { value: 0.5 }, uExp: { value: 1 }, uGrain: { value: HIGH ? 0.05 : 0.035 }, uTime: { value: 0 },
+    uBw: { value: new THREE.Vector4(0.46, 0.3, 0.15, 0.06) }, uBw4: { value: 0.03 }, uBloom: { value: 0.5 }, uExp: { value: 1 }, uGrain: { value: HIGH ? 0.04 : 0.03 }, uTime: { value: 0 },
     uVig: { value: 0.75 }, uLow: { value: 0.82 }, uTop: { value: 0.1 }, uLogo: { value: new THREE.Vector4() }, uHalo: { value: 0 }, uHaloC: { value: new THREE.Color(0.06, 0.022, 0.009) }, uRes: { value: new THREE.Vector2() }
   };
   const finMat = fsMat(FINAL_FRAG, finU, LV > 4 ? { B5: '' } : {});
   function pass(mat, target) { fs.material = mat; renderer.setRenderTarget(target); renderer.render(fsScene, fsCam); }
+  // post quality ladder (GRADE, shared with the Mars post): 3/2 every bloom mip, 1 one fewer, 0 three; weights renormalised so
+  // the glow keeps its energy. Only skips passes: nothing compiles.
+  const BW = [0.46, 0.3, 0.15, 0.06, 0.03];
+  let bloomLv = LV, postQ = 3;
+  function setPostQuality(l) {
+    postQ = Math.max(0, Math.min(3, Math.round(+l || 0))); bloomLv = Math.min(LV, postQ >= 2 ? 5 : postQ === 1 ? 4 : 3);
+    const ws = BW.slice(0, LV); ws[LV - 1] = BW.slice(LV - 1).reduce((a, b) => a + b, 0);   // low tier (4 mips) folds the 5th into the 4th, as before
+    let tot = 0; for (let i = 0; i < bloomLv; i++) tot += ws[i];
+    const k = i => (i < bloomLv ? ws[i] / tot : 0);
+    finU.uBw.value.set(k(0), k(1), k(2), k(3)); finU.uBw4.value = LV > 4 ? k(4) : 0;
+  }
 
   // ---------------------------------------------------------------- layout
   let logo = null;   // DOM rect of the logotype relative to the host (setLogoRect), else the Figma layout
@@ -243,7 +254,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
     pass(atmosMat, rtA);
     // bloom
     pass(preMat, rtPre);
-    for (let i = 0; i < LV; i++) { pass(blurMats[i * 2], rtT[i]); pass(blurMats[i * 2 + 1], rtL[i]); }
+    for (let i = 0; i < bloomLv; i++) { pass(blurMats[i * 2], rtT[i]); pass(blurMats[i * 2 + 1], rtL[i]); }
     finU.uTime.value = clock;
     pass(finMat, null);
     // adaptive ratio (high): sustained slow frames drop the ratio a notch, applied while the scroll is idle
@@ -327,6 +338,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
     start() { if (running || dead) return; running = true; lastT = 0; if (!visHidden) raf = requestAnimationFrame(loop); },
     stop() { running = false; cancelAnimationFrame(raf); },
     renderOnce(t) { if (dead || !stage) return; if (t != null) { clock = +t; lastT = 0; } frame(performance.now()); },   // t: scene clock in s (QA stills)
+    setPostQuality, getPostQuality: () => postQ,
     setPixelRatio(v) { prWant = Math.max(0.5, Math.min(prMax, +v || prMax)); },   // perf governor cap; the loop applies it on a quiet frame
     resize,
     stats() { const i = renderer.info; return { calls: i.render.calls, triangles: i.render.triangles, pixelRatio: pr, dpr: DPR, frames, programs: i.programs?.length, stage, timing, placeholder: !!content?.placeholder }; },
