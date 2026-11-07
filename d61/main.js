@@ -89,7 +89,7 @@ function init() {
   D6.progress = prog;
   const pageDone = { fonts: 0, poster: 0 }, pageStep = k => { pageDone[k] = 0.5; prog.set('page', pageDone.fonts + pageDone.poster); };
   const bootEv = ev => {
-    if (ev.stage === 'frame') prog.set('frame', 1);
+    if (ev.stage === 'frame') prog.set('frame', 0.5); // the other half: governor bench + a frame at its ratio (heroBench)
     else if (ev.total > 0) prog.set(ev.stage, ev.done / ev.total);
     else if (ev.total === 0) prog.set(ev.stage, 1);
   };
@@ -123,12 +123,22 @@ function init() {
       if (sbVid?.classList.contains('is-on')) hero.setMedia(sbVid);
       hero.ready.then(ok => ok && stamp(again ? 'heroReady2' : 'heroReady'));
       return hero.real || hero.ready; // swap in only on a real frame (never flat placeholder materials)
-    }).then(ok => { if (ok === false || gen !== heroGen) return false; swapIn(again); return true; }).catch(e => {
+    }).then(ok => (ok === false || gen !== heroGen || again ? ok : heroBench().then(() => ok)))
+      .then(ok => { if (ok === false || gen !== heroGen) return false; swapIn(again); return true; }).catch(e => {
       console.warn('d6 hero:', e);
       if (gen === heroGen) { try { hero?.dispose(); } catch (_) { /* already gone */ } hero = null; D6.heroApi = null; }
       host.remove(); return false;
     }).finally(() => { if (gen === heroGen) heroBuilding = null; });
     return (heroBuilding = p);
+  }
+  // [LOADER] behind the loader: the governor benches the hero now (perf.js, force) so its level lands before the reveal, not
+  // as a softness pop 2 s after it; then one frame at that ratio is drawn and presented. Capped at 1.5 s.
+  function heroBench() {
+    const h = hero, done = () => { prog.set('frame', 1); stamp('heroBench'); };
+    if (!h || heroLive || !perf?.bench) { done(); return Promise.resolve(); }
+    const shown = () => new Promise(r => { let k = 0; const go = () => { if (!k) { k = 1; r(); } }; requestAnimationFrame(go); setTimeout(go, 100); });
+    return Promise.race([perf.bench('hero', () => h.renderOnce(), h.renderer.getContext(), { force: true }), new Promise(r => setTimeout(r, 1500))])
+      .catch(() => {}).then(() => { if (hero === h) { h.renderOnce(); h.renderOnce(); } return shown(); }).then(done, done);
   }
   const heroReady = buildHero(false);
   D6.heroReady = heroReady;

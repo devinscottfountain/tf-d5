@@ -864,6 +864,8 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
     start() { if (running || dead) return; running = true; lastT = 0; post.resetMotion(); raf = requestAnimationFrame(loop); },
     stop() { running = false; cancelAnimationFrame(raf); },
     renderOnce() { if (!dead) frame(performance.now()); },
+    // governor hook (d61/perf.js): wanted post pixel ratio, applied by the loop on a quiet frame (setPR), capped at prMax
+    setPixelRatio(v) { prWant = Math.max(0.5, Math.min(prMax, +v || prMax)); },
     resize,
     stats() { const i = renderer.info; return { calls: i.render.calls, triangles: i.render.triangles, pixelRatio: pr, dpr: DPR, frames, programs: i.programs?.length, stage, enh, coverage: cov, rich: RICH }; },
     dispose() {
