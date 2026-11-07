@@ -215,8 +215,8 @@ vec3 marsSky(vec3 d, vec3 s, float k){
   vec3 zen = vec3(0.34, 0.205, 0.13), hor = vec3(0.90, 0.62, 0.40);
   vec3 c = mix(hor, zen, smoothstep(0., 1., pow(h, 0.42)));
   c *= 0.68 + 0.55 * pow(fw, 4.) + 0.4 * pow(fw, 30.);                         // broad dusty forward lobe
-  c *= mix(0.25 + 0.75 * smoothstep(-0.7, 0.7, ca), 1., smoothstep(0.08, 0.45, se)); // low sun: the far side of the sky goes first
-  c *= mix(0.05 * twi * twi, 1., day);
+  c *= mix(0.38 + 0.62 * smoothstep(-0.7, 0.7, ca), 1., smoothstep(0.08, 0.45, se)); // low sun: the far side of the sky goes first
+  c *= mix(0.11 * twi, 1., day);
   c *= 0.75 + 0.25 * smoothstep(-0.3, 0.6, se);
   float aur = pow(fw, 90.) * 2.2 + pow(fw, 16.) * 0.45 + pow(fw, 5.) * 0.08;    // blue aureole
   c += vec3(0.30, 0.50, 0.98) * aur * twi * mix(0.95, 0.30, day) * (1. - 0.5 * smoothstep(0.3, 0.9, h));
@@ -253,7 +253,7 @@ float jezH(vec2 p, float fw, out vec3 alb){
   vec2 v = p - JA; float dA = length(v) / 13000., ph = atan(v.x * JAX.y - v.y * JAX.x, dot(v, JAX));
   float edge = 1. + (afbm(vec2(ph * 5., 2.), 0.) - 0.5) * 0.35 - 0.3 * pow(ph / 0.95, 2.);
   float fan = (1. - smoothstep(edge - 0.04, edge, dA)) * (1. - smoothstep(0.8, 1.1, abs(ph)));
-  float fingers = 0.5 + 0.5 * sin(ph * 26. + n1 * 9.);
+  float fingers = (0.5 + 0.5 * sin(ph * 17. + n1 * 14. + n2 * 3.)) * smoothstep(0.2, 0.7, dA);
   h += fan * (95. * (1. - pow(dA, 1.8)) + 18. * fingers);
   // inlet valley, west of the apex
   float vx = p.x - JA.x, vz = JA.y + 1700. * sin(vx / 4200.) + 600. * sin(vx / 1300.);
@@ -263,9 +263,9 @@ float jezH(vec2 p, float fw, out vec3 alb){
     float sc = s == 0 ? 2600. : 650.; vec2 g = p / sc, gi = floor(g), gf = fract(g);
     for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++){
       vec2 o = vec2(i, j), rn2 = vec2(ah(gi + o), ah(gi + o + 7.3));
-      float rad = 0.12 + 0.28 * ah(gi + o + 3.1), on = step(0.45, ah(gi + o + 11.7));
+      float rad = 0.08 + 0.22 * pow(ah(gi + o + 3.1), 2.), on = step(s == 0 ? 0.82 : 0.7, ah(gi + o + 11.7));
       float d = length(o + rn2 * 0.6 + 0.2 - gf) / rad;
-      h += on * sc * rad * 0.13 * ((d < 1. ? (d * d - 1.) : 0.) + 0.25 * exp(-pow((d - 1.) / 0.18, 2.))) * (1. - smoothstep(0.3, 0.9, fw / sc * 4.));
+      h += on * sc * rad * 0.07 * ((d < 1. ? (d * d - 1.) : 0.) + 0.25 * exp(-pow((d - 1.) / 0.18, 2.))) * (1. - smoothstep(0.3, 0.9, fw / sc * 4.));
     }
   }
   // colour: plains butterscotch fines, darker crater floor + dark sand, pale layered delta, bright bedrock on the rim
@@ -298,9 +298,9 @@ void main(){
   float px = max(length(fwidth(rd)), 1e-5);
   float vis = (1. - smoothstep(0.0, 0.25, dot(sky, vec3(.3, .55, .15)) * 40.));
   if (vis > 0.) { vec3 g = rd * 180., gi = floor(g); float hs = ah3(gi);
-    if (hs > 0.55) { vec3 sp = (gi + 0.2 + 0.6 * vec3(ah3(gi + 1.7), ah3(gi + 3.1), ah3(gi + 5.3))) / 180.;
-      float d = length(normalize(sp) - rd) / (px * 1.3), m = pow((hs - 0.55) / 0.45, 6.);
-      sky += vec3(1., 0.95, 0.88) * exp(-d * d) * (0.02 + 2.2 * m) * vis; } }
+    if (hs > 0.8) { vec3 sp = (gi + 0.2 + 0.6 * vec3(ah3(gi + 1.7), ah3(gi + 3.1), ah3(gi + 5.3))) / 180.;
+      float d = length(normalize(sp) - rd) / (px * 1.3), m = pow((hs - 0.8) / 0.2, 6.);
+      sky += vec3(1., 0.95, 0.88) * exp(-d * d) * (0.03 + 2.4 * m) * vis; } }
   sky += vec3(1.0, 0.95, 0.86) * 60. * marsSunDisc(rd, S) * sunCol(S.y) * (1. - uNight * 0.6);
   vec3 col = sky;
   // ground: the planet sphere under the colony (true horizon dip), and the crater rim as a silhouette where it stands above the ray
@@ -403,8 +403,8 @@ export function createMarsAir({ THREE, origin = new THREE.Vector3(0, -6000, 0) }
     const day = sm(se, -0.10, 0.12), twi = sm(se, -0.32, 0), m = sm(Math.pow(h, 0.42), 0, 1);
     out.setRGB(0.90 + (0.34 - 0.90) * m, 0.62 + (0.205 - 0.62) * m, 0.40 + (0.13 - 0.40) * m);
     let f = 0.68 + 0.55 * fw ** 4 + 0.4 * fw ** 30;
-    f *= 0.25 + 0.75 * sm(ca, -0.7, 0.7) + (1 - (0.25 + 0.75 * sm(ca, -0.7, 0.7))) * sm(se, 0.08, 0.45);
-    f *= 0.05 * twi * twi + (1 - 0.05 * twi * twi) * day; f *= 0.75 + 0.25 * sm(se, -0.3, 0.6);
+    f *= 0.38 + 0.62 * sm(ca, -0.7, 0.7) + (1 - (0.38 + 0.62 * sm(ca, -0.7, 0.7))) * sm(se, 0.08, 0.45);
+    f *= 0.11 * twi + (1 - 0.11 * twi) * day; f *= 0.75 + 0.25 * sm(se, -0.3, 0.6);
     out.multiplyScalar(f);
     const aur = (fw ** 90 * 2.2 + fw ** 16 * 0.45 + fw ** 5 * 0.08) * twi * (0.95 + (0.30 - 0.95) * day);
     out.r += 0.30 * aur + 0.0022; out.g += 0.50 * aur + 0.0028; out.b += 0.98 * aur + 0.0055;

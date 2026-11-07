@@ -483,7 +483,7 @@ export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS
       uSunCol: { value: new THREE.Vector3(...o.sun) }, uHr: { value: o.Hr * Rp }, uHm: { value: o.Hm * Rp }, uK: { value: o.k }
     };
     const m = new THREE.Mesh(new THREE.SphereGeometry(Rp * o.top, 128, 64), new THREE.ShaderMaterial({
-      vertexShader: ATMO_VERT, fragmentShader: ATMO_FRAG, uniforms: u, transparent: true, depthWrite: false,
+      vertexShader: ATMO_VERT, fragmentShader: o.frag || ATMO_FRAG, uniforms: u, transparent: true, depthWrite: false,
       blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor
     }));
     m.position.copy(center); m.renderOrder = 2; scene.add(m); return m;
@@ -493,7 +493,8 @@ export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS
   });
   // Mars: dust-dominated. Scatter is butterscotch, extinction lets red through, and the forward lobe is tighter in blue (bluish glow around the sun).
   const marsAtmo = atmo(MARS, R_MARS, {
-    top: 1.07, Hr: 0.0075, Hm: 0.0120, bR: [3, 7, 18], bM: [5.0, 3.4, 1.8], bMe: [6.0, 5.0, 4.4], g: [0.55, 0.72, 0.90], sun: [1, 0.95, 0.88], k: 12
+    top: 1.07, Hr: 0.0075, Hm: 0.0120, bR: [3, 7, 18], bM: [5.0, 3.4, 1.8], bMe: [6.0, 5.0, 4.4], g: [0.55, 0.72, 0.90], sun: [1, 0.95, 0.88], k: 12,
+    ...(CINE ? { frag: ATMO_FRAG.replace('clamp(1. - tr, 0., 1.) * 0.85', 'clamp(1. - tr, 0., 1.) * 0.25') } : {}) // cine: the limb's own shader carries the haze; a dithered dark grazing band read as a dashed outline
   });
   const atmos = [earthAtmo, marsAtmo];
 
