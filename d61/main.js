@@ -342,7 +342,7 @@ function init() {
     // dig game: no ground points in or just under the masked band (far ground near the horizon made zones that rose as walls)
     const g0 = solApi.game, blk0 = g0 && typeof g0.blocked === 'function' ? g0.blocked : null;
     if (g0) g0.blocked = (x, y) => (blk0 ? blk0(x, y) : false) || y - solHost.getBoundingClientRect().top < tabsBottom + Math.max(36, 0.07 * innerHeight) + 48;
-    return solApi.ready;
+    return solApi.ready.then(v => (perf.idle(() => solApi.warm?.(), { name: 'sol-warm' }), v)); // perf: compile every mode on idle, not on screen
   }).catch(e => console.warn('d6 solutions:', e)));
 
   // telemetry HUD (control mode only)

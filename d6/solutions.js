@@ -636,6 +636,13 @@ export function createSolutions({ THREE, host, topoUrl, quality = 'high' }) {
     },
     // test hook: render one frame now (headless screenshots)
     renderNow(dt = 0.016, n = 1) { allocate(); for (let i = 0; i < n; i++) frame(dt); draw(); },
+    // opt-in (6.1 calls it on idle after ready; D6 never does): compile every program now, hidden objects included (compile skips
+    // invisible ones, so each mode otherwise compiles on its first frame on screen). Visibility is restored before it returns.
+    warm() {
+      const vis = []; for (const sc of [scene, mapScene]) sc.traverse(o => { vis.push([o, o.visible]); o.visible = true; });
+      try { return Promise.all([scene, mapScene].map(sc => renderer.compileAsync ? renderer.compileAsync(sc, camera) : (renderer.compile(sc, camera), null))); }
+      finally { for (const [o, v] of vis) o.visible = v; }
+    },
     get game() { return game; },
     get stats() {
       const v = new THREE.Vector2(); renderer.getDrawingBufferSize(v);
