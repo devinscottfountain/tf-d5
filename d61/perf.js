@@ -180,15 +180,15 @@ export function createPerf() {
       if (on) active = L; else if (active === L) active = [...layers.values()].find(x => x.on) || null;
     },
     // one-off bench of a layer's frame in idle time: fn renders once; gl is read back 1 px so the GPU cost counts
-    bench(name, fn, gl, { n = 4, seg } = {}) {
+    bench(name, fn, gl, { n = 4, seg, force } = {}) { // force: the caller knows the layer is warm (e.g. the loader, before the reveal)
       const L = layer(name), S = segOf(L, seg || L.seg);
       if (S.benching || (S.bench && !S.bench.est)) return Promise.resolve(S.bench);
-      if (!L.on || now() - L.since < 2000 || L.seg !== (seg || L.seg)) return Promise.resolve(null); // warm and settled first (compiles, uploads)
+      if (!force && (!L.on || now() - L.since < 2000 || L.seg !== (seg || L.seg))) return Promise.resolve(null); // warm and settled first (compiles, uploads)
       S.benching = true; const ms = [], px = new Uint8Array(4), t00 = now();
       const sync = () => gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
       return new Promise(res => {
         const one = dl => {
-          if (!L.on) { S.benching = false; return res(null); }
+          if (!L.on && !force) { S.benching = false; return res(null); }
           if (scrolling() && now() - t00 < 4000) { ric(one, { timeout: 1500 }); return; } // a re-queued rIC restarts its timeout, so cap the wait here
           let t0; try { sync(); t0 = now(); fn(); sync(); } catch (_) { S.benching = false; return res(null); } // drain the live frames queued on the GPU first
           ms.push(now() - t0);
