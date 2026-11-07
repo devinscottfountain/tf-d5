@@ -3,6 +3,7 @@
 // Reuses the D6 modules from ../d6 and D5 Mars from ../d5; the Webflow page only loads this file (importmap for three in the head).
 import * as THREE from 'three';
 import { runLoader } from '../d6/loader.js';
+import { perf, footerWarmWindow } from './perf.js'; // adaptive quality governor + idle warm queue (PERFORMANCE)
 
 const q = (s, r = document) => r.querySelector(s), qa = (s, r = document) => [...r.querySelectorAll(s)];
 const page = q('.d6-page');
@@ -578,7 +579,7 @@ function init() {
 
   // ---------- 3D footer: lazy-imported as it nears, setProgress 0 (entering) -> 1 (at rest) ----------
   const footEl = q('.d61-foot'), footHost = q('.d61-foot-canvas');
-  let foot = null, footP = null, footRun = false, footFail = false;
+  let foot = null, footP = null, footRun = false, footFail = false, footQ = null;
   const loadFooter = () => footP || (footP = import(new URL('./footer3d.js', import.meta.url).href).then(m => {
     if (!m?.createFooter) throw new Error('no createFooter');
     foot = m.createFooter({ THREE, host: footHost, quality: QUALITY, base: new URL('./', import.meta.url).href });
@@ -599,6 +600,7 @@ function init() {
     if (!r || footFail) return;
     const H = innerHeight;
     if (!footP && r.top < H * 2) loadFooter();
+    else if (!footP && !footQ && footerWarmWindow()) footQ = perf.idle(loadFooter, { name: 'footer' }); // perf: build + compile while only the planet draws
     if (!foot) return;
     const vis = r.top < H && r.bottom > 0;
     // 0 as its top enters, 1 once it fills the viewport (or, when it is taller, once its bottom reaches the viewport)
@@ -608,7 +610,11 @@ function init() {
       if (RM) { // reduced motion: no live loop (shimmer, dust, grain); a still on entry and on change, refreshed once a second for late textures
         const k = p > 0.5 ? 1 : 0, now = performance.now();
         if (!vis) rmDrawn = -1; else if (k !== rmDrawn || now - rmT > 1000) { rmDrawn = k; rmT = now; foot.renderOnce(); }
-      } else if (vis && !footRun) { footRun = true; foot.start(); } else if (!vis && footRun) { footRun = false; foot.stop(); }
+      } else {
+        const solo = perf.solo('footer'), run = vis && solo; // perf: Mars still drawing, so hold the loop and draw 1 frame in 3
+        if (run && !footRun) { footRun = true; foot.start(); } else if (!run && footRun) { footRun = false; foot.stop(); }
+        if (vis && !solo && perf.turn(3)) foot.renderOnce();
+      }
     } catch (e) { footFail = true; console.warn('d61 footer:', e); }
     D6.footP = p;
   }
@@ -686,6 +692,7 @@ function init() {
     navShadeFrame((sr.bottom > innerHeight * 0.15 && p > 0.12) || (!!sbR && sbR.top < innerHeight * 0.15 && sbR.bottom > innerHeight * 0.1) || (marsOp > 0 && afterTop > innerHeight * 0.15), flow);
   }
   gsap.ticker.add(frame);
+  gsap.ticker.add(() => perf.page({ hero, heroRun, foot, footRun, quality: QUALITY })); // perf: layer flags, benches, levels
   let rz = 0;
   addEventListener('resize', () => { cancelAnimationFrame(rz); rz = requestAnimationFrame(() => {
     if (hero) hero.resize(); measureRail(); measureMission(); solApi?.resize?.();

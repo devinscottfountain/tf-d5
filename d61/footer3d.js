@@ -327,6 +327,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
     start() { if (running || dead) return; running = true; lastT = 0; if (!visHidden) raf = requestAnimationFrame(loop); },
     stop() { running = false; cancelAnimationFrame(raf); },
     renderOnce(t) { if (dead || !stage) return; if (t != null) { clock = +t; lastT = 0; } frame(performance.now()); },   // t: scene clock in s (QA stills)
+    setPixelRatio(v) { prWant = Math.max(0.5, Math.min(prMax, +v || prMax)); },   // perf governor cap; the loop applies it on a quiet frame
     resize,
     stats() { const i = renderer.info; return { calls: i.render.calls, triangles: i.render.triangles, pixelRatio: pr, dpr: DPR, frames, programs: i.programs?.length, stage, timing, placeholder: !!content?.placeholder }; },
     dispose() {

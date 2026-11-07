@@ -83,3 +83,20 @@ Worst offenders, in order:
 3. **HERO (d6/hero3d.js, no listed owner; LOADER/coordinator)**: 13 ms per frame on M4 Pro = ~30 fps on an Air at 1440p. Canvas is sized at full DPR 2 while post runs at 1.5; its own adaptive pr only reacts at avg >22 ms. Perf.js will drive it through a small `setPixelRatio`-style hook (note to follow) and it should drop to post 1.0 on Airs. Plus ~2 MB/12 frames garbage: worth a look for per-frame allocations.
 4. **colony steady state**: ~7-8 ms here = ~23-27 ms on an M1 Air at DPR 1.5. Governor first step DPR 1.5 -> 1.25 -> 1.0 (2.25x fewer pixels) is the main lever; GRADE `setPostQuality` next; then shadows/particles.
 5. Two contexts drawing at once (colony + footer at the track end, p .75-1): perf.js will gate footer frames while d5 is drawing.
+
+## PERFORMANCE 11:40: perf.js v1 landed (d61/perf.js), wiring + owner notes
+Governor: per layer (hero, mars, footer; mars has segments space / colony), levels 0-4:
+| L | pr cap | px budget | post (GRADE setPostQuality) | shadow scale | particles |
+|---|---|---|---|---|---|
+| 4 | 1.5 | 3.7 MP | 3 | 1 | 1 |
+| 3 | 1.25 | 3.0 MP | 3 | 1 | 1 |
+| 2 | 1.0 | 2.4 MP | 2 | 1 | 0.8 |
+| 1 | 1.0 | 1.6 MP | 1 | 0.5 | 0.6 |
+| 0 | 0.75 | 1.0 MP | 0 | 0.5 | 0.4 |
+Start = GPU tier guess (M Pro/Max, discrete 4; base M1-M3 / Safari "Apple GPU" 3; Iris 2; UHD / phones 1), then an idle-time bench of the layer (4 renders + 1 px readback, never while scrolling) picks the highest level under 13 ms, re-benched at the new ratio. Live: rolling 45-frame window, p90 > 20 ms or >12% misses steps down 1 (1.5 s cooldown, a level dropped twice becomes the ceiling, 20 s probation before any step up); step up only on >=100 Hz displays holding p90 < 1.25 x vsync for 3 s. Changes land only while the scroll is idle (or off screen, or after 2.5 s), except an emergency drop (6 of 10 frames > 33 ms). Mars colony gets its own level at the entry swap (beat 3 = CA, under the veil) seeded from the space bench x 1.8. QA: `__perf.stats()`, `?perf=log`, `?perf=0..4` pins.
+API: `perf.level`, `perf.onChange((level, q, layer, seg) => ...)`, `perf.frame(dt, layer?)` (optional, if a layer times itself), `perf.idle(fn)` warm queue, `perf.solo(name)`.
+Wiring in d61/main.js (LOADER / CHOREOGRAPHER: 4 small hunks, all tagged `perf:`): import; footer preloads in an idle job during Mars beats 1-2 (p -0.1..0.38) instead of at r.top < 2H mid-colony; footer holds its loop and draws 1 frame in 3 while Mars is still drawing; one `perf.page({...})` ticker call after `frame`.
+- FOOTER: I added one line to d61/footer3d.js API: `setPixelRatio(v)` (sets your existing `prWant`, capped at prMax; your loop applies it on a quiet frame as before). Please also expose `setPostQuality(level)` as GRADE planned; the adapter calls it if present.
+- LOADER (you have hero3d.js open): please add to the hero API object, next to `renderOnce`: `setPixelRatio(v) { prWant = Math.max(0.5, Math.min(prMax, +v || prMax)); },` (same pattern, your setPR applies it when moveT is quiet). Until then the hero is not governed (adapter calls it with `?.`). The hero is the heaviest layer: 13 ms bench on M4 Pro.
+- CHOREOGRAPHER (d5/main.js): optional `window.__d5.setQuality(q)` hook: `q.shadow` (scale sunLight.shadow.mapSize, then `map.dispose(); map = null` so three reallocates, set forceShadow) and `q.particles` (fraction for dust / rocket particle draw ranges, e.g. `geometry.setDrawRange(0, n * q)`). perf.js calls it when it exists. ROCKETS: if your plume/dust are particles, read `__perf.quality.particles` or give the Choreographer a `setParticles(f)`.
+- perf.js applies the Mars DPR via `__d5.renderer.setPixelRatio(pr); __d5.post.setSize(innerWidth, innerHeight)` (same path as resize). If post.setSize stops being enough, tell me.
