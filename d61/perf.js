@@ -18,7 +18,7 @@ export const LEVELS = [
 ];
 const TOP = LEVELS.length - 1;
 const MISS = 20, HITCH = 250;        // ms: a frame over MISS missed 60 fps; over HITCH it is a one-off (compile, GC), not throughput
-const BUDGET = 13;                   // ms of bench cost (CPU + GPU serialized; live frames overlap them) that still holds 60 fps
+const BUDGET = 14;                   // ms of bench cost (CPU + GPU serialized; live frames overlap them) that still holds 60 fps
 const WIN = 45, COOL = 1500, UP_HOLD = 3000, PROBATION = 20000, APPLY_WAIT = 2500, WARMUP = 600;
 
 const now = () => performance.now();
@@ -90,7 +90,8 @@ export function createPerf() {
     const t = now();
     if (!force && L.on && scrolling() && t - (L.wantT || t) < APPLY_WAIT) { if (!L.wantT) L.wantT = t; return; }
     L.wantT = 0; S.applied = S.level; S.dts.length = 0; S.cool = Math.max(S.cool, now() + WARMUP); // the window measured the old level
-    if (S.bench && S.refine < 2 && quality(L, S.level).pr !== S.bench.pr) { S.refine++; S.bench = null; } // re-bench at the new ratio (cost model is rough)
+    if (S.byBench && S.refine < 1 && quality(L, S.level).pr !== S.bench?.pr) { S.refine++; S.bench = null; } // one re-bench at the new ratio (the cost model is rough)
+    S.byBench = false;
     const q = quality(L, S.level);
     try { L.apply(q); } catch (e) { console.warn('perf apply ' + L.name, e); }
     if (LOG) console.log('[perf]', L.name, L.seg, 'level', S.level, q);
@@ -101,7 +102,7 @@ export function createPerf() {
     const lv = Math.max(0, Math.min(S.ceil, S.level + d));
     if (lv === S.level) return;
     if (d < 0) { S.drops[S.level] = (S.drops[S.level] || 0) + 1; if (S.drops[S.level] >= 2) S.ceil = Math.min(S.ceil, lv); S.probe = now() + PROBATION; }
-    S.level = lv; S.cool = now() + COOL; S.upT = 0; S.dts.length = 0;
+    S.level = lv; S.cool = now() + COOL; S.upT = 0; S.dts.length = 0; S.byBench = false; S.refine = 9; // live evidence rules from here
     if (LOG) console.log('[perf]', L.name, L.seg, d < 0 ? 'down' : 'up', why);
   }
   // pick a level from a bench (ms at the applied pr): cost ~ 25% fixed + 75% pixels
@@ -111,7 +112,7 @@ export function createPerf() {
     let best = 0;
     for (let lv = 0; lv <= S.ceil; lv++) { const q = quality(L, lv), est = b.ms * (0.25 + 0.75 * px(q) / base); if (est <= BUDGET) best = lv; }
     best = Math.max(S.level - 2, Math.min(S.level + 1, best)); // a bench moves at most 2 down / 1 up; live frames do the rest
-    if (PIN == null && best !== S.level) { if (LOG) console.log('[perf]', L.name, L.seg, 'bench', b, '->', best); S.level = best; S.cool = now() + COOL; }
+    if (PIN == null && best !== S.level) { if (LOG) console.log('[perf]', L.name, L.seg, 'bench', b, '->', best); S.level = best; S.cool = now() + COOL; S.byBench = true; }
   }
 
   // one sample per page frame, attributed to the active layer (perf.frame may also be called by a layer loop)
@@ -166,8 +167,8 @@ export function createPerf() {
     frame(dt, name) { const L = name ? layer(name) : active; if (L) { L.selfTimed = true; sample(dt, L.name); } },
     setTier(gl, q) { tier = PIN ?? guessTier(gl, q); return tier; },
     // register a layer: apply(q) pushes a quality object into it; prMax caps its pixel ratio (its own top)
-    register(name, { apply, prMax = 1.5, gl, quality: qy, segCost } = {}) {
-      const L = layer(name); L.apply = apply; L.prMax = prMax; L.segCost = segCost; for (const S of L.segs.values()) S.applied = -1; // a rebuilt layer takes the level again
+    register(name, { apply, prMax = 1.5, gl, quality: qy, segCost, prNow } = {}) {
+      const L = layer(name); L.apply = apply; L.prMax = prMax; L.segCost = segCost; L.prNow = prNow; for (const S of L.segs.values()) S.applied = -1; // a rebuilt layer takes the level again
       if (gl && !layers.__tiered) { layers.__tiered = true; api.setTier(gl, qy); for (const x of layers.values()) for (const S of x.segs.values()) if (S.applied < 0) S.level = Math.min(S.ceil, PIN ?? tier); }
       settle(L, true); return L;
     },
@@ -192,7 +193,7 @@ export function createPerf() {
           let t0; try { sync(); t0 = now(); fn(); sync(); } catch (_) { S.benching = false; return res(null); } // drain the live frames queued on the GPU first
           ms.push(now() - t0);
           if (ms.length < n) { ric(one, { timeout: 1500 }); return; }
-          ms.sort((a, b) => a - b); S.bench = { ms: ms[ms.length >> 1], pr: quality(L, S.applied < 0 ? S.level : S.applied).pr }; S.benching = false;
+          ms.sort((a, b) => a - b); S.bench = { ms: ms[ms.length >> 1], pr: (L.prNow && +L.prNow()) || quality(L, S.applied < 0 ? S.level : S.applied).pr }; // the ratio really drawn S.benching = false;
           fromBench(L, S); res(S.bench);
         };
         ric(one, { timeout: 1500 });
@@ -220,15 +221,15 @@ export function createPerf() {
 // ---------- page wiring (d61/main.js calls perf.page once per frame) ----------
 const reg = { hero: null, d5: null, foot: null };
 function pageTick(perf, { hero, heroRun, foot, footRun, quality } = {}) {
-  if (hero && hero !== reg.hero && hero.renderer) { reg.hero = hero; perf.register('hero', { apply: capAdapter(hero), prMax: 1.5, gl: hero.renderer.getContext(), quality }); }
+  if (hero && hero !== reg.hero && hero.renderer) { reg.hero = hero; perf.register('hero', { apply: capAdapter(hero), prMax: 1.5, gl: hero.renderer.getContext(), quality, prNow: () => hero.stats?.().pixelRatio }); }
   const heroOn = !!(hero && heroRun); perf.active('hero', heroOn);
   if (heroOn) perf.bench('hero', () => hero.renderOnce(), hero.renderer.getContext());
-  if (foot && foot !== reg.foot && foot.renderer) { reg.foot = foot; perf.register('footer', { apply: capAdapter(foot), prMax: 1.5, gl: foot.renderer.getContext(), quality }); }
+  if (foot && foot !== reg.foot && foot.renderer) { reg.foot = foot; perf.register('footer', { apply: capAdapter(foot), prMax: 1.5, gl: foot.renderer.getContext(), quality, prNow: () => foot.stats?.().pixelRatio }); }
   const footOn = !!(foot && footRun); perf.active('footer', footOn);
   if (footOn) perf.bench('footer', () => foot.renderOnce(), foot.renderer.getContext());
   const d5 = typeof window !== 'undefined' ? window.__d5 : null;
   if (d5 && d5.mars && d5.renderer && d5.post && d5 !== reg.d5) {
-    reg.d5 = d5; perf.register('mars', { apply: d5Adapter(d5), prMax: d5.quality === 'low' ? 1 : 1.5, gl: d5.renderer.getContext(), quality, segCost: { colony: 1.8 } });
+    reg.d5 = d5; perf.register('mars', { apply: d5Adapter(d5), prMax: d5.quality === 'low' ? 1 : 1.5, gl: d5.renderer.getContext(), quality, segCost: { colony: 1.8 }, prNow: () => d5.renderer.getPixelRatio() });
   }
   if (reg.d5) {
     const on = !!d5.mars.on, seg = d5.mars.beat === 3 ? 'colony' : 'space'; // beat 3 starts at the entry swap (CA), under the veil
