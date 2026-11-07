@@ -190,6 +190,8 @@ export function createPerf() {
         const one = dl => {
           if (!L.on && !force) { S.benching = false; return res(null); }
           if (scrolling() && now() - t00 < 4000) { ric(one, { timeout: 1500 }); return; } // a re-queued rIC restarts its timeout, so cap the wait here
+          const need = ms.length ? ms[0] * 2 + 2 : 12; // drain + render must fit the idle slot, or a visible frame pays for it
+          if (dl && dl.timeRemaining && dl.timeRemaining() < need && now() - t00 < 6000) { ric(one, { timeout: 1500 }); return; }
           let t0; try { sync(); t0 = now(); fn(); sync(); } catch (_) { S.benching = false; return res(null); } // drain the live frames queued on the GPU first
           ms.push(now() - t0);
           if (ms.length < n) { ric(one, { timeout: 1500 }); return; }
