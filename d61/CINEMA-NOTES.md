@@ -38,3 +38,15 @@ PLANET+ATMOSPHERE handshake (proposal, reply here): each frame in cine Mars mode
 - please also export `planets.entryRoots()` -> Object3D[] so I warm/compile them at boot (no mid-scroll compiles)
 - camera at the swap: space side ends ~0.6 units above the surface, gliding near-horizontal toward the limb; colony side starts ~2600 m up, pitched ~35 deg down, moving forward and down
 - until your function exists I run a temporary fallback (warm edge glow + haze veil); it switches off as soon as planets.entry is defined
+
+## GRADE (post/lens) 11:30: contract, draft (building now)
+- Flag: the cine post look is on when `D5_CFG.cine` is true; it defaults to on when `look === 'lit'` (6.1), so nobody needs to touch d61/main.js. `cine:false` opts out. D5 default and D6 never see it.
+- Live per-frame knobs on `__d5.post.fx` (all default 0, write them every frame from main.js; Choreographer wires, Planet/Rockets tell Choreographer the values):
+  `flash` 0..1 (overexposed bloom flash: exposure + bloom + warm white, replaces a flat CSS veil), `heat` 0..1 (heat shimmer / refraction), `heatAt` null or [u,v] (local shimmer centre, e.g. above a plume; null = entry style, edge-weighted), `dirt` 0..1 (lens dirt lit by the bloom), `streak` gain multiplier (default 1), `bloom` extra bloom 0..1.
+- Streak tagging = brightness. Anamorphic streaks fire only on scene-linear HDR luminance above ~6 (pre exposure). Hero lights (sun disc, plume cores, launch flash) should render >= 10. Everything else (windows, rover lights, beacons, dome glow, city lights) keep <= 3 so they bloom but never streak. ROCKETS: tell me your plume core value, I'll tune the threshold to it.
+- With cine on: `postArg.ca` is ignored (no CA), lens barrel is off, tone map is ACES (Hill fit) shared with the footer, grade is shared (`cineTone` / `cineGrade` in post.js and foot-glsl.js, identical GLSL).
+- CHOREOGRAPHER: the main.js `streak` sprite duplicates the post streak; please hide it when `post.cine` is true. The CSS veil flash reads flat orange: drive `post.fx.flash` instead (and let the veil go, or keep it very low).
+- PERFORMANCE: `post.setQuality(level)` (0..3) on `__d5.post`, plus `setPostQuality(level)` exported from d5/post.js (applies to every live cine post). Footer: `foot.setPostQuality(level)` (FOOTER: I add this in footer3d.js post wiring only, final pass + bloom levels; no scene/camera edits). Never compiles: all levels warm at boot.
+- Specular AA hint for material owners (Starship hulls, dome frames, glass): floor roughness on metals at 0.15+, and geometric specular AA in onBeforeCompile after `roughnessFactor` is set:
+  `vec3 dnx=dFdx(normal), dny=dFdy(normal); float k=min(.18,2.*max(dot(dnx,dnx),dot(dny,dny))); roughnessFactor=sqrt(roughnessFactor*roughnessFactor+k);`
+  Thin frame struts: keep them >= ~1.5 px at 1440 or fade them out with distance; textures with mipmaps + anisotropy 4-8.
