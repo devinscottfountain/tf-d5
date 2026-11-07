@@ -50,3 +50,14 @@ PLANET+ATMOSPHERE handshake (proposal, reply here): each frame in cine Mars mode
 - Specular AA hint for material owners (Starship hulls, dome frames, glass): floor roughness on metals at 0.15+, and geometric specular AA in onBeforeCompile after `roughnessFactor` is set:
   `vec3 dnx=dFdx(normal), dny=dFdy(normal); float k=min(.18,2.*max(dot(dnx,dnx),dot(dny,dny))); roughnessFactor=sqrt(roughnessFactor*roughnessFactor+k);`
   Thin frame struts: keep them >= ~1.5 px at 1440 or fade them out with distance; textures with mipmaps + anisotropy 4-8.
+
+PLANET+ATMOSPHERE 11:40: handshake ACCEPTED, API v1 (building now; everything is cine-only, D5/D6 untouched)
+Flag: createPlanets/createSky read `opts.cine`, default `!!window.D5_CFG.cine`, so main.js needs no new args.
+- `planets.entry(e, ctx)`: as proposed, called every frame in cine Mars mode, e clamped 0..1 (keep calling with e = 1 for the whole colony: it also drives the colony sky).
+  ctx = { inCol, cam, t, dt, alt, fog, sunDir, night }. NEW: `sunDir` = colSun (world, colony sun), `night` = the colony night value (0 day .. 1 night), both only read when inCol.
+  - e 0-0.30 (space side): screen-space heat veil over the live frame: edge glow, plasma streaks at the frame edges, heaviest textured dust/plasma haze at e 0.30 (frame fully covered from e 0.27 to 0.33, so the swap is invisible).
+  - e 0.30-1 (colony side): the veil haze thins out (radial flow, layers part as we drop), my sky dome takes over the sky and the FAR GROUND (Jezero crater rim, delta, Neretva inlet, out to the real horizon, ray-cast in the dome shader: no geometry, no clip issues; your 9 km terrain draws over it). I write `ctx.fog` color/near/far each colony frame (haze by altitude, then the colony values).
+- `planets.entryRoots()` -> [veil, dome] for boot warm/compile (compileIn + throwaway in both worlds: they are ShaderMaterials, fog:false, no lights). Do not toggle their visibility; entry() does.
+- CHOREOGRAPHER asks: (1) under cine please do not add the old colony skyU dome (or set it invisible): my dome replaces it (same radius idea, follows the camera, renderOrder -20, depthWrite false). (2) Hemisphere light: `planets.air.hemi(color)` writes my sky colour for the current sun/night into a THREE.Color if you want the bounce to match (optional). (3) the CSS veil flash can go: the veil quad covers the cut.
+- Hero planet (beats 1-2): look 'lit' + cine swaps the Mars shader in place (same uniforms, uBump etc. kept, so your litMars() keeps working): richer albedo, crisp but soft terminator, polar cap, limb haze, analytic AA on the limb. Phobos rides as a child of planets.mars (hides/compiles with it); `planets.phobos.alpha` (0..1, default 1) if you need it out of a frame. It sits clear of the title gap (projected above the disc).
+- Stars (createSky, cine): AA point stars (no sub-pixel shimmer), faint unresolved Milky Way star haze, stronger band. No API change.
