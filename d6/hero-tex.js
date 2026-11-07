@@ -38,9 +38,9 @@ const M = {
 };
 const SKY = { hdr: 'night_sky.hdr', ldr: '512/night_sky_ldr.webp', ldrScale: 0.5 }; // LDR stores linear * 2
 
-export function texFiles(quality = 'high') {
+export function texFiles(quality = 'high', roles = TEX_ROLES) {
   const lo = quality === 'low', out = [];
-  for (const r of TEX_ROLES) {
+  for (const r of TEX_ROLES.filter(x => roles.includes(x))) {
     if (r === 'night_sky_hdr') { out.push(lo ? SKY.ldr : SKY.hdr); continue; }
     const s = M[r][lo ? 2 : 1]; if (!s) continue;
     if (s.c) out.push(`${s.c}/${r}_c.webp`); if (s.n) out.push(`${s.n}/${r}_n.webp`); if (s.o) out.push(`${s.o}/${r}_orm.webp`);
@@ -48,8 +48,12 @@ export function texFiles(quality = 'high') {
   return out;
 }
 
+// nominal texels of a file by its tier dir (1k 1, 512 1/4, 256 1/16): a size weight for honest progress without a manifest
+export const texWeight = file => (/^1k\//.test(file) || /\.hdr$/.test(file) ? 1 : /^256\//.test(file) ? 1 / 16 : 1 / 4);
+
 // roles: subset to stream (default all); the hero passes only the roles its materials bind
-export function loadHeroTextures({ THREE, renderer, quality = 'high', base, roles = TEX_ROLES } = {}) {
+// onFile({ file, ok }): optional, once per file as it lands on the GPU (or fails), for loader progress
+export function loadHeroTextures({ THREE, renderer, quality = 'high', base, roles = TEX_ROLES, onFile } = {}) {
   const lo = quality === 'low';
   const want = [...new Set(roles)].filter(r => TEX_ROLES.includes(r)); // caller's order is the stream order
   let root = String(base || new URL('./assets/tex/', import.meta.url)); if (!root.endsWith('/')) root += '/';
@@ -80,7 +84,11 @@ export function loadHeroTextures({ THREE, renderer, quality = 'high', base, role
   const release = () => { const n = waiting.shift(); if (n) n(); else active--; };
   const loader = new THREE.TextureLoader(); loader.setCrossOrigin('anonymous');
 
+  const fileDone = (file, ok) => { if (onFile && !disposed) { try { onFile({ file, ok }); } catch (_) { /* listener */ } } };
   async function loadImageTex(file, srgb) {
+    try { const t = await loadImageTex0(file, srgb); fileDone(file, !!t); return t; } catch (e) { fileDone(file, false); throw e; }
+  }
+  async function loadImageTex0(file, srgb) {
     await slot();
     let tex;
     try {
@@ -163,6 +171,8 @@ export function loadHeroTextures({ THREE, renderer, quality = 'high', base, role
       return () => listeners.delete(fn);
     },
     files: () => texFiles(quality),
+    // resolves once each of these roles has landed (published) or failed: the page can wait for the first-frame set
+    settled: rs => Promise.all(rs.map(r => want.indexOf(r)).filter(i => i >= 0).map(i => jobs[i].catch(() => null))),
     dispose() { disposed = true; listeners.clear(); for (const t of owned) t.dispose?.(); owned.length = 0; sets.clear(); },
   };
 }

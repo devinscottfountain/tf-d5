@@ -2,7 +2,7 @@
 // sections: solutions scene below the tab cards, benefits, tech carousel, D5 Mars beats + SOL counter, closing CTA, 3D footer.
 // Reuses the D6 modules from ../d6 and D5 Mars from ../d5; the Webflow page only loads this file (importmap for three in the head).
 import * as THREE from 'three';
-import { runLoader } from '../d6/loader.js';
+import { runLoader, createProgress } from '../d6/loader.js';
 import { perf, footerWarmWindow } from './perf.js'; // adaptive quality governor + idle warm queue (PERFORMANCE)
 
 const q = (s, r = document) => r.querySelector(s), qa = (s, r = document) => [...r.querySelectorAll(s)];
@@ -80,6 +80,27 @@ function init() {
   let hero = null, heroOn = false, heroLive = skipLoader, heroRun = false, heroGen = 0, heroBuilding = null, heroHost = null;
   const heroFade = { v: 0 };
   let fontsIn = null;
+  // ---------- [LOADER] real boot progress (6.1): weighted stages fed by the actual work, never a timer ----------
+  // page: fonts + poster decoded (half each). modules: hero module graph files arrived (of HERO_MODS, capped 0.95 until
+  // the import resolves). build: createHero's sync scene build. compile: compileAsync jobs settled. tex: first-frame textures
+  // on the GPU, by nominal texels. frame: a frame with them drawn and presented (hero.real). No 3D hero: page only.
+  const HERO_MODS = 27; // static graph of d6/hero3d.js minus three itself (recount if the hero's imports change)
+  const prog = createProgress(HERO3D ? { page: 5, modules: 25, build: 10, compile: 25, tex: 30, frame: 5 } : { page: 1 });
+  D6.progress = prog;
+  const pageDone = { fonts: 0, poster: 0 }, pageStep = k => { pageDone[k] = 0.5; prog.set('page', pageDone.fonts + pageDone.poster); };
+  const bootEv = ev => {
+    if (ev.stage === 'frame') prog.set('frame', 1);
+    else if (ev.total > 0) prog.set(ev.stage, ev.done / ev.total);
+    else if (ev.total === 0) prog.set(ev.stage, 1);
+  };
+  function watchModules(t) { // .js resources that finish after the import starts: the hero graph (other scripts only cap at 0.95)
+    let n = 0, po = null;
+    try {
+      po = new PerformanceObserver(l => { for (const e of l.getEntries()) if (e.startTime >= t - 1 && /\.m?js(\?|$)/.test(e.name)) n++; prog.set('modules', Math.min(0.95, n / HERO_MODS)); });
+      po.observe({ type: 'resource' });
+    } catch (_) { /* no observer: the stage jumps at the import */ }
+    return () => { po?.disconnect(); prog.set('modules', 1); };
+  }
   function buildHero(again) {
     if (!HERO3D) return Promise.resolve(false);
     if (heroBuilding) return heroBuilding;
@@ -90,15 +111,18 @@ function init() {
       Promise.all(['500 13px "IBM Plex Mono"', '500 13px Geist', '400 13px Geist'].map(f => document.fonts?.load(f).catch(() => {}))).then(() => document.fonts?.ready),
       new Promise(r => setTimeout(r, 1800)),
     ]);
-    const p = Promise.all([import('../d6/hero3d.js'), fontsIn]).then(([m]) => {
+    const modsIn = again ? null : watchModules(performance.now());
+    const p = Promise.all([import('../d6/hero3d.js').then(m => (modsIn?.(), m)), fontsIn]).then(([m]) => {
       if (gen !== heroGen) return false;
       stamp(again ? 'heroRebuild' : 'heroBuild');
       // 6.1: exit 'under' (the camera sinks under the desk into black); no card target. An older hero ignores the option.
-      hero = m.createHero({ THREE, host, quality: QUALITY, still: sbImg.currentSrc || sbImg.src, exit: 'under' });
+      // onBoot: progress events, textures start with the compile, hero.real = first frame with the first-frame textures
+      hero = m.createHero({ THREE, host, quality: QUALITY, still: sbImg.currentSrc || sbImg.src, exit: 'under', onBoot: again ? () => {} : bootEv });
       D6.heroApi = hero; copyOpLast = -1; // a rebuilt hero gets the copy opacity again
-      stamp(again ? 'heroRebuilt' : 'heroBuilt');
+      stamp(again ? 'heroRebuilt' : 'heroBuilt'); if (!again) prog.set('build', 1);
       if (sbVid?.classList.contains('is-on')) hero.setMedia(sbVid);
-      return hero.ready;
+      hero.ready.then(ok => ok && stamp(again ? 'heroReady2' : 'heroReady'));
+      return hero.real || hero.ready; // swap in only on a real frame (never flat placeholder materials)
     }).then(ok => { if (ok === false || gen !== heroGen) return false; swapIn(again); return true; }).catch(e => {
       console.warn('d6 hero:', e);
       if (gen === heroGen) { try { hero?.dispose(); } catch (_) { /* already gone */ } hero = null; D6.heroApi = null; }
@@ -108,6 +132,8 @@ function init() {
   }
   const heroReady = buildHero(false);
   D6.heroReady = heroReady;
+  // no 3D hero after all (no WebGL, build error): nothing left to wait for, the poster is the hero
+  heroReady.then(ok => { if (ok) stamp('heroReal'); else { stamp('heroNone'); for (const k of Object.keys(prog.weights)) if (k !== 'page') prog.set(k, 1); } });
   function releaseHero() {
     if (!HERO3D || (!hero && !heroBuilding)) return;
     heroGen++; heroBuilding = null; stamp('heroRelease');
@@ -131,15 +157,41 @@ function init() {
 
   // ---------- loader ----------
   const fontsGate = fontsP.then(splitHero);
+  fontsGate.then(() => pageStep('fonts')); decodeP.then(() => pageStep('poster'));
   if (!skipLoader) {
+    // [LOADER] leaves on real progress 1 (first real 3D frame presented), at least 1 s after it starts; at 6 s from navigation
+    // the poster hero + copy are revealed instead and the live hero crossfades in once real (swapIn, heroSwapLate)
     const ld = runLoader({
-      THREE, el: loaderEl, reduced: RM, maxMs: HERO3D ? 2200 : 2000, // holds for the hero's boot, capped at 2.2 s (later: poster first, canvas crossfades in)
-      onExit: tl => { stamp('loaderExit'); lock(false); heroLive = true; heroReveal(tl, RM ? 0.1 : 0.45); },
+      THREE, el: loaderEl, reduced: RM, progress: prog, minMs: 1000, fallbackMs: 6000,
+      onExit: (tl, info) => { stamp('loaderExit'); if (info?.fallback) stamp('loaderFallback'); lock(false); heroLive = true; heroReveal(tl, RM ? 0.1 : 0.45); },
     });
-    ld.gate(fontsGate); ld.gate(decodeP); ld.gate(heroReady);
-    D6.loader = ld.done;
+    ld.gate(fontsGate); ld.gate(decodeP);
+    D6.loader = ld.done; D6.loaderCurve = ld.curve;
     ld.done.then(afterLoader);
   } else { loaderEl?.remove(); fontsGate.then(() => { if (h1Split) { h1Split.revert(); h1Split = null; } }); afterLoader(); }
+  // [LOADER] once the hero is live (loader gone, hero real or none), the Mars + footer module graphs stream into the HTTP
+  // cache at low priority on idle (fetch only: nothing runs, no GPU). Their own build + warm-up (compile + hidden render)
+  // stays where the owners trigger it as the sections near; their assets stay lazy (CINEMA budget).
+  Promise.all([D6.loader, heroReady]).then(() => idleP(1500)).then(() => prefetchGraph([
+    new URL('../d5/main.js', import.meta.url).href, new URL('./footer3d.js', import.meta.url).href, new URL('./foot-model.js', import.meta.url).href,
+  ])).then(n => { D6.prefetched = n; stamp('prefetched'); }, () => {});
+  function idleP(ms) { return new Promise(r => (window.requestIdleCallback || (f => setTimeout(f, 300)))(r, { timeout: ms })); }
+  // fetch each module once, follow its literal imports (static and import('...')); bare specifiers through the importmap
+  async function prefetchGraph(entries, cap = 80) {
+    const c = navigator.connection; if (c?.saveData || /(^|-)2g$/.test(c?.effectiveType || '')) return 0;
+    const had = new Set(performance.getEntriesByType('resource').map(e => e.name.split('#')[0]));
+    const seen = new Set(), queue = [...entries]; let n = 0;
+    const resolve = (spec, base) => { try { return /^[./]|^https?:/.test(spec) ? new URL(spec, base).href : import.meta.resolve?.(spec) || null; } catch (_) { return null; } };
+    const one = async url => {
+      if (seen.has(url) || seen.size >= cap) return; seen.add(url);
+      if (had.has(url)) return; // already in the page (three, the hero graph): its imports are in too
+      let src = '';
+      try { const r = await fetch(url, { priority: 'low', credentials: 'same-origin' }); if (!r.ok) return; src = await r.text(); n++; } catch (_) { return; }
+      for (const m of src.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)['"]([^'"\n]+\.js|three(?:\/[^'"\n]+)?)['"]/g)) { const u = resolve(m[1], url); if (u) queue.push(u); }
+    };
+    while (queue.length) { const batch = queue.splice(0, 2); await Promise.all(batch.map(one)); await idleP(500); }
+    return n;
+  }
 
   // ---------- Ken Burns drift on the stills (the video slot replaces them when a source is set) ----------
   // the Series B drift runs on a proxy written into the card's media layer while the card is on screen
@@ -354,7 +406,7 @@ function init() {
   // ---------- Mars: D5 in mars mode, imported when its track is ~1.5 viewports away ----------
   let marsP = null;
   q('.d6-mline')?.remove(); // the D6 mission belt is not part of 6.1: gone before D5 collects its [data-w] overlays (CSS hides it too)
-  const loadMars = () => marsP || (marsP = (window.D5_CFG = Object.assign({ ahead: 1 }, window.D5_CFG, { mode: 'mars', look: 'lit', beats: true, rockets: true, onProgress: solcProgress }),
+  const loadMars = () => marsP || (marsP = (window.D5_CFG = Object.assign({ ahead: 1 }, window.D5_CFG, { mode: 'mars', look: 'lit', beats: true, rockets: true, cine: true, onProgress: solcProgress }),
     import(new URL('../d5/main.js', import.meta.url).href).catch(e => console.warn('d6 mars:', e))));
   D6.loadMars = loadMars;
   // 6.1: benefits + the tech carousel sit between solutions and the track. They are opaque (z 2 over the fixed layer), so
@@ -495,7 +547,7 @@ function init() {
     if (!solc) return;
     const m = window.__d5?.mars, on = marsOp > 0 && !!m?.on;
     const p = clamp01((m && m.p != null ? m.p : solcP) / 0.985); // the eased track progress tops out near 0.99: land on 0206
-    const pr = m && m.p != null ? m.p : solcP, entry = sstep(0.43, 0.47, pr) * (1 - sstep(0.53, 0.58, pr)); // out through the entry flash
+    const pr = m && m.p != null ? m.p : solcP, entry = sstep(0.40, 0.43, pr) * (1 - sstep(0.57, 0.61, pr)); // out through the atmospheric entry (D5 cine timeline)
     // in with the track, out under the closing section
     const op = on ? clamp01((innerHeight - marsTop) / (0.6 * innerHeight)) * sstep(innerHeight * 0.2, innerHeight * 0.85, afterTop) * (1 - entry) : 0;
     css(solc, 'opacity', op.toFixed(3)); css(solc, 'visibility', op > 0 ? 'visible' : 'hidden');

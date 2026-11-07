@@ -39,6 +39,8 @@ const LEAD_DARK = 0.34;
 const UNDER_DAY = [0.12, 0.93];                     // exit 'under': night held until the copy is gone, full day just before the hero leaves                             // in-frame falloff behind the lead copy (tone-mapped, scaled by copy opacity)
 // texture roles the hero's materials actually bind (night_sky_hdr, rubber_track, tyre_track_decal are not used)
 // order = stream order: what fills the first frame (ground, ridge, machine, desk) before the room detail
+// the first five fill the first frame (ground, tracks, desk, machine, ridge): with onBoot the page waits for them
+export const HERO_CRITICAL = ['dirt_ground', 'dirt_tracks', 'desk_laminate', 'excavator_paint', 'rock_ridge'];
 const HERO_ROLES = ['dirt_ground', 'dirt_tracks', 'desk_laminate', 'excavator_paint', 'rock_ridge', 'glass_smudge', 'black_plastic', 'brushed_metal', 'concrete_floor', 'gravel', 'rusty_metal', 'fabric_chair', 'carpet', 'ceiling_panel'];
 
 const coarsePointer = () => {
@@ -293,12 +295,15 @@ function createDaylight({ THREE, renderer, scene, outside, siteLight, high, G0 }
 
 // options: enhance 'auto' (default, runs on idle after ready) | 'manual' (page calls hero.enhance());
 // lite: no mirror / streaks / dust, cab without MSAA (default: coarse pointer, i.e. tablets)
-export function createHero({ THREE, host, quality = 'high', still = SERIES_B, canvas: cvIn, fadeOutside = true, enhance: enhanceMode = 'auto', lite, exit = 'zoom' } = {}) {
+// onBoot(ev) (6.1 loader): boot progress events { stage: 'compile' | 'tex', done, total } then { stage: 'frame' }. With it the
+// textures start with the compile (not after ready) and api.real resolves once the first-frame textures (HERO_CRITICAL) are
+// in and a frame with them has been drawn and presented. Without it nothing changes (api.real is api.ready).
+export function createHero({ THREE, host, quality = 'high', still = SERIES_B, canvas: cvIn, fadeOutside = true, enhance: enhanceMode = 'auto', lite, exit = 'zoom', onBoot } = {}) {
   const canvas = cvIn || document.createElement('canvas');
   if (!cvIn) { canvas.className = 'd6-hero-canvas'; Object.assign(canvas.style, { position: 'absolute', left: 0, top: 0, width: '100%', height: '100%', display: 'block' }); host.appendChild(canvas); }
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance', stencil: false });
   try {
-    return build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhanceMode, lite, renderer, exit });
+    return build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhanceMode, lite, renderer, exit, onBoot });
   } catch (e) { // half-built: drop the context so nothing leaks, the page falls back to the poster
     try { renderer.dispose(); renderer.forceContextLoss?.(); } catch (_) { /* gone */ }
     if (!cvIn) canvas.remove();
@@ -306,8 +311,10 @@ export function createHero({ THREE, host, quality = 'high', still = SERIES_B, ca
   }
 }
 
-function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhanceMode, lite, renderer, exit }) {
+function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhanceMode, lite, renderer, exit, onBoot }) {
   const HIGH = quality !== 'low';
+  const BOOT = typeof onBoot === 'function';
+  const bootEv = ev => { if (BOOT) try { onBoot(ev); } catch (_) { /* page listener */ } };
   // exit 'under' (6.1): no zoom hand-off. The room framing holds while night turns to day across the whole scroll (night
   // until UNDER_DAY[0], full day at UNDER_DAY[1]); the camera pedestals and tilts down with p while the page scrolls the
   // section away. exit 'zoom' (default, D6): the solved dolly into the centre screen.
@@ -725,7 +732,9 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
     jobs.push(compileFS(postMats([...unused, ...(streak?.materials ?? [])]), tmpRT));
     jobs.push(compileFS([hand.material], null));                                        // the canvas: sRGB out
     jobs.push(compileDepth(scene, cam), compileDepth(cab.scene, cab.cam));
-    return Promise.all(jobs);
+    if (!BOOT) return Promise.all(jobs);
+    let n = 0; bootEv({ stage: 'compile', done: 0, total: jobs.length });
+    return Promise.all(jobs.map(j => Promise.resolve(j).finally(() => bootEv({ stage: 'compile', done: ++n, total: jobs.length }))));
   }
   function compileRich() {
     const jobs = [];
@@ -756,12 +765,22 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
     if (m && m !== glassTex) { glassTex = m; glassU.tSmudge.value = m; glassU.hasSm.value = 1; }
   }
   function startTextures() {
-    import('./hero-tex.js').then(mod => {
-      if (dead || !mod.loadHeroTextures) return;
-      texApi = mod.loadHeroTextures({ THREE, renderer, quality: HIGH ? 'high' : 'low', base: new URL('./assets/tex/', import.meta.url).href, roles: HERO_ROLES });
+    return import('./hero-tex.js').then(mod => {
+      if (dead || !mod.loadHeroTextures) return null;
+      const tier = HIGH ? 'high' : 'low';
+      let onFile;
+      if (BOOT && mod.texFiles) { // progress over the first-frame files, weighted by nominal texels
+        const w = mod.texWeight || (() => 1), crit = new Map(mod.texFiles(tier, HERO_CRITICAL).map(f => [f, w(f)]));
+        const total = [...crit.values()].reduce((a, b) => a + b, 0); let done = 0;
+        bootEv({ stage: 'tex', done: 0, total });
+        onFile = ({ file }) => { const k = crit.get(file); if (k === undefined) return; crit.delete(file); done += k; bootEv({ stage: 'tex', done, total }); };
+      }
+      texApi = mod.loadHeroTextures({ THREE, renderer, quality: tier, base: new URL('./assets/tex/', import.meta.url).href, roles: HERO_ROLES, onFile });
       if (texApi?.onReady) texApi.onReady(applyTextures); else texApi?.ready?.then(applyTextures);
-    }).catch(() => { /* textures are optional: flat materials stay */ });
+      return texApi;
+    }).catch(() => null); // textures are optional: flat materials stay
   }
+  const texP = BOOT ? startTextures() : null; // 6.1: fetch + decode alongside the compile (uploads stay one per frame)
 
   // ---------------------------------------------------------------- loop + api
   let running = false, raf = 0, dead = false, stage = 0;   // stage: 0 booting, 1 lean (ready), 2 enhancing, 3 enhanced
@@ -786,10 +805,22 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
     if (post.ao.enabled) { mbPass.blur = true; mbPass.alloc(); mbPass.blur = false; if (mbPass.tmp) { renderer.setRenderTarget(mbPass.tmp); renderer.setRenderTarget(null); } } // motion-blur scratch target
     frame(performance.now());
     stage = 1;
-    startTextures();
+    if (!BOOT) startTextures();
     if (enhanceMode !== 'manual') idle(() => { if (!dead) enhance(); });
     return true;
   })();
+
+  // 6.1: the first real frame, i.e. the first-frame textures applied, drawn and presented (a failed texture counts as settled)
+  const presented = () => new Promise(r => { let k = false; const go = () => { if (!k) { k = true; r(); } }; requestAnimationFrame(go); setTimeout(go, 100); });
+  const real = !BOOT ? ready : ready.then(async ok => {
+    if (!ok || dead) return false;
+    try { const api = await texP; if (api?.settled) await api.settled(HERO_CRITICAL); } catch (_) { /* flat materials */ }
+    if (dead) return false;
+    applyNow(); frame(performance.now());
+    await presented(); if (dead) return false;
+    bootEv({ stage: 'frame' });
+    return true;
+  });
 
   // after ready: compile the rich layers, warm frames at p 0.5 and 1 in one task (the canvas only shows the last one), fade in
   let enhP = null;
@@ -813,7 +844,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
   }
 
   return {
-    ready, renderer, scene, camera: cam, post,
+    ready, real, renderer, scene, camera: cam, post,
     // 0 left | 1 centre | 2 right | -1: which monitor is under a client-space point (page click / hover on the live screens)
     pickScreen: (x, y) => pickHeroScreen({ THREE, hero: { renderer, camera: cam, scene } }, x, y),
     fx: { atmo, streak, mirror, lens: lensU, glass: glassU, dust: dustU, cones, moonFill, site: siteLight },   // look tunables (QA)

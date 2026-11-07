@@ -43,8 +43,34 @@ function createMark3D(THREE, el) {
   };
 }
 
+// Real progress (6.1): weighted stages, each 0..1 and only ever rising, so the total is monotonic. The page reports actual
+// work into it (bytes / files / compile jobs / frames), never a timer. log holds every change for QA.
+// weights: { stage: weight }. Returns { set(stage, f), value(), stages(), log, onChange(fn) }
+export function createProgress(weights) {
+  const W = Object.entries(weights), sum = W.reduce((a, [, w]) => a + w, 0) || 1, f = {};
+  for (const [k] of W) f[k] = 0;
+  const log = [], fns = new Set();
+  const value = () => W.reduce((a, [k, w]) => a + w * f[k], 0) / sum;
+  return {
+    set(k, v) {
+      if (!(k in f)) return;
+      v = v >= 1 ? 1 : v > 0 ? v : 0;
+      if (!(v > f[k])) return; // never backwards
+      f[k] = v; const t = Math.round(performance.now()), val = value();
+      log.push({ t, stage: k, f: +v.toFixed(4), value: +val.toFixed(4) });
+      fns.forEach(fn => { try { fn(val, k); } catch (_) { /* listener */ } });
+    },
+    value, stages: () => ({ ...f }), log, weights: Object.fromEntries(W),
+    onChange: fn => (fns.add(fn), () => fns.delete(fn)),
+  };
+}
+
 // el: .d6-loader. Returns { gate(promise), done: Promise } ; done resolves once the loader has dissolved and been removed.
-export function runLoader({ THREE, el, reduced = false, minMs = 1200, maxMs = 2000, onExit }) {
+// Default (D6): the dots run out on a timer and the loader leaves when the gates settle, capped at maxMs.
+// progress (6.1, a createProgress()): the dots and the label follow it (shown value eases toward the real one, never past
+// it), the loader leaves once it is 1 and minMs has passed since this call; at fallbackMs (from navigation start) it leaves
+// anyway and onExit gets { fallback: true } so the page shows its poster hero and swaps the live one in later.
+export function runLoader({ THREE, el, reduced = false, minMs = 1200, maxMs = 2000, onExit, progress, fallbackMs = 6000 }) {
   const gsap = window.gsap;
   const t0 = performance.now(); // module arrival; navigation start is 0
   el.style.animation = 'none'; // cancel the CSS failsafe, JS owns the exit now
@@ -56,14 +82,38 @@ export function runLoader({ THREE, el, reduced = false, minMs = 1200, maxMs = 20
   if (!reduced && THREE) { mark = createMark3D(THREE, host); if (mark) flat.style.opacity = '0'; }
 
   const intro = gsap.timeline();
+  const P = !!progress;
+  // progress mode: shown <= real at all times; it eases toward the real value (a quick catch-up once the work is done)
+  const shown = { v: 0 }, base = label?.textContent?.replace(/[.\s\d%]+$/, '') || 'Loading';
+  let drawn = -1, curve = null, step = null;
+  const drawProgress = () => {
+    const v = shown.v, pct = Math.floor(v * 100);
+    if (pct === drawn) return; drawn = pct;
+    const i = ((1 - v) * 100).toFixed(2);
+    dotsL.style.clipPath = `inset(0 0 0 ${i}%)`; dotsR.style.clipPath = `inset(0 ${i}% 0 0)`;
+    if (label) label.textContent = `${base} ${pct}%`;
+  };
+  if (P) {
+    curve = [];
+    let last = performance.now();
+    step = () => {
+      const now = performance.now(), dt = Math.min(0.1, (now - last) / 1000); last = now;
+      const real = progress.value(), gap = real - shown.v;
+      // ~0.25 s time constant, at least 0.6 of the bar per second; the last stretch at 3 per second once real is 1
+      if (gap > 0) shown.v = Math.min(real, shown.v + Math.max(gap * (1 - Math.exp(-dt / 0.25)), (real >= 1 ? 3 : 0.6) * dt));
+      if (curve.length < 4000) curve.push([Math.round(now), +real.toFixed(4), +shown.v.toFixed(4)]);
+      drawProgress();
+    };
+    gsap.ticker.add(step); drawProgress();
+  }
   if (!reduced) {
-    // dots run out from the ring; ring ticks turn in; mark does one fast spin and settles
-    intro.fromTo(dotsL, { clipPath: 'inset(0 0 0 100%)' }, { clipPath: 'inset(0 0 0 0%)', duration: 0.9, ease: 'power3.out' }, 0.05)
-      .fromTo(dotsR, { clipPath: 'inset(0 100% 0 0)' }, { clipPath: 'inset(0 0% 0 0)', duration: 0.9, ease: 'power3.out' }, 0.05)
-      .from(caps, { opacity: 0, duration: 0.3 }, 0.6)
+    // dots run out from the ring (D6: on a timer; progress mode: with the real work); ring ticks turn in; mark spins and settles
+    if (!P) intro.fromTo(dotsL, { clipPath: 'inset(0 0 0 100%)' }, { clipPath: 'inset(0 0 0 0%)', duration: 0.9, ease: 'power3.out' }, 0.05)
+      .fromTo(dotsR, { clipPath: 'inset(0 100% 0 0)' }, { clipPath: 'inset(0 0% 0 0)', duration: 0.9, ease: 'power3.out' }, 0.05);
+    intro.from(caps, { opacity: 0, duration: 0.3 }, 0.6)
       .from(ring, { rotate: -50, scale: 0.86, opacity: 0, duration: 0.9, ease: 'expo.out' }, 0)
-      .from(label, { opacity: 0, duration: 0.3 }, 0.1)
-      .to(label, { opacity: 0.35, duration: 0.25, repeat: -1, yoyo: true, ease: 'steps(1)' }, 0.5);
+      .from(label, { opacity: 0, duration: 0.3 }, 0.1);
+    if (!P) intro.to(label, { opacity: 0.35, duration: 0.25, repeat: -1, yoyo: true, ease: 'steps(1)' }, 0.5);
     if (mark) intro.fromTo(mark.pivot.rotation, { y: -Math.PI * 2 - 0.5, x: 0.25 }, { y: 0, x: 0, duration: 1.15, ease: 'expo.out' }, 0)
       .fromTo(mark.pivot.scale, { x: 0.7, y: 0.7, z: 0.7 }, { x: 1, y: 1, z: 1, duration: 0.8, ease: 'back.out(1.6)' }, 0);
     else intro.from(flat, { rotateY: -360, duration: 1.1, ease: 'expo.out' }, 0);
@@ -79,12 +129,21 @@ export function runLoader({ THREE, el, reduced = false, minMs = 1200, maxMs = 20
   });
   const check = () => checks.forEach(f => f());
   // the minimum also leaves the spin time to land when the script arrives late
-  const minP = deadline(Math.max(minMs, reduced ? 0 : t0 + 900));
-  const maxP = deadline(Math.max(maxMs, t0 + (reduced ? 300 : 1100)));
-  let gates = [];
+  // D6: minMs / maxMs are from navigation start. Progress mode: the minimum runs from this call (the animation reads), the
+  // fallback from navigation start (what the visitor waited), and never before the minimum
+  const minP = deadline(P ? t0 + (reduced ? 0 : minMs) : Math.max(minMs, reduced ? 0 : t0 + 900));
+  const maxP = deadline(P ? Math.max(fallbackMs, t0 + minMs) : Math.max(maxMs, t0 + (reduced ? 300 : 1100)));
+  // progress mode: complete = real progress 1 and the shown bar caught up with it
+  const fullP = !P ? null : new Promise(r => {
+    const hit = () => { if (progress.value() >= 1 && shown.v >= 1) { gsap.ticker.remove(poll); r(); } };
+    const poll = () => hit(); gsap.ticker.add(poll); hit();
+  });
+  let gates = [], fallback = false, exited = false;
   const done = new Promise(resolve => {
     // gate() promises are collected before the next microtask settles; give callers one tick to add them
-    Promise.resolve().then(() => Promise.race([Promise.all([minP, ...gates]), maxP])).then(() => {
+    Promise.resolve().then(() => Promise.race([Promise.all([minP, ...gates, ...(P ? [fullP] : [])]), maxP.then(() => { if (!exited) fallback = P && !(progress.value() >= 1); })])).then(() => {
+      exited = true;
+      if (P) { gsap.ticker.remove(step); if (curve) curve.push([Math.round(performance.now()), +progress.value().toFixed(4), +shown.v.toFixed(4), fallback ? 'fallback' : 'exit']); }
       // the mark's WebGL context goes as soon as it has faded, so it never overlaps the hero renderer for long
       const killMark = () => { if (mark) { mark.dispose(); mark = null; } };
       const out = gsap.timeline({ onComplete: () => { intro.kill(); killMark(); el.remove(); resolve(); } });
@@ -99,8 +158,8 @@ export function runLoader({ THREE, el, reduced = false, minMs = 1200, maxMs = 20
           .to(el, { opacity: 0, duration: 0.6, ease: 'power2.inOut' }, 0.5);
         if (mark) out.to(mark.pivot.rotation, { y: Math.PI * 0.9, duration: 0.8, ease: 'power3.in' }, 0.05).call(killMark, null, 0.86);
       }
-      onExit?.(out);
+      onExit?.(out, { fallback, progress: P ? progress.value() : 1 });
     });
   });
-  return { gate: p => gates.push(p.catch(() => {}).then(v => { check(); return v; })), done };
+  return { gate: p => gates.push(p.catch(() => {}).then(v => { check(); return v; })), done, curve, isFallback: () => fallback };
 }
