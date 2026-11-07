@@ -183,12 +183,13 @@ export function createPerf() {
       const L = layer(name), S = segOf(L, seg || L.seg);
       if (S.benching || (S.bench && !S.bench.est)) return Promise.resolve(S.bench);
       if (!L.on || now() - L.since < 2000 || L.seg !== (seg || L.seg)) return Promise.resolve(null); // warm and settled first (compiles, uploads)
-      S.benching = true; const ms = [], px = new Uint8Array(4);
+      S.benching = true; const ms = [], px = new Uint8Array(4), t00 = now();
+      const sync = () => gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
       return new Promise(res => {
         const one = dl => {
           if (!L.on) { S.benching = false; return res(null); }
-          if (scrolling() && !(dl && dl.didTimeout)) { ric(one, { timeout: 1500 }); return; }
-          const t0 = now(); try { fn(); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); } catch (_) { S.benching = false; return res(null); }
+          if (scrolling() && now() - t00 < 4000) { ric(one, { timeout: 1500 }); return; } // a re-queued rIC restarts its timeout, so cap the wait here
+          let t0; try { sync(); t0 = now(); fn(); sync(); } catch (_) { S.benching = false; return res(null); } // drain the live frames queued on the GPU first
           ms.push(now() - t0);
           if (ms.length < n) { ric(one, { timeout: 1500 }); return; }
           ms.sort((a, b) => a - b); S.bench = { ms: ms[ms.length >> 1], pr: quality(L, S.applied < 0 ? S.level : S.applied).pr }; S.benching = false;
