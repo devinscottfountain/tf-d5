@@ -634,10 +634,10 @@ export function createMachines({ THREE, group, D = 4 }) {
 // =====================================================================================================================
 // Jezero colony life (D6.1): pressurised rovers on the avenues (headlights at dusk, dust trails), graded roads with lamp
 // pools, comms masts, and a few tiny suited figures by the landed ships and the build pad. Silhouette scale only.
-// createColonyLife({ THREE, colony, layout, envMap, high, arrive, hideLines }) -> { group, update(g, t, night, gR), tris, draws }
+// createColonyLife({ THREE, colony, layout, envMap, high, arrive, hideLines, solar }) -> { group, update(g, t, night, gR), tris, draws }
 //   layout: colonyLayout() from habitat.js; g = city build progress, gR = raw colony progress (ships land in gR < arrive).
 //   Moving things never cast shadows (main.js only re-renders the shadow map when the build changes). One draw per kind.
-export function createColonyLife({ THREE, colony, layout: L, envMap = null, high = true, arrive = 0.1, hideLines = null }) {
+export function createColonyLife({ THREE, colony, layout: L, envMap = null, high = true, arrive = 0.1, hideLines = null, solar = null }) {
   const V3 = THREE.Vector3, group = new THREE.Group(); group.name = 'colonyLife'; colony.add(group);
   let seed = 4242; const rnd = () => { seed |= 0; seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
   const sst = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
@@ -648,6 +648,22 @@ export function createColonyLife({ THREE, colony, layout: L, envMap = null, high
   const pxHook = (r, s, cam) => { const rt = r.getRenderTarget(), h = rt ? rt.height : r.getDrawingBufferSize(tmpV2).y; U.uPx.value = h * 0.5 * cam.projectionMatrix.elements[5]; };
   const tmpV2 = new THREE.Vector2();
   if (hideLines) hideLines.forEach(m => (m.visible = false)); // the graded roads below replace main.js's 1 px road lines
+  if (solar) { // main.js's solar InstancedMesh (3 x 0.1 x 2.2 m boxes): swap in a panel finish, cells + bus lines + silver frame, same geometry and matrices
+    const m = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3, metalness: 0.6, envMap, envMapIntensity: 1 });
+    m.onBeforeCompile = sh => {
+      Object.assign(sh.uniforms, U);
+      sh.vertexShader = 'varying vec3 vSP;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvSP = position;');
+      sh.fragmentShader = 'uniform float uNight; varying vec3 vSP;\n' + sh.fragmentShader
+        .replace('#include <color_fragment>', `#include <color_fragment>
+          vec2 c = vSP.xz / vec2(0.5, 0.55); vec2 f = abs(fract(c) - 0.5), w = fwidth(c);
+          float grid = max(smoothstep(0.5 - w.x * 1.5, 0.5, f.x + 0.03), smoothstep(0.5 - w.y * 1.5, 0.5, f.y + 0.03)) * (1. - smoothstep(0.2, 0.45, max(w.x, w.y)));
+          float frame = step(1.44, abs(vSP.x)) + step(1.04, abs(vSP.z)) + step(vSP.y, 1.17);
+          diffuseColor.rgb = mix(mix(vec3(0.03, 0.05, 0.1), vec3(0.2, 0.22, 0.26), grid * 0.5), vec3(0.62, 0.62, 0.6), min(frame, 1.));`)
+        .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = max(0.18, roughnessFactor);')
+        .replace('#include <lights_fragment_maps>', '#include <lights_fragment_maps>\niblIrradiance *= 1. - 0.9 * uNight; radiance *= 1. - 0.9 * uNight;');
+    };
+    m.customProgramCacheKey = () => 'life-solar'; solar.material = m;
+  }
 
   // ------------------------------------------------------------ paths: polylines resampled every metre, corners rounded
   function mkPath(pts, closed) {
