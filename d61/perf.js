@@ -110,6 +110,7 @@ export function createPerf() {
     const px = q => q.pr * q.pr, base = px({ pr: b.pr });
     let best = 0;
     for (let lv = 0; lv <= S.ceil; lv++) { const q = quality(L, lv), est = b.ms * (0.25 + 0.75 * px(q) / base); if (est <= BUDGET) best = lv; }
+    best = Math.max(S.level - 2, Math.min(S.level + 1, best)); // a bench moves at most 2 down / 1 up; live frames do the rest
     if (PIN == null && best !== S.level) { if (LOG) console.log('[perf]', L.name, L.seg, 'bench', b, '->', best); S.level = best; S.cool = now() + COOL; }
   }
 
@@ -135,8 +136,8 @@ export function createPerf() {
     requestAnimationFrame(raf);
     const dt = lastRaf ? t - lastRaf : 0; lastRaf = t; frameN++;
     if (!dt) return;
-    if (!active || !active.on) { if (dt < 40) { vs.push(dt); if (vs.length > 120) vs.shift(); if (vs.length >= 30 && frameN % 30 === 0) vsync = stats(vs).p50; } }
-    else if (!active.selfTimed) sample(dt);
+    if (dt < 40) { vs.push(dt); if (vs.length > 240) vs.shift(); if (vs.length >= 60 && frameN % 30 === 0) { const s = [...vs].sort((a, b) => a - b); vsync = s[Math.floor(s.length * 0.1)]; } } // refresh = the short end of all intervals
+    if (active && active.on && !active.selfTimed) sample(dt);
     for (const L of layers.values()) settle(L);
   }
   if (typeof requestAnimationFrame === 'function') requestAnimationFrame(raf);
@@ -181,9 +182,11 @@ export function createPerf() {
     bench(name, fn, gl, { n = 4, seg } = {}) {
       const L = layer(name), S = segOf(L, seg || L.seg);
       if (S.benching || (S.bench && !S.bench.est)) return Promise.resolve(S.bench);
+      if (!L.on || now() - L.since < 2000 || L.seg !== (seg || L.seg)) return Promise.resolve(null); // warm and settled first (compiles, uploads)
       S.benching = true; const ms = [], px = new Uint8Array(4);
       return new Promise(res => {
         const one = dl => {
+          if (!L.on) { S.benching = false; return res(null); }
           if (scrolling() && !(dl && dl.didTimeout)) { ric(one, { timeout: 1500 }); return; }
           const t0 = now(); try { fn(); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); } catch (_) { S.benching = false; return res(null); }
           ms.push(now() - t0);
