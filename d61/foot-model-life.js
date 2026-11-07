@@ -24,19 +24,21 @@ export function buildLife({ THREE, root, plan, high, lamps = [] }) {
   habGeo.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); habGeo.setAttribute('normal', new THREE.Float32BufferAttribute(N, 3));
   habGeo.setAttribute('bary', new THREE.Float32BufferAttribute(BC, 3)); habGeo.setAttribute('fid', new THREE.Float32BufferAttribute(F, 1));
   disposables.push(habGeo);
-  const habU = { uGlow: { value: new THREE.Color(0.85, 0.42, 0.15) } };
+  const habU = { uGlow: { value: new THREE.Color(0.95, 0.42, 0.12) } };
   const habMat = new THREE.MeshStandardMaterial({ color: 0xd8d2c8, roughness: 0.55, metalness: 0.1, side: THREE.DoubleSide });
   habMat.onBeforeCompile = sh => {
     Object.assign(sh.uniforms, habU);
     sh.vertexShader = sh.vertexShader.replace('#include <common>', `#include <common>
-      attribute vec3 bary; attribute float fid; varying vec3 vBary; varying float vLit, vFr;
+      attribute vec3 bary; attribute float fid; attribute float htype; varying vec3 vBary; varying float vLit, vFr;
       float hh(float n){ return fract(sin(n) * 43758.5453); }`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
       vBary = bary; vFr = fid < 0.5 ? 1. : 0.;
       vec2 ip = vec2(instanceMatrix[3].x, instanceMatrix[3].z);
-      float hab = hh(dot(ip, vec2(0.371, 0.913))), lit = hh(fid * 7.13 + hab * 91.7);
-      // a few habs are mostly dark (asleep), most have a third of their panels lit, low panels more often (living level)
-      vLit = fid < 0.5 ? 0. : step(lit, (hab < 0.3 ? 0.03 : 0.1) + 0.14 * step(position.y, 0.45)) * (0.5 + hh(fid + hab * 13.));`);
+      float hab = hh(dot(ip, vec2(0.371, 0.913))), lit = hh(fid * 7.13 + hab * 91.7), y = position.y;
+      // the timelapse's four dome types, at dusk: 0 mostly glass (scattered rooms lit), 1 skylight crown, 2 eye-level window
+      // band, 3 mixed. Some habs are asleep (dark).
+      float p = htype < 0.5 ? 0.16 : htype < 1.5 ? 0.5 * step(0.8, y) : htype < 2.5 ? 0.42 * step(0.12, y) * step(y, 0.5) : 0.12;
+      vLit = fid < 0.5 || hab < 0.2 ? 0. : step(lit, p) * (0.5 + hh(fid + hab * 13.));`);
     sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nuniform vec3 uGlow; varying vec3 vBary; varying float vLit, vFr;')
       .replace('#include <color_fragment>', `#include <color_fragment>
       float be = min(vBary.x, min(vBary.y, vBary.z)), bw = fwidth(be);
@@ -51,8 +53,9 @@ export function buildLife({ THREE, root, plan, high, lamps = [] }) {
   const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), s3 = new V3(), p3 = new V3(), Y = new V3(0, 1, 0), col = new THREE.Color();
   plan.habs.forEach((h, i) => {
     m4.compose(p3.set(h.x, gy(h.x, h.z) + 0.05, h.z), q.setFromAxisAngle(Y, h.ry), s3.set(h.r, h.r * h.ys, h.r)); habs.setMatrixAt(i, m4);
-    habs.setColorAt(i, col.setHSL(0.08, 0.06 + h.seed * 0.06, 0.62 + h.seed * 0.16));
+    habs.setColorAt(i, col.setHSL(0.08, 0.06 + h.seed * 0.06, 0.62 + h.seed * 0.16));   // seed is 0..1
   });
+  habGeo.setAttribute('htype', new THREE.InstancedBufferAttribute(new Float32Array(plan.habs.map(h => h.type)), 1));
   habs.computeBoundingSphere(); habs.name = 'habs'; root.add(habs);
 
   // ---------------------------------------------------------------- rovers (instanced, vertex colour) + suited figures
@@ -77,14 +80,14 @@ export function buildLife({ THREE, root, plan, high, lamps = [] }) {
   // rovers: two parked (pad, ships), five driving the ring roads at walking-car pace. Continuous loops (no jumps on any
   // screen width); spaced so one is usually crossing the near arc of the outer ring, in front of the city.
   const ROV = [0, 1, 2].map(k => ({ R: 204 + 1.3, a0: 1.3 + k * TAU / 3, v: 3.5 })).concat([0, 1].map(k => ({ R: 132 - 1.3, a0: 5.44 + k * Math.PI, v: -2.8 })));
-  const parked = [[plan.build[0] + 24, plan.build[1] + 14, 2.2], [plan.land[0][0] - 20, plan.land[0][1] + 16, -0.5]];
+  const verge = (R, a, turn = 0) => { const [x, z] = plan.ring(R, a), [x2, z2] = plan.ring(R, a + 0.01); return [x, z, Math.atan2(-(z2 - z), x2 - x) + turn]; };
+  const parked = [[plan.build[0] + 24, plan.build[1] + 14, 2.2], verge(212, 2.93, -0.3)];
   const rovers = new THREE.InstancedMesh(roverGeo, bodyMat, ROV.length + parked.length); rovers.name = 'rovers'; rovers.frustumCulled = false; root.add(rovers);
   parked.forEach(([x, z, ry], i) => { m4.compose(p3.set(x, gy(x, z) + 0.05, z), q.setFromAxisAngle(Y, ry), s3.set(1, 1, 1)); rovers.setMatrixAt(ROV.length + i, m4); });
-  // figures: by the hub door, the near dome, the parked rover and the pad; one walks
-  const hub = plan.domes[0], nd = plan.domes[1];
-  const FIG = [[hub.x + 3, hub.z + hub.R + 7, 0.3], [hub.x - 2.2, hub.z + hub.R + 6.2, 2.8], [nd.x + 4, nd.z + nd.R + 6, -0.8],
-    [parked[0][0] - 3.5, parked[0][1] + 1.6, 1.2], [parked[0][0] - 2.2, parked[0][1] + 2.8, 2.6], [plan.build[0] - 9, plan.build[1] + 14, 0.4]];
-  const WALK = { i: 2, dx: 7, T: 26 };
+  // figures: out on the outer ring's verge (in front of the lit habs, so they read as silhouettes): a pair by each parked
+  // rover (colony.js parks one at ring 211 / 3.3), one at the pad apron, one walking the verge
+  const FIG = [verge(214.2, 3.288, 1.2), verge(213.4, 3.296, -2), verge(214, 2.938, 0.6), verge(215, 2.921, 2.4), [plan.build[0] - 9, plan.build[1] + 14, 0.4], verge(216.5, 3.12)];
+  const WALK = { i: 5, R: 216.5, a: [3.105, 3.15], T: 34 };
   const figs = new THREE.InstancedMesh(figGeo, bodyMat, FIG.length); figs.name = 'figures'; figs.frustumCulled = false; root.add(figs);
   FIG.forEach(([x, z, ry], i) => { m4.compose(p3.set(x, gy(x, z), z), q.setFromAxisAngle(Y, ry), s3.set(1, 1, 1)); figs.setMatrixAt(i, m4); });
 
@@ -111,7 +114,7 @@ export function buildLife({ THREE, root, plan, high, lamps = [] }) {
       void main(){ vec4 mv = modelViewMatrix * vec4(position, 1.); float d = -mv.z;
         // a lamp is a fixed number of px wide (never subpixel, never shimmers); far ones fade instead of shrinking
         vA = smoothstep(1400., 250., d) * (0.55 + 0.45 * smoothstep(900., 150., d)); vC = color;
-        gl_PointSize = clamp(size * 980. / d, 2.2, 7.) * uPR; gl_Position = projectionMatrix * mv; }`,
+        gl_PointSize = clamp(size * 820. / d, 1.7, 6.) * uPR; gl_Position = projectionMatrix * mv; }`,
     fragmentShader: `uniform float uK; varying vec3 vC; varying float vA; void main(){ float d = length(gl_PointCoord - .5);
       float k = smoothstep(.5, .0, d); gl_FragColor = vec4(vC * vA * uK * (k * k * 3.2 + k * 0.6), 1.); }`,
   });
@@ -139,9 +142,10 @@ export function buildLife({ THREE, root, plan, high, lamps = [] }) {
     lpos.addUpdateRange?.(nStatic * 3, dyn * 3); lcol.addUpdateRange?.(nStatic * 3, dyn * 3);
     lpos.needsUpdate = lcol.needsUpdate = true;
     // the walker: slow out-and-back along the dome front, turning at each end
-    const [x0, z0] = FIG[WALK.i], ph = (t / WALK.T) % 1, w = ph < 0.5 ? ph * 2 : 2 - ph * 2, dir = ph < 0.5 ? 1 : -1;
-    const x = x0 + WALK.dx * (w * w * (3 - 2 * w) - 0.5), z = z0;
-    m4.compose(p3.set(x, gy(x, z) + 0.02 * Math.abs(Math.sin(t * 5.5)), z), q.setFromAxisAngle(Y, dir * Math.PI / 2), s3.set(1, 1, 1)); figs.setMatrixAt(WALK.i, m4);
+    const ph = (t / WALK.T) % 1, w = ph < 0.5 ? ph * 2 : 2 - ph * 2, e = w * w * (3 - 2 * w), dir = ph < 0.5 ? 0 : Math.PI;
+    const [x, z, ry] = verge(WALK.R, WALK.a[0] + (WALK.a[1] - WALK.a[0]) * e);
+    // rotY(ry + pi/2) turns the figure's +z (visor) side onto the road tangent; out and back
+    m4.compose(p3.set(x, gy(x, z) + 0.02 * Math.abs(Math.sin(t * 5.5)), z), q.setFromAxisAngle(Y, ry + Math.PI / 2 + dir), s3.set(1, 1, 1)); figs.setMatrixAt(WALK.i, m4);
     figs.instanceMatrix.needsUpdate = true;
   }
   update(0);

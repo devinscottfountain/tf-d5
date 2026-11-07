@@ -99,7 +99,7 @@ export function buildFooterScene({ THREE, quality = 'high' } = {}) {
   const ships = buildStarships({ THREE, B, M, high, ships: [
     { x: plan.land[0][0], z: plan.land[0][1], ry: 0.14 },
     { x: plan.land[1][0], z: plan.land[1][1], ry: -0.5 },
-    { x: plan.build[0], z: plan.build[1], ry: 0.3, pad: 15 },
+    { x: plan.build[0], z: plan.build[1], ry: 0.3, pad: plan.padR - 1.5 },
   ] });
   const tower = buildPadTower({ THREE, B, M, high, x: plan.tower[0], z: plan.tower[1], ship: plan.build });
   const merged = B.flush(root, 'colony');
@@ -153,7 +153,7 @@ export function buildFooterScene({ THREE, quality = 'high' } = {}) {
     root, lights, update,
     applyTextures(tex) { tb.apply(tex); },
     anchors: { steel: steelU, domes: colony.domes, rover: colony.rover, ships, tower, glass: M.glass, foliage: leafU.uBack, lights: life.lightsU, habs: life.habU },
-    materials: M, stats: { tris: Math.round(tris), drawCalls: calls, instances: inst },
+    materials: M, plan, stats: { tris: Math.round(tris), drawCalls: calls, instances: inst, layout: plan.src, habs: plan.habs.length },
     dispose() { root.traverse(o => o.isMesh && o.geometry.dispose()); terrain.dispose(); life.dispose(); M.foliage.map?.dispose(); Object.values(M).forEach(m => m.dispose()); black.dispose(); },
   };
 }
