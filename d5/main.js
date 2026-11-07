@@ -17,7 +17,8 @@ const CFG = window.D5_CFG || {}, MM = CFG.mode === 'mars', AHEAD = CFG.ahead ?? 
 const ROCK = !!CFG.rockets, ARRIVE = 0.1, ROCK_SITES = { land: [[55, -150], [15, -168]], build: [-25, -100] };
 let rockMod = null; const rockP = ROCK ? Promise.all([import('./rockets.js'), import('../d61/foot-model-starship.js'), import('../d61/foot-model-kit.js')])
   .then(([r, s, k]) => (rockMod = { createRockets: r.createRockets, foot: { buildStarships: s.buildStarships, mergeAll: k.mergeAll } })).catch(e => console.warn('d5 rockets:', e)) : null;
-const LIT = MM && CFG.look === 'lit', MBEATS = MM && !!CFG.beats, onProg = MM && typeof CFG.onProgress === 'function' ? CFG.onProgress : null;
+const LIT = MM && CFG.look === 'lit', MBEATS = MM && !!CFG.beats, CINE = MBEATS && !!CFG.cine, onProg = MM && typeof CFG.onProgress === 'function' ? CFG.onProgress : null;
+const CA = CINE ? 0.46 : MBEATS ? 0.5 : MM ? 0.4 : 0.58; // the entry flash: everything after this is the Jezero timelapse
 const host = q('.d5-canvas') || (MM ? document.body.appendChild(Object.assign(document.createElement('div'), { className: 'd5-canvas' })) : null);
 
 // ---------- renderer + bloom (the Expanse look is mostly glow against black) ----------
@@ -47,7 +48,7 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x010103);
 const cam = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.1, 9000);
 // post: motion blur -> DOF -> bloom -> auto exposure + ACES -> SMAA -> lens (CA, grain, vignette)
-const post = createPost({ THREE, renderer, scene, cam }), { dof, lens, bloom } = post;
+const post = createPost({ THREE, renderer, scene, cam, cine: CINE }), { dof, lens, bloom } = post;
 // Mars mode: UnrealBloom's blurs use sigma = kernel radius, so each mip's kernel is close to a box and a lone bright pixel (a star,
 // the thin crescent) blooms into a soft square. A proper Gaussian (sigma = radius / 2.6) keeps the glow round. Default D5 keeps its look.
 if (MM) (bloom.separableBlurMaterials || []).forEach(m => { const c = m.uniforms.gaussianCoefficients?.value; if (!c) return; const n = c.length, sg = n / 2.6; for (let i = 0; i < n; i++) c[i] = 0.39894 * Math.exp(-0.5 * i * i / (sg * sg)) / sg; });
@@ -105,7 +106,7 @@ const radialTex = (stops) => { const c = document.createElement('canvas'); c.wid
 // The colony's contents are built lazily: populateColony() is a generator that yields between its heavy chunks, so it can be
 // stepped in idle time after the intro (scheduleColony) or run to completion on demand (ensureColony) the first time colony
 // mode needs it. It fills colonyAPI when done. The group itself, the shared lights and the shot curves stay at module level.
-const colSun = new THREE.Vector3(); // colony sun direction, written by buildColony, read by the loop
+const colSun = new THREE.Vector3(); let colNight = 0; // colony sun direction + night, written by buildColony, read by the loop
 let colonyAPI = null;               // { build(g, t), cranes } once populated
 function* populateColony() {
 // terrain: the real floor of Jezero Crater, 2 km east of the delta front (18.4455 N, 77.4635 E).
@@ -219,7 +220,7 @@ function readHB0(tex) {
 
 // sky: butterscotch by day, Mars' blue halo around the sun at dusk, stars at night
 const skyU = { sunDir: { value: new THREE.Vector3() }, night: { value: 0 } };
-colony.add(new THREE.Mesh(new THREE.SphereGeometry(7000, 48, 24), new THREE.ShaderMaterial({
+const colSky = new THREE.Mesh(new THREE.SphereGeometry(7000, 48, 24), new THREE.ShaderMaterial({
   side: THREE.BackSide, depthWrite: false, fog: false, uniforms: skyU,
   vertexShader: `varying vec3 vD; void main(){ vD=normalize(position); gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
   fragmentShader: `uniform vec3 sunDir; uniform float night; varying vec3 vD; ${NOISE}
@@ -229,7 +230,7 @@ colony.add(new THREE.Mesh(new THREE.SphereGeometry(7000, 48, 24), new THREE.Shad
     vec3 c=mix(dayC,duskC,night)+vec3(0.3,0.5,0.9)*pow(sd,22.)*(0.2+night*0.55)+vec3(0.5,0.6,0.8)*pow(sd,160.)*0.6;
     c+=vec3(0.9)*step(0.9975,h3(floor(vD*500.)))*smoothstep(0.5,1.,night)*smoothstep(0.05,0.3,e);
     gl_FragColor=vec4(c,1.); }`
-})));
+})); colony.add(colSky);
 
 yield; // terrain + sky are in
 
@@ -371,7 +372,8 @@ const started = (list, g) => { let n = 0; while (n < list.length && list[n].bt <
 // returns true when the build state (and so the shadow casters and sun) changed this frame
 function buildColony(g, t) {
   const gR = g; if (ROCK) g = Math.max(0, (g - ARRIVE) / (1 - ARRIVE)); // rockets: the ships land first, the city build (and its day) runs on the rest
-  const night = sstep(g, 0.35, 0.95), el = THREE.MathUtils.lerp(0.34, -0.05, sstep(g, 0.05, 1));
+  const night = colNight = sstep(g, 0.35, 0.95), el = THREE.MathUtils.lerp(0.34, -0.05, sstep(g, 0.05, 1));
+  const airOn = CINE && typeof planets.entry === 'function'; colSky.visible = !airOn; // cine: the atmosphere owner's sky dome replaces this one
   colSun.set(-Math.cos(el), Math.sin(el), -Math.cos(el) * 0.22).normalize();
   // shadow camera: sit 600 units out along the sun, look at the colony centre; vertical half-extent = projected ground disc + tallest caster (cranes, domes)
   { const c = sunLight.shadow.camera, V = 390 * Math.max(colSun.y, 0.06) + 80; sunLight.target.position.copy(COL); sunLight.position.copy(COL).addScaledVector(colSun, 600);
@@ -379,7 +381,7 @@ function buildColony(g, t) {
   skyU.sunDir.value.copy(colSun); skyU.night.value = night; lightU.g.value = g; lightU.night.value = night; lightU.t.value = t; winU.night.value = night; HAB.night.value = night;
   scene.fog.color.copy(skyCol.copy(dayH).lerp(duskH, night)); scene.fog.near = 500; scene.fog.far = 4200; // haze out to the delta front ~2 km west
   sunLight.intensity = THREE.MathUtils.lerp(2.2, 0.1, night); ambient.intensity = THREE.MathUtils.lerp(0.5, 0.1, night); hemi.intensity = THREE.MathUtils.lerp(1.5, 0.12, night);
-  hemi.color.copy(skyCol); HAB.tubeMat.emissiveIntensity = night * 0.35;
+  hemi.color.copy(skyCol); if (airOn && planets.air && planets.air.hemi) planets.air.hemi(hemi.color); HAB.tubeMat.emissiveIntensity = night * 0.35;
   // lander cycle: descend on a burn, sit, lift off; repeats a few times across the scroll
   const lc = (g * 5) % 1, flying = g > 0.3; let ly = 0, burn = 0;
   if (lc < 0.35) { ly = Math.pow(1 - lc / 0.35, 2) * 320; burn = 1; } else if (lc > 0.65) { ly = Math.pow((lc - 0.65) / 0.35, 2) * 360; burn = 1; }
@@ -418,17 +420,50 @@ function buildColony(g, t) {
   cranes.forEach(c => { const v = Math.min(easeOut((g - c.bt + 0.08) / 0.04), 1 - easeOut((g - c.bt - 0.2) / 0.04)); c.g.scale.set(1, Math.max(0.001, v), 1); c.g.visible = v > 0.01; });
   return true;
 }
-colonyAPI = { build: buildColony, cranes };
+colonyAPI = { build: buildColony, cranes, get rockets() { return rockets; } };
 } // populateColony
 let colonyGen = null, colonyIdle = false;
 const ric = window.requestIdleCallback ? f => requestIdleCallback(f) : f => setTimeout(f, 120); // Safari: no rIC, space the chunks out
-const calm = dl => Math.abs(smV) < 0.02 && (!dl || !dl.timeRemaining || dl.timeRemaining() > 8); // idle time left and the scroll settled
+const calm = dl => (Math.abs(smV) < 0.02 || (CINE && sm < CA - 0.1)) && (!dl || !dl.timeRemaining || dl.timeRemaining() > 8); // idle time left and the scroll settled
 // one chunk of the build; after the last one, queue the colony's shader programs + shadow/upload warm-up
 function colonyStep() { if (colonyAPI) return true; colonyGen = colonyGen || populateColony(); if (colonyGen.next().done) { ric(warmColony); return true; } return false; }
 function ensureColony() { while (!colonyStep()); }   // synchronous: colony mode is about to render
 function scheduleColony() { if (colonyIdle || colonyAPI) return; colonyIdle = true; const tick = dl => { if (!calm(dl) || !colonyStep()) ric(tick); }; ric(tick); }
 const cPos = new THREE.CatmullRomCurve3([[150, 430, 170], [175, 240, 130], [195, 115, 45], [175, 36, -55]].map(p => new THREE.Vector3(...p).add(COL)), false, 'centripetal');
 const cLook = new THREE.CatmullRomCurve3([[0, 0, 0], [0, 0, 0], [-20, 8, -8], [-210, 28, -40]].map(p => new THREE.Vector3(...p).add(COL)), false, 'centripetal');
+// cine: one move from the clearing haze to the launch. Descent forward and down onto Jezero, then a slow push that orbits a pivot
+// between the parked ships and the build pad (so they never leave the frame), then the tilt up after the ship. [p, pos, look, lens]
+const C_PIV = [15, 0, -135], cAt = (R, a, h) => [C_PIV[0] + R * Math.sin(a * Math.PI / 180), h, C_PIV[2] + R * Math.cos(a * Math.PI / 180)];
+const CSH = CINE ? [
+  [CA, [1100, 2600, 2300], [-300, 0, -300], 50],    // just under the swap, in the haze
+  [0.52, [760, 1500, 1500], [0, 0, -60], 48],       // haze clearing: the crater floor and the site from altitude
+  [0.57, [480, 700, 900], [10, 0, -110], 46],       // terrain resolving, the ships' plumes below
+  [0.62, cAt(600, 28, 260), [15, 30, -135], 42],    // settle: ships down, the city starts
+  [0.72, cAt(500, 32, 190), [15, 34, -135], 40],
+  [0.80, cAt(420, 24, 130), [10, 38, -130], 40],
+  [0.88, cAt(350, 15, 80), [-5, 44, -125], 42],     // the stacked ship on the pad, parked ships beside it
+  [1.0, cAt(330, 12, 50), [-10, 48, -120], 48],
+  [1.12, cAt(340, 11, 40), [-14, 50, -118], 52]
+].map(([p, a, b, f]) => ({ p, pos: new THREE.Vector3(...a).add(COL), look: new THREE.Vector3(...b).add(COL), fov: f })) : null;
+const cPosC = CSH && new THREE.CatmullRomCurve3(CSH.map(k => k.pos), false, 'centripetal'), cLookC = CSH && new THREE.CatmullRomCurve3(CSH.map(k => k.look), false, 'centripetal');
+const cIdx = CSH && pchip(CSH.map(k => k.p), CSH.map((k, i) => i / (CSH.length - 1))), cFov = CSH && pchip(CSH.map(k => k.p), CSH.map(k => k.fov));
+// cine: scroll -> the colony's build clock gR (rockets.js table: land 0-0.064, ARRIVE 0.1, ignite 0.8, liftoff 0.83, 1.0 ~1.2 km up)
+const gOf = CINE ? (() => { const f = pchip([0.49, 0.62, 0.88, 0.9, 1.12], [0, 0.1, 0.8, 0.83, 1]); return p => (p <= 0.49 ? 0 : p >= 1.12 ? 1 : clamp01(f(p))); })() : p => clamp01((p - CA) / (1 - CA));
+const LIFT_G = 0.83, rockW = new THREE.Vector3(), rockL = new THREE.Vector3();
+// the ship's mid-body (world) at build clock g: rockets.launch.pos when rockets.js gives it, else its published climb over the pad
+function shipAt(g, out, now) {
+  const r = colonyAPI && colonyAPI.rockets, L = r && r.launch;
+  if (now && L && L.pos) return out.copy(L.pos);
+  const k = Math.max(0, g - LIFT_G); return out.set(ROCK_SITES.build[0] + 900 * k * k, 28 + 42000 * k * k, ROCK_SITES.build[1]).add(COL);
+}
+function colCam(p, outPos, outLook) {
+  const q = Math.min(Math.max(p, CA), 1.12), u = cIdx(q);
+  cPosC.getPoint(u, outPos); cLookC.getPoint(u, outLook);
+  // launch: from liftoff the aim leaves the pivot for the climbing ship, a beat behind it (the ship at a slightly earlier clock)
+  const g = gOf(q), k = sstep(g, LIFT_G + 0.004, LIFT_G + 0.05);
+  if (k > 0) { shipAt(g, rockL, true); rockW.copy(rockL).sub(outLook); outLook.addScaledVector(rockW, k * 0.85); } // never quite on it: the column trails into frame from below
+  return cFov(q);
+}
 
 // sun + anamorphic flare: two additive sprites, the streak is what sells the Expanse feel
 const glowTex = (w, h, stops) => { const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d'); const g = x.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2); stops.forEach(([o, s]) => g.addColorStop(o, s)); x.fillStyle = g; x.fillRect(0, 0, w, h); return new THREE.CanvasTexture(c); };
@@ -491,8 +526,19 @@ function pchip(xs, ys, m0, mN) {
 // Each shot is [scroll, position, look target, lens]. Position rides a centripetal spline; scroll maps to distance
 // along it through a monotone curve, so it slows near each planet (the copy reads) and runs between them without
 // ever stopping. The look direction is its own monotone curve over the same scroll, so turns are gentle and never reverse.
-const CA = MBEATS ? 0.5 : MM ? 0.4 : 0.58; // the entry flash: everything after this is the Jezero timelapse
-const SHOTS = (MBEATS ? [
+// cine: an entry, not a dive. Out of the beat-2 hold the path bends onto a line tangent to the planet ~0.65 r above the ground
+// (EN1 radial, ENT tangent), the look drops from the centre onto the horizon ahead, so the disc grows into a curved horizon.
+const EN1 = new THREE.Vector3(0.15, 0.55, 0.82).normalize(), ENT = new THREE.Vector3(-1, 0, 0).addScaledVector(EN1, EN1.x).normalize();
+const ENP = MARS.clone().addScaledVector(EN1, 6.65), ENL = ENP.clone().addScaledVector(ENT, 10).addScaledVector(EN1, -2.6);
+const SHOTS = (CINE ? [
+  [-0.15, M3(MARS, [92, 26, 132]), MARS, 28],
+  [0.00, M3(MARS, [70, 20, 100]), MARS, 30],
+  [0.16, M3(MARS, [30, 10, 38]), MARS, 30],
+  [0.34, M3(MARS, [21, 6, 36]), MARS, 32],                          // beat 2 lets go
+  [0.41, M3(MARS, [11, 4.5, 17]), MARS, 40],                        // approach
+  [0.44, ENP.clone().addScaledVector(ENT, -5).addScaledVector(EN1, 2.2), MARS.clone().addScaledVector(EN1, 6.05).addScaledVector(ENT, 3), 46], // turning onto the entry line
+  [CA, ENP, ENL, 52]                                                // skimming the top of the air: the swap to Jezero happens here
+] : MBEATS ? [
   // beats: the title (gap framing, see frameBehind), then a long hold on the whole disc for the two SpaceX lines (frameBeat sets the
   // size; the path only drifts a few degrees round the planet so it stays alive), then the same push and dive into the flash.
   [-0.15, M3(MARS, [92, 26, 132]), MARS, 28],
@@ -603,7 +649,7 @@ const ovs = qa('[data-w]').filter(el => !el.closest('.d5-after') && (!MM || [...
 // beats: the page's copy blocks (.d61-mbeat[data-beat="2"|"3"]) ride the same overlay fades. A data-w on one overrides its window;
 // several blocks in one beat come in one after another.
 if (MBEATS) { const nb = {}; qa('.d61-mbeat[data-beat]').forEach(el => { const k = el.dataset.beat, i = nb[k] = (nb[k] ?? -1) + 1;
-  const [a, b] = el.dataset.w ? el.dataset.w.split(',').map(Number) : k === '2' ? [0.19 + 0.055 * i, 0.41] : [0.6 + 0.04 * i, 9]; ovs.push({ el, a, b, clr: k === '2' }); }); }
+  const [a, b] = el.dataset.w ? el.dataset.w.split(',').map(Number) : k === '2' ? (CINE ? [0.165 + 0.045 * i, 0.355] : [0.19 + 0.055 * i, 0.41]) : CINE ? [0.63 + 0.04 * i, 0.89] : [0.6 + 0.04 * i, 9]; ovs.push({ el, a, b, clr: k === '2' }); }); }
 const WIN = { 'd5-hero': [-1, 0.06], 'd5-mission': [0.43, 0.55], 'd5-belt': [0.8, 9] };
 if (!MM) ovs.forEach(o => { const w = WIN[o.el.classList[0]]; if (w) [o.a, o.b] = w; });
 const win = (p, a, b, f = 0.035) => Math.min(THREE.MathUtils.smoothstep(p, a - f, a + f), 1 - THREE.MathUtils.smoothstep(p, b - f, b + f));
@@ -678,10 +724,12 @@ if (MM) marsOff(); // hidden until the track arrives
 const MM_OUT = MBEATS ? 0.35 : 0.4, MM_LAP = MBEATS ? 0.15 : 0; // beats: the fade overlaps the after section by MM_LAP of a viewport, so the CTA rises as the colony goes
 function marsGate() {
   const r = near && track.getBoundingClientRect(), end = r ? (after ? after.getBoundingClientRect().top : r.bottom) : 0;
-  const fade = r ? clamp01(1 - r.top / innerHeight) : 0, out = r ? clamp01((end - innerHeight * (1 - MM_LAP)) / (MM_OUT * innerHeight)) : 0;
+  // cine: no fade out ahead of the closing section; the film runs on (p past 1) while it rises over the scene, which dims under it
+  const fade = r ? clamp01(1 - r.top / innerHeight) : 0, out = r ? (CINE ? clamp01(end / (0.04 * innerHeight)) : clamp01((end - innerHeight * (1 - MM_LAP)) / (MM_OUT * innerHeight))) : 0;
   const on = booted && fade > 0.001 && out > 0.001 && r.bottom > 0;
   if (!on) { if (mmOn) marsOff(); return false; }
-  prog = Math.min(1, Math.max(MM_P0, -r.top / Math.max(1, r.height - innerHeight)));
+  const span = Math.max(1, r.height - innerHeight);
+  prog = Math.min(CINE ? 1 + 0.9 * innerHeight / span : 1, Math.max(MM_P0, -r.top / span));
   if (!mmOn) { mmOn = true; sm = prog; smV = 0; post.resetMotion(); css(host, 'visibility', 'visible'); for (const el of fadeEls) css(el, 'visibility', 'visible'); } // arriving mid-track: start there, no fly-through
   mmFade = fade * sstep(out, 0, 1); return true;
 }
@@ -779,7 +827,7 @@ function measureGapInk() {
   return { x: b.width / 2, y: (bot1() + top2()) / 2 - b.top, r: rD };
 }
 function frameBehind(inSpace) {
-  const k = inSpace && titleEl ? 1 - sstep(sm, 0.15, 0.27) : 0, g = k > 0 && measureGap();
+  const k = inSpace && titleEl ? 1 - (CINE ? sstep(sm, 0.12, 0.22) : sstep(sm, 0.15, 0.27)) : 0, g = k > 0 && measureGap();
   if (!g) { if (framed) { framed = false; cam.clearViewOffset(); } return; }
   const W = innerWidth, H = innerHeight, th = Math.tan(cam.fov * Math.PI / 360);
   cam.updateMatrixWorld(); mcv.copy(MARS).applyMatrix4(cam.matrixWorldInverse); const d = mcv.length();
@@ -795,13 +843,31 @@ function frameBehind(inSpace) {
 }
 // beats: the SpaceX hold. Mars sits centred at 0.21 of the viewport height (0.4 of the width on narrow screens), sized by moving the
 // camera along its line to the planet as frameBehind does; the title's gap framing blends over it on the way in.
-const B2 = [0.13, 0.22, 0.38, 0.46]; // ramp in, held, ramp out
+const B2 = CINE ? [0.12, 0.2, 0.34, 0.42] : [0.13, 0.22, 0.38, 0.46]; // ramp in, held, ramp out
 function frameBeat(inSpace) {
   const k = inSpace ? sstep(sm, B2[0], B2[1]) * (1 - sstep(sm, B2[2], B2[3])) : 0; if (k <= 0) return;
   const H = innerHeight, th = Math.tan(cam.fov * Math.PI / 360), d = cam.position.distanceTo(MARS); if (d < 6.6) return;
   const rNat = Math.tan(Math.asin(6.05 / d)) / th * H / 2, rT = rNat + (Math.min(0.21 * H, 0.4 * innerWidth) - rNat) * k;
   const f = Math.max(6.6 / d, 6.05 / Math.sin(Math.atan(rT * 2 * th / H)) / d);
   pos.sub(MARS).multiplyScalar(f).add(MARS); cam.position.sub(MARS).multiplyScalar(f).add(MARS); cam.updateMatrixWorld();
+}
+// cine: the entry. e runs 0..1 over p 0.40..0.60 (the swap to Jezero is at e 0.30 = CA); planets.entry (planets.js, the
+// atmosphere owner) draws the heat glow and the haze and may override the colony fog. Until it exists: a warm edge glow on the veil,
+// a haze peak over the swap, and colony fog that thins out from the altitude shot down.
+const E0 = 0.40, E1 = 0.60, entryCtx = { inCol: false, cam, t: 0, dt: 0, alt: 0, fog: scene.fog, e: 0 };
+let eVeil = '';
+function entryFrame(inCol, t, dt) {
+  const e = clamp01((sm - E0) / (E1 - E0));
+  entryCtx.inCol = inCol; entryCtx.sunDir = colSun; entryCtx.night = colNight; entryCtx.t = t; entryCtx.dt = dt; entryCtx.e = e; entryCtx.fog = scene.fog;
+  entryCtx.alt = inCol ? cam.position.y - COL.y : cam.position.distanceTo(MARS);
+  if (typeof planets.entry === 'function') { if (eVeil && veil) { eVeil = ''; css(veil, 'opacity', '0'); } planets.entry(e, entryCtx); return; }
+  if (inCol && e < 1) { const k = sstep(e, 0.3, 0.92); scene.fog.near = THREE.MathUtils.lerp(0, 500, k); scene.fog.far = THREE.MathUtils.lerp(260, 4200, k * k); }
+  if (!veil) return;
+  const heat = sstep(e, 0.04, 0.3) * (1 - sstep(e, 0.3, 0.5)), haze = sstep(e, 0.2, 0.3) * (1 - sstep(e, 0.3, 0.46));
+  const v = haze > 0.002 ? 'h' : heat > 0.002 ? 'g' : '';
+  if (v !== eVeil) { eVeil = v; veil.style.background = v === 'h' ? 'radial-gradient(ellipse at 50% 60%, rgba(255,226,190,.9) 0%, rgba(232,150,92,.92) 55%, rgba(150,62,30,.96) 100%)'
+    : 'radial-gradient(ellipse at 50% 42%, rgba(0,0,0,0) 38%, rgba(255,140,60,.55) 78%, rgba(255,200,140,.85) 100%)'; }
+  css(veil, 'opacity', (v === 'h' ? haze : heat * 0.9).toFixed(3));
 }
 // lit look: a key light fixed in camera space (front, left, a little high), so whatever the path does the disc reads full and lit
 // from the upper left. Mars turns slowly with scroll, Valles Marineris across the face on the hold. A halo card behind the
@@ -856,7 +922,7 @@ renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
   // the plain page below covers the canvas; once it does, stop drawing
   const cover = after ? clamp01(1 - after.getBoundingClientRect().top / innerHeight) : 0;
-  if (MM) { css(host, 'opacity', ((1 - 0.6 * cover) * mmFade).toFixed(3)); const o = ((1 - cover) * mmFade).toFixed(3); for (const el of fadeEls) css(el, 'opacity', o); }
+  if (MM) { css(host, 'opacity', ((1 - (CINE ? 0.7 : 0.6) * cover) * mmFade).toFixed(3)); const o = ((1 - cover) * mmFade).toFixed(3); for (const el of fadeEls) css(el, 'opacity', o); }
   else { css(host, 'opacity', (1 - 0.6 * cover).toFixed(3)); if (cover > 0 || lastCover > 0) { const o = (1 - cover).toFixed(3); for (const el of fadeEls) css(el, 'opacity', o); } } lastCover = cover;
   if (cover >= 0.999) return;
   { const W = 3.6; smV += (W * W * (prog - sm) - 2 * W * smV) * dt; sm += smV * dt; } // critically damped scroll: flicks ramp up and settle, never snap
@@ -897,12 +963,14 @@ renderer.setAnimationLoop(() => {
     fov = THREE.MathUtils.lerp(38, 38, e); focus = D;
     setClip(Math.min(0.1, Math.max(0.0005, D * 0.04)), 9000);
   } else if (inCol) {
-    const cg = clamp01((sm - CA) / (1 - CA)), u = cg * (1.5 - 0.5 * cg); // launches out of the flash, settles on the last frame
-    cPos.getPoint(u, pos); cLook.getPoint(u, look); pos.x += ms.x * 8; pos.y -= ms.y * 5; fov = 44; focus = pos.distanceTo(look);
+    if (CINE) { fov = colCam(sm, pos, look); pos.x += ms.x * 8 * live; pos.y -= ms.y * 5 * live; focus = pos.distanceTo(look); }
+    else { const cg = clamp01((sm - CA) / (1 - CA)), u = cg * (1.5 - 0.5 * cg); // launches out of the flash, settles on the last frame
+    cPos.getPoint(u, pos); cLook.getPoint(u, look); pos.x += ms.x * 8; pos.y -= ms.y * 5; fov = 44; focus = pos.distanceTo(look); }
     // near plane rides the camera height: at 0.1 the depth buffer had ~10 cm steps at 400 m, so hab floors, gardens and pads z-fought (flicker on mouse parallax)
     setClip(THREE.MathUtils.clamp((pos.y - COL.y) * 0.08, 0.1, 30), 9000);
   } else {
     fov = spaceCam(sm, pos, look); focus = pos.distanceTo(look);
+    if (CINE) { const w = sstep(sm, 0.4, 0.45); if (w > 0) camUp.lerp(tmp.copy(pos).sub(MARS).normalize(), w).normalize(); } // entry: the planet's up, so the horizon lies level
     pos.x += ms.x * 2.2 * live; pos.y -= ms.y * 1.4 * live;
     setClip(0.1, 9000);
   }
@@ -922,7 +990,8 @@ renderer.setAnimationLoop(() => {
     lastMode = mode; forceShadow = true; // never show a shadow map left over from another set
   }
   const sunDir = inCol ? colSun : toSun;
-  const built = inCol && colonyAPI.build(clamp01((sm - CA) / (1 - CA)), t);
+  const built = inCol && colonyAPI.build(gOf(sm), t);
+  if (CINE) entryFrame(inCol, t, dt);
   if (!inCol && !inSite) { scene.fog.near = 1e8; scene.fog.far = 1e9; sunLight.intensity = 2.4; ambient.intensity = 0.35; hemi.intensity = 0; }
   // shadow policy (autoUpdate is off). Site: machines move every frame, so redraw every frame while the sun is up and the lot is
   // close enough to resolve them. Colony: the build state and sun only change with g; between changes only the crane jibs move,
@@ -932,8 +1001,8 @@ renderer.setAnimationLoop(() => {
   else if (inCol) { if (forceShadow || built || (shadowFrame % 3 === 0 && colonyAPI.cranes.some(craneOn))) { renderer.shadowMap.needsUpdate = true; forceShadow = false; } }
   else { sunLight.target.position.set(0, 0, 0); sunLight.position.copy(sunDir).multiplyScalar(100); }
   // the one cut left: a warm atmospheric-entry flash into Jezero
-  const hIn = sstep(sm, CA - 0.022, CA) * (1 - sstep(sm, CA, CA + 0.026));
-  if (introDone && veil) { if (!veilSet) { veilSet = true; veil.style.background = 'radial-gradient(circle at 50% 55%, #fff4e6 0%, #ffb27a 45%, #c8582a 100%)'; } css(veil, 'opacity', hIn.toFixed(3)); }
+  const hIn = CINE ? 0 : sstep(sm, CA - 0.022, CA) * (1 - sstep(sm, CA, CA + 0.026));
+  if (introDone && veil && !CINE) { if (!veilSet) { veilSet = true; veil.style.background = 'radial-gradient(circle at 50% 55%, #fff4e6 0%, #ffb27a 45%, #c8582a 100%)'; } css(veil, 'opacity', hIn.toFixed(3)); }
   // operator layer: only a faint handheld drift; no springs, no banking, no roll. The curves above are already smooth.
   const dist = pos.distanceTo(look);
   if (!introOn) pos.add(tmp.set(Math.sin(t * 0.21) * 0.6 + Math.sin(t * 0.53 + 1.3) * 0.25, Math.sin(t * 0.17 + 2.1) * 0.5 + Math.sin(t * 0.41) * 0.2, Math.sin(t * 0.13 + 4) * 0.4).multiplyScalar(dist * 0.002 * live));
@@ -960,7 +1029,7 @@ renderer.setAnimationLoop(() => {
 
   // sun + streak: off on the ground, cresting the limb as the pull out lands
   const f2 = mode === 'globe' ? clamp01((lam - LAMH) / (LAM1 - LAMH)) : 1;
-  sunCore.visible = streak.visible = !inSite;
+  sunCore.visible = !inSite; streak.visible = !inSite && !(CINE && post.cine); // cine: the post chain draws the streaks
   sunCore.position.copy(pos).addScaledVector(sunDir, 1600); streak.position.copy(sunCore.position);
   const facing = Math.max(0, tmp.copy(look).sub(pos).normalize().dot(sunDir));
   const flare = sstep(f2, 0.55, 1) * (0.25 + facing * 0.9) * (inCol ? 0.22 * (1 - sstep(colSun.y, 0.02, -0.04)) : LIT ? 0 : 1); // lit look: the key light is behind the lens, no sun in frame
@@ -1006,7 +1075,7 @@ renderer.setAnimationLoop(() => {
 });
 
 // rail dots sit at their scroll position and jump there on click
-const beatOf = s => (s < 0.15 ? 1 : s < CA ? 2 : 3);
+const beatOf = s => (s < (CINE ? 0.12 : 0.15) ? 1 : s < CA ? 2 : 3);
 const STOPS = MM ? [['Mars', 0], ['Jezero', +(CA + 0.33 * (1 - CA)).toFixed(3)]] : [['Earth', 0], ['Luna', 0.3], ['Mars', 0.47], ['Jezero', 0.72]];
 qa('.d5-stop').forEach((s, i) => { if (STOPS[i]) { s.textContent = STOPS[i][0]; s.dataset.p = STOPS[i][1]; } else s.remove(); });
 qa('.d5-stop').forEach(s => (s.style.top = (+s.dataset.p * 100) + '%'));
@@ -1022,7 +1091,8 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
 // per call), so compile() directly; the throwaway draws that follow wait for the programs either way.
 const PARALLEL = renderer.extensions.has('KHR_parallel_shader_compile'), NOOP = new THREE.Object3D();
 const compileIn = root => PARALLEL ? renderer.compileAsync(root, cam, scene) : (renderer.compile(root, cam, scene), Promise.resolve());
-const spaceRoots = () => [...spaceMeshes, sunCore, streak, dust, sat, ...(sky ? [sky.group] : [])];
+const entryRoots = () => (CINE && typeof planets.entryRoots === 'function' ? planets.entryRoots() : []); // the atmosphere's veil + sky dome, warmed in both worlds
+const spaceRoots = () => [...spaceMeshes, sunCore, streak, dust, sat, ...(sky ? [sky.group] : []), ...entryRoots()];
 // run fn with exactly one world shown, as the loop shows it in that mode. Only site.group holds lights (the two work lights),
 // so its visibility is what sets the light count in the program keys; the rest only matters for the throwaway draws.
 function inWorld(w, fn) {
@@ -1035,7 +1105,7 @@ function inWorld(w, fn) {
 function throwaway(w) {
   const touched = [];
   inWorld(w, () => {
-    for (const r of w === 'site' ? [site.group] : w === 'colony' ? [colony] : spaceRoots())
+    for (const r of w === 'site' ? [site.group] : w === 'colony' ? [colony, ...entryRoots()] : spaceRoots())
       r.traverse(o => { touched.push([o, o.visible, o.frustumCulled]); o.visible = true; o.frustumCulled = false; });
     try {
       rig(w === 'site');
@@ -1062,7 +1132,7 @@ async function precompile() {
 }
 // the colony is populated after boot (see populateColony): same warm-up for it once it exists, unless it is already on screen
 async function warmColony() {
-  let job; inWorld('colony', () => (job = compileIn(colony)));
+  let job; inWorld('colony', () => (job = Promise.all([compileIn(colony), ...entryRoots().map(compileIn)])));
   await Promise.race([job, wait(1500)]);
   if (lastMode !== 'colony') throwaway('colony');
   window.__d5.colonyPrograms = renderer.info.programs.length;
@@ -1071,7 +1141,7 @@ window.__d5.ensureColony = ensureColony; // QA hook
 
 // ---------- start: the timelapse waits for the warm-up and its first photos (800 m ortho + Earth maps), at most 2.5 s for the photos ----------
 let wake = null; // Mars mode: the warm-up waits for the track to come within AHEAD viewports
-const bootP = (MM ? new Promise(r => (wake = r)).then(() => { mmWarm = true; return precompile(); }) : precompile()).catch(e => console.warn('d5 warm-up:', e)).then(() => { booted = true; });
+const bootP = (MM ? new Promise(r => (wake = r)).then(() => { mmWarm = true; return precompile(); }) : precompile()).catch(e => console.warn('d5 warm-up:', e)).then(() => { booted = true; if (CINE) scheduleColony(); });
 const loadP = MM ? null : Promise.race([Promise.all([site.ready, planets.ready]), wait(2500)]);
 window.__d5.boot = bootP;
 if (MM) {
