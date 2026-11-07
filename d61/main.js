@@ -139,12 +139,13 @@ function init() {
     return (heroBuilding = p);
   }
   // [LOADER] behind the loader: the governor benches the hero now (perf.js, force) so its level lands before the reveal, not
-  // as a softness pop 2 s after it; then one frame at that ratio is drawn and presented. Capped at 1.5 s.
+  // as a softness pop 2 s after it; then one frame at that ratio is drawn and presented. Capped at 0.4 s.
   function heroBench() {
     const h = hero, done = () => { prog.set('frame', 1); stamp('heroBench'); };
     if (!h || heroLive || !perf?.bench) { done(); return Promise.resolve(); }
     const shown = () => new Promise(r => { let k = 0; const go = () => { if (!k) { k = 1; r(); } }; requestAnimationFrame(go); setTimeout(go, 100); });
-    return Promise.race([perf.bench('hero', () => h.renderOnce(), h.renderer.getContext(), { force: true }), new Promise(r => setTimeout(r, 1500))])
+    // capped at 400 ms: idle slots are short while the loader animates; an unfinished bench just carries on after the reveal
+    return Promise.race([perf.bench('hero', () => h.renderOnce(), h.renderer.getContext(), { force: true }), new Promise(r => setTimeout(r, 400))])
       .catch(() => {}).then(() => { if (hero === h) { h.renderOnce(); h.renderOnce(); } return shown(); }).then(done, done);
   }
   const heroReady = buildHero(false);
@@ -157,8 +158,12 @@ function init() {
     if (solWarm) return solWarm;
     const fin = () => { prog.set('sol', 1); stamp('solWarm'); };
     if (heroLive) { fin(); return (solWarm = Promise.resolve()); }
-    return (solWarm = idleP(400).then(() => Promise.race([Promise.resolve(loadSolutions()), new Promise(r => setTimeout(r, 2500))])).then(fin, fin));
+    // waits for its ready (topo fetch + parse) but never holds the reveal more than 0.5 s past the hero's real frame
+    const cap = heroReady.then(ok => new Promise(r => setTimeout(r, ok ? 500 : 2500)));
+    return (solWarm = idleP(400).then(() => Promise.race([Promise.resolve(loadSolutions()), cap])).then(fin, fin));
   }
+  // its topo data downloads from boot, alongside the hero (solutions.js fetch()es the same url: cors, same-origin credentials)
+  try { const l = document.createElement('link'); l.rel = 'preload'; l.as = 'fetch'; l.crossOrigin = 'anonymous'; l.href = new URL('../d6/assets/topo.bin', import.meta.url).href; document.head.appendChild(l); } catch (_) { /* no preload */ }
   function releaseHero() {
     if (!HERO3D || (!hero && !heroBuilding)) return;
     heroGen++; heroBuilding = null; stamp('heroRelease');
