@@ -49,7 +49,9 @@ function init() {
   // ---------- scroll lock while the loader is up ----------
   const lock = on => { document.documentElement.style.overflow = on ? 'hidden' : ''; const l = smooth(); if (l) on ? l.stop() : l.start(); };
   // modules arriving after the 6 s CSS failsafe has started (or finished) must not bring the loader back
-  const skipLoader = scrollY > 40 || !loaderEl || performance.now() > 5900 || getComputedStyle(loaderEl).visibility === 'hidden';
+  // [LOADER] NAV0: navigation start (0); a QA page written in place (real-GPU SHA tests) sets window.__tfNav0 to its own start
+  const NAV0 = +window.__tfNav0 || 0;
+  const skipLoader = scrollY > 40 || !loaderEl || performance.now() - NAV0 > 5900 || getComputedStyle(loaderEl).visibility === 'hidden';
   if (!skipLoader) lock(true);
 
   // ---------- hero: initial states, text split once fonts are in ----------
@@ -174,7 +176,7 @@ function init() {
     // [LOADER] leaves on real progress 1 (first real 3D frame presented), at least 1 s after it starts; at 6 s from navigation
     // the poster hero + copy are revealed instead and the live hero crossfades in once real (swapIn, heroSwapLate)
     const ld = runLoader({
-      THREE, el: loaderEl, reduced: RM, progress: prog, minMs: 1000, fallbackMs: 6000,
+      THREE, el: loaderEl, reduced: RM, progress: prog, minMs: 1000, fallbackMs: NAV0 + 6000,
       onExit: (tl, info) => { stamp('loaderExit'); if (info?.fallback) stamp('loaderFallback'); lock(false); heroLive = true; heroReveal(tl, RM ? 0.1 : 0.45); },
     });
     ld.gate(fontsGate); ld.gate(decodeP);
