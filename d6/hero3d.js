@@ -770,7 +770,8 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
       const tier = HIGH ? 'high' : 'low';
       let onFile;
       if (BOOT && mod.texFiles) { // progress over the first-frame files, weighted by nominal texels
-        const w = mod.texWeight || (() => 1), crit = new Map(mod.texFiles(tier, HERO_CRITICAL).map(f => [f, w(f)]));
+        if (mod.HERO_FIRST) critRoles = mod.HERO_FIRST;
+        const w = mod.texWeight || (() => 1), crit = new Map(mod.texFiles(tier, critRoles).map(f => [f, w(f)]));
         const total = [...crit.values()].reduce((a, b) => a + b, 0); let done = 0;
         bootEv({ stage: 'tex', done: 0, total });
         onFile = ({ file }) => { const k = crit.get(file); if (k === undefined) return; crit.delete(file); done += k; bootEv({ stage: 'tex', done, total }); };
@@ -780,6 +781,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
       return texApi;
     }).catch(() => null); // textures are optional: flat materials stay
   }
+  let critRoles = HERO_CRITICAL; // hero-tex's HERO_FIRST when it has one (the list the page preloads)
   const texP = BOOT ? startTextures() : null; // 6.1: fetch + decode alongside the compile (uploads stay one per frame)
 
   // ---------------------------------------------------------------- loop + api
@@ -814,7 +816,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
   const presented = () => new Promise(r => { let k = false; const go = () => { if (!k) { k = true; r(); } }; requestAnimationFrame(go); setTimeout(go, 100); });
   const real = !BOOT ? ready : ready.then(async ok => {
     if (!ok || dead) return false;
-    try { const api = await texP; if (api?.settled) await api.settled(HERO_CRITICAL); } catch (_) { /* flat materials */ }
+    try { const api = await texP; if (api?.settled) await api.settled(critRoles); } catch (_) { /* flat materials */ }
     if (dead) return false;
     applyNow(); frame(performance.now());
     await presented(); if (dead) return false;

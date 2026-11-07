@@ -48,6 +48,19 @@ export function texFiles(quality = 'high', roles = TEX_ROLES) {
   return out;
 }
 
+// the hero's first frame (ground, tracks, desk, machine, ridge): the 6.1 loader waits for these and preloads them at boot
+export const HERO_FIRST = ['dirt_ground', 'dirt_tracks', 'desk_laminate', 'excavator_paint', 'rock_ridge'];
+// <link rel=preload as=image crossorigin> for these roles' files, so the fetch runs alongside the hero's module graph; the
+// streamer's TextureLoader (<img crossOrigin=anonymous>) then picks up the preloaded responses. Returns the urls.
+export function preloadHeroTextures({ quality = 'high', roles = HERO_FIRST, base } = {}) {
+  let root = String(base || new URL('./assets/tex/', import.meta.url)); if (!root.endsWith('/')) root += '/';
+  const urls = texFiles(quality, roles).map(f => root + f);
+  if (typeof document !== 'undefined') for (const href of urls) {
+    const l = document.createElement('link'); l.rel = 'preload'; l.as = 'image'; l.crossOrigin = 'anonymous'; l.href = href; document.head.appendChild(l);
+  }
+  return urls;
+}
+
 // nominal texels of a file by its tier dir (1k 1, 512 1/4, 256 1/16): a size weight for honest progress without a manifest
 export const texWeight = file => (/^1k\//.test(file) || /\.hdr$/.test(file) ? 1 : /^256\//.test(file) ? 1 / 16 : 1 / 4);
 

@@ -112,6 +112,8 @@ function init() {
       new Promise(r => setTimeout(r, 1800)),
     ]);
     const modsIn = again ? null : watchModules(performance.now());
+    // [LOADER] the first-frame textures start downloading now, alongside the module graph (the hero picks the responses up)
+    if (!again) import('../d6/hero-tex.js').then(m => m.preloadHeroTextures?.({ quality: QUALITY, base: new URL('../d6/assets/tex/', import.meta.url).href })).catch(() => {});
     const p = Promise.all([import('../d6/hero3d.js').then(m => (modsIn?.(), m)), fontsIn]).then(([m]) => {
       if (gen !== heroGen) return false;
       stamp(again ? 'heroRebuild' : 'heroBuild');
