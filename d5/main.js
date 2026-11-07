@@ -4,7 +4,8 @@ import { createPost } from './post.js';
 import { createSky } from './sky.js';
 import { createPlanets } from './planets.js';
 import { createSite, AUSTIN, SITE_ROT } from './site.js';
-import { createHabitatAssets, createMarsEnv } from './habitat.js';
+import { createHabitatAssets, createMarsEnv, colonyLayout } from './habitat.js';
+import { createColonyLife } from './machines.js';
 const ASSETS = new URL('./assets', import.meta.url).href; // textures + star catalog live next to this file
 
 const q = (s, r = document) => r.querySelector(s), qa = (s, r = document) => [...r.querySelectorAll(s)];
@@ -304,7 +305,7 @@ const DOT = `varying vec3 vC; varying float vA; void main(){ float d=length(gl_P
   const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3)); g.setAttribute('bs', new THREE.Float32BufferAttribute(s, 2));
   colony.add(new THREE.Points(g, ptsMat(`attribute vec2 bs; uniform float g; uniform float t; uniform float night; varying vec3 vC; varying float vA; void main(){ vec4 mv=modelViewMatrix*vec4(position,1.); vC=vec3(1.,0.12,0.06); vA=step(bs.x,g)*step(0.55,fract(t*0.7+bs.y))*(0.3+0.7*night)*1.6; gl_PointSize=clamp(900./-mv.z,2.,9.); gl_Position=projectionMatrix*mv; }`, DOT)));
 }
-// rover traffic: headlights one way, tail lights the other, looping rings and avenues; scroll speeds time up
+let traffic = null; // rover traffic: headlights one way, tail lights the other, looping rings and avenues; scroll speeds time up
 {
   const N = 520, c = new Float32Array(N * 4);
   for (let i = 0; i < N; i++) { const ring = rnd() < 0.6; c.set(ring ? [0, RINGS[Math.floor(rnd() * 3)] + (rnd() < 0.5 ? -1.2 : 1.2), rnd() * 6.283, (rnd() < 0.5 ? -1 : 1) * (8 + rnd() * 8)] : [1, Math.floor(rnd() * AVE) * Math.PI / 4, rnd() * 230, (rnd() < 0.5 ? -1 : 1) * (8 + rnd() * 8)], i * 4); }
@@ -314,7 +315,7 @@ const DOT = `varying vec3 vC; varying float vA; void main(){ float d=length(gl_P
       if(car.x<0.5){ float a=car.z+T*car.w/car.y; p=vec3(cos(a)*car.y,1.,sin(a)*car.y); on=smoothstep(0.1+car.y/236.*0.55,0.16+car.y/236.*0.55,g); }
       else { float r=20.+mod(car.z+T*car.w,230.); float o=car.w>0.?1.3:-1.3; p=vec3(cos(car.y)*r-sin(car.y)*o,1.,sin(car.y)*r+cos(car.y)*o); on=smoothstep(0.12+r/250.*0.62,0.16+r/250.*0.62,g); }
       vec4 mv=modelViewMatrix*vec4(p,1.); vC=car.w>0.?vec3(1.,0.95,0.85):vec3(1.,0.18,0.1); vA=on*(0.25+0.75*night)*1.3; gl_PointSize=clamp(700./-mv.z,1.4,6.); gl_Position=projectionMatrix*mv; }`, DOT));
-  pts.frustumCulled = false; colony.add(pts);
+  pts.frustumCulled = false; colony.add(pts); traffic = pts;
 }
 
 // domes: amber lattice rises first, then the glass skins over and glows warm from inside at night
@@ -362,8 +363,11 @@ const cranes = craneLots.filter((l, i) => i % Math.max(1, Math.floor(craneLots.l
 });
 
 let rockets = null;
-const mkRockets = () => (rockets = rockMod.createRockets({ THREE, foot: rockMod.foot, colony, envMap: marsEnv, high: HIGH, sites: ROCK_SITES }));
-if (ROCK) { if (rockMod) mkRockets(); else rockP.then(() => { if (rockMod) { mkRockets(); inWorld('colony', () => compileIn(rockets.group)); } }); } // normally loaded long before the colony is built
+const mkRockets = (light = true) => (rockets = rockMod.createRockets({ THREE, foot: rockMod.foot, colony, envMap: marsEnv, high: HIGH, sites: ROCK_SITES, light })); // late load: no PointLight, so the warmed colony programs stay valid
+if (ROCK) { if (rockMod) mkRockets(); else rockP.then(() => { if (rockMod) { mkRockets(false); inWorld('colony', () => compileIn(rockets.group)); } }); } // normally loaded long before the colony is built
+// colony life (machines.js): rovers, suited figures, graded roads + lamp pools, comms masts; replaces the 1 px roads and the traffic dots
+const life = ROCK ? createColonyLife({ THREE, colony, layout: colonyLayout({ high: HIGH, rockets: ROCK }), envMap: marsEnv, high: HIGH, arrive: ARRIVE, hideLines: roads, solar: panel }) : null; window.__d5.life = life;
+if (life && traffic) traffic.visible = false;
 let lastG = -1;
 const mtx = new THREE.Matrix4(), q4 = new THREE.Quaternion(), yAx = new THREE.Vector3(0, 1, 0), v3 = new THREE.Vector3(), s3 = new THREE.Vector3(), q0 = new THREE.Quaternion();
 const skyCol = new THREE.Color(), dayH = new THREE.Color(0.78, 0.54, 0.36), duskH = new THREE.Color(0.2, 0.14, 0.13);
@@ -386,7 +390,7 @@ function buildColony(g, t) {
   const lc = (g * 5) % 1, flying = g > 0.3; let ly = 0, burn = 0;
   if (lc < 0.35) { ly = Math.pow(1 - lc / 0.35, 2) * 320; burn = 1; } else if (lc > 0.65) { ly = Math.pow((lc - 0.65) / 0.35, 2) * 360; burn = 1; }
   lander.visible = plume.visible = flying && !ROCK; // rockets: the Starships replace the toy lander
-  if (rockets) rockets.update(gR, t, night); lander.position.set(PAD.x, ly + 0.3, PAD.z);
+  if (rockets) rockets.update(gR, t, night); if (life) life.update(g, t, night, gR); lander.position.set(PAD.x, ly + 0.3, PAD.z);
   plume.position.set(PAD.x, ly - 2, PAD.z); plume.scale.setScalar(burn * (18 + Math.sin(t * 40) * 2)); plume.material.opacity = burn * (0.6 + 0.4 * (1 - Math.min(1, ly / 60)));
   cranes.forEach(c => { c.jib.rotation.y = c.ph + g * 46 + t * 0.15; });
   if (Math.abs(gR - lastG) < 1e-4) return false; lastG = gR;
@@ -423,8 +427,8 @@ function buildColony(g, t) {
 colonyAPI = { build: buildColony, cranes, get rockets() { return rockets; } };
 } // populateColony
 let colonyGen = null, colonyIdle = false;
-const ric = window.requestIdleCallback ? f => requestIdleCallback(f) : f => setTimeout(f, 120); // Safari: no rIC, space the chunks out
-const calm = dl => (Math.abs(smV) < 0.02 || (CINE && sm < CA - 0.1)) && (!dl || !dl.timeRemaining || dl.timeRemaining() > 8); // idle time left and the scroll settled
+const ric = window.requestIdleCallback ? (CINE ? f => requestIdleCallback(f, { timeout: 700 }) : f => requestIdleCallback(f)) : f => setTimeout(f, 120); // cine: never starved by a busy frame loop // Safari: no rIC, space the chunks out
+const calm = dl => (Math.abs(smV) < 0.02 || (CINE && sm < CA - 0.1)) && (!dl || !dl.timeRemaining || dl.timeRemaining() > 8 || (CINE && dl.didTimeout && sm > 0.2 && sm < CA - 0.04)); // cine: past beat 1 a chunk runs even without idle time, so the swap never builds or compiles on screen // idle time left and the scroll settled
 // one chunk of the build; after the last one, queue the colony's shader programs + shadow/upload warm-up
 function colonyStep() { if (colonyAPI) return true; colonyGen = colonyGen || populateColony(); if (colonyGen.next().done) { ric(warmColony); return true; } return false; }
 function ensureColony() { while (!colonyStep()); }   // synchronous: colony mode is about to render
@@ -435,9 +439,9 @@ const cLook = new THREE.CatmullRomCurve3([[0, 0, 0], [0, 0, 0], [-20, 8, -8], [-
 // between the parked ships and the build pad (so they never leave the frame), then the tilt up after the ship. [p, pos, look, lens]
 const C_PIV = [15, 0, -135], cAt = (R, a, h) => [C_PIV[0] + R * Math.sin(a * Math.PI / 180), h, C_PIV[2] + R * Math.cos(a * Math.PI / 180)];
 const CSH = CINE ? [
-  [CA, [1100, 2600, 2300], [-300, 0, -300], 50],    // just under the swap, in the haze
-  [0.52, [760, 1500, 1500], [0, 0, -60], 48],       // haze clearing: the crater floor and the site from altitude
-  [0.57, [480, 700, 900], [10, 0, -110], 46],       // terrain resolving, the ships' plumes below
+  [CA, [1100, 2600, 2300], [-3000, 0, -1500], 50],  // just under the swap, in the haze; heading west, ~25 deg down: rim + delta ahead
+  [0.52, [760, 1500, 1500], [-1200, 0, -800], 48],  // haze clearing: Jezero and the delta from altitude, the site low in frame
+  [0.57, [480, 700, 900], [-200, 0, -300], 46],     // terrain resolving, the ships' plumes below
   [0.62, cAt(600, 28, 260), [15, 30, -135], 42],    // settle: ships down, the city starts
   [0.72, cAt(500, 32, 190), [15, 34, -135], 40],
   [0.80, cAt(420, 24, 130), [10, 38, -130], 40],
@@ -453,8 +457,8 @@ const LIFT_G = 0.83, rockW = new THREE.Vector3(), rockL = new THREE.Vector3(), c
 // the ship's mid-body (world) at build clock g: rockets.launch.pos when rockets.js gives it, else its published climb over the pad
 function shipAt(g, out, now) {
   const r = colonyAPI && colonyAPI.rockets, L = r && r.launch;
-  if (now && L && L.pos) return out.copy(L.pos);
-  const k = Math.max(0, g - LIFT_G); return out.set(ROCK_SITES.build[0] + 900 * k * k, 28 + 42000 * k * k, ROCK_SITES.build[1]).add(COL);
+  if (L && L.pos) return out.copy(L.pos);
+  const k = Math.max(0, g - LIFT_G), y = 42000 * k * k, d = 0.00025 * y * y; return out.set(ROCK_SITES.build[0] - 0.952 * d, 26 + y, ROCK_SITES.build[1] - 0.305 * d).add(COL);
 }
 function colCam(p, outPos, outLook) {
   const q = Math.min(Math.max(p, CA), 1.12), u = cIdx(q);
@@ -874,6 +878,16 @@ function entryFrame(inCol, t, dt) {
     : 'radial-gradient(ellipse at 50% 42%, rgba(0,0,0,0) 38%, rgba(255,140,60,.55) 78%, rgba(255,200,140,.85) 100%)'; }
   css(veil, 'opacity', (v === 'h' ? haze : heat * 0.9).toFixed(3));
 }
+// cine lens: grade curves from the story clocks (post.lensFrame), then the rockets' own suggestions on top while the colony is up
+const plumeUV = [0, 0], lensArg = { entry: -1, gR: -1, plume: null };
+function lensCine(inCol) {
+  const r = inCol && colonyAPI && colonyAPI.rockets, L = r && r.launch, gR = inCol ? gOf(sm) : -1;
+  lensArg.entry = sm > E0 && sm < E1 ? (sm - E0) / (E1 - E0) : -1; lensArg.gR = gR; lensArg.plume = null;
+  if (L && L.base && gR >= 0.78) { tmp3.copy(L.base).project(cam); if (tmp3.z < 1) { plumeUV[0] = tmp3.x * 0.5 + 0.5; plumeUV[1] = tmp3.y * 0.5 + 0.5; lensArg.plume = plumeUV; } }
+  post.lensFrame(lensArg);
+  const fx = L && L.fx, P = post.fx;
+  if (fx && P) { if (fx.flash > P.flash) P.flash = fx.flash; if (fx.heat > P.heat) P.heat = fx.heat; if (fx.bloom > P.bloom) P.bloom = fx.bloom; }
+}
 // lit look: a key light fixed in camera space (front, left, a little high), so whatever the path does the disc reads full and lit
 // from the upper left. Mars turns slowly with scroll, Valles Marineris across the face on the hold. A halo card behind the
 // planet adds the soft glow off the lit limb; the atmosphere shell keeps its own scattered rim.
@@ -1053,6 +1067,7 @@ renderer.setAnimationLoop(() => {
   const deep = inSite || mode === 'globe';
   postArg.dt = dt; postArg.t = t; postArg.focus = fd; postArg.aperture = (deep ? 0.0004 : inCol ? 0.006 : fd < 12 ? 0.02 : 0.003) / fd;
   postArg.maxblur = !HIGH ? 0 : deep ? 0.0008 : inCol ? 0.0042 : fd < 12 ? 0.005 : 0.0018; postArg.ca = 0.012 + hIn * 0.06;
+  if (CINE && post.cine) lensCine(inCol);
   post.update(postArg); // post skips the DOF pass itself when its blur would be sub-pixel (the deep site/globe focus usually is)
 
   // overlays
