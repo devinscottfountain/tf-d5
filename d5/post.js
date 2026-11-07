@@ -1,6 +1,8 @@
 // TerraFirma D5 post stack.
 // Chain: ScenePass(+depth) -> HDR FX [contact AO -> long-exposure trails -> camera motion blur] -> Bokeh DOF -> Bloom -> AutoExposure+ToneMap -> SMAA -> Lens (CA, vignette, grain, barrel)
 // All look parameters (bloom, bokeh, lens) match d5.current.js.
+// cine (D6.1, opt-in per call: createPost({..., cine: true})): a separate film chain, see CINE below. Without it every pass,
+// program and pixel is the D5/D6 stack, unchanged.
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { BokehPass } from 'three/addons/postprocessing/BokehPass.js';
@@ -10,7 +12,7 @@ import { Pass, FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 
 const FS_VERT = `varying vec2 vUv; void main(){ vUv=uv; gl_Position=vec4(position.xy,0.,1.); }`;
 
-export function createPost({ THREE, renderer, scene, cam }) {
+export function createPost({ THREE, renderer, scene, cam, cine = false }) {
   const pr = renderer.getPixelRatio(), size = renderer.getSize(new THREE.Vector2());
   const W = Math.max(1, Math.floor(size.x * pr)), H = Math.max(1, Math.floor(size.y * pr));
 
@@ -60,14 +62,18 @@ export function createPost({ THREE, renderer, scene, cam }) {
   //    otherwise straight into the composer buffer (no extra copy, no extra memory traffic).
   class ScenePass extends Pass {
     constructor() {
-      super(); this.needsSwap = false; this.useRT = false;
+      super(); this.needsSwap = false; this.useRT = false; this.jx = 0; this.jy = 0; // jx/jy: TAA sub-pixel jitter (cine only), px
       this.rt = new THREE.WebGLRenderTarget(W, H, { type: THREE.HalfFloatType, depthTexture: new THREE.DepthTexture(W, H) });
     }
     render(r, write, read) {
       const old = r.autoClear; r.autoClear = false;
       r.setRenderTarget(this.useRT ? this.rt : read);
       r.clear(true, true, true);
-      r.render(scene, cam);
+      if (this.jx || this.jy) { // offset the projection for this draw only (unjittered matrices everywhere else)
+        const e = cam.projectionMatrix.elements, x = e[8], y = e[9], t = this.rt;
+        e[8] += 2 * this.jx / t.width; e[9] += 2 * this.jy / t.height;
+        try { r.render(scene, cam); } finally { e[8] = x; e[9] = y; }
+      } else r.render(scene, cam);
       r.autoClear = old;
     }
     setSize(w, h) { this.rt.setSize(w, h); this.rt.depthTexture.image.width = w; this.rt.depthTexture.image.height = h; }
@@ -200,19 +206,23 @@ export function createPost({ THREE, renderer, scene, cam }) {
             float wt=(x==0?1.-f.x:f.x)*(y==0?1.-f.y:f.y)*max(1e-3,1.-abs(t.y-z)*k); s+=t.x*wt; ws+=wt; }
           gl_FragColor=vec4(dbg>.5 ? vec3(.6*s/ws) : c.rgb*(s/ws),1.); }`);
       this.fsQuad = new FullScreenQuad(this.mCopy);
+      // cine only: TAA (jittered scene + reprojected HDR history). Shares the trails' history targets and matrices; the two
+      // never run together. direct: leave the result in its own target (outTex) instead of copying it to the composer buffer.
+      this.taa = false; this.direct = false; this.outTex = null; this.mTaa = null;
     }
     draw(r, m, target) { this.fsQuad.material = m; r.setRenderTarget(target); this.fsQuad.render(r); }
     alloc() {
       const mk = (w, h, filt) => new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, depthBuffer: false, minFilter: filt, magFilter: filt });
       const hw = Math.max(1, this.w >> 1), hh = Math.max(1, this.h >> 1);
-      if (trails.enabled && !this.hist) { this.hist = [mk(this.w, this.h, THREE.LinearFilter), mk(this.w, this.h, THREE.LinearFilter)]; this.histOk = false; }
+      if ((trails.enabled || this.taa) && !this.hist) { this.hist = [mk(this.w, this.h, THREE.LinearFilter), mk(this.w, this.h, THREE.LinearFilter)]; this.histOk = false; }
       if (ao.enabled && !this.aoA) { this.aoA = mk(hw, hh, THREE.NearestFilter); this.aoB = mk(hw, hh, THREE.NearestFilter); }
-      if (ao.enabled && (trails.enabled || this.blur) && !this.tmp) this.tmp = mk(this.w, this.h, THREE.LinearFilter);
+      if (ao.enabled && (trails.enabled || this.taa || this.blur) && !this.tmp) this.tmp = mk(this.w, this.h, THREE.LinearFilter);
     }
     render(r, write) {
       this.alloc();
       const depth = scenePass.rt.depthTexture; let src = scenePass.rt.texture, done = false;
-      const near = cam.near, far = cam.far, last = !trails.enabled && !this.blur;
+      const near = cam.near, far = cam.far, last = !trails.enabled && !this.taa && !this.blur;
+      this.outTex = write ? write.texture : null;
       if (ao.enabled) {
         const P = cam.projectionMatrix.elements;
         this.uAO.tDepth.value = depth; this.uAO.near.value = near; this.uAO.far.value = far;
@@ -234,8 +244,16 @@ export function createPost({ THREE, renderer, scene, cam }) {
         this.draw(r, this.mTrail, h1);
         this.hist[0] = h1; this.hist[1] = h0; this.histVP.copy(curVP); this.histOk = true;
         src = h1.texture;
+      } else if (this.taa) {
+        const u = this.mTaa.uniforms, h0 = this.hist[0], h1 = this.hist[1];
+        u.tColor.value = src; u.tDepth.value = depth; u.tHist.value = h0.texture; u.invVP.value = this.invVP; u.histVP.value = this.histRel;
+        u.valid.value = this.histOk ? 1 : 0;
+        this.draw(r, this.mTaa, h1);
+        this.hist[0] = h1; this.hist[1] = h0; this.histVP.copy(curVP); this.histOk = true;
+        src = h1.texture;
       }
       if (this.blur) { this.u.tColor.value = src; this.u.tDepth.value = depth; this.draw(r, this.mBlur, write); }
+      else if (!done && this.direct) this.outTex = src;
       else if (!done) { this.mCopy.uniforms.tColor.value = src; this.draw(r, this.mCopy, write); }
     }
     setSize(w, h) {
@@ -243,6 +261,7 @@ export function createPost({ THREE, renderer, scene, cam }) {
       const hw = Math.max(1, w >> 1), hh = Math.max(1, h >> 1); this.uAOB.hres.value.set(hw, hh); this.uAOC.hres.value.set(hw, hh);
       for (const t of [this.tmp, ...(this.hist || [])]) t && t.setSize(w, h);
       for (const t of [this.aoA, this.aoB]) t && t.setSize(hw, hh);
+      if (this.mTaa) this.mTaa.uniforms.res.value.set(w, h);
       this.histOk = false;
     }
     dispose() { for (const t of [this.tmp, this.aoA, this.aoB, ...(this.hist || [])]) t && t.dispose(); this.hist = this.tmp = this.aoA = this.aoB = null; }
@@ -265,8 +284,9 @@ export function createPost({ THREE, renderer, scene, cam }) {
   dof.setSize = function (w, h) { this.uniforms.aspect.value = w / h; };
   composer.addPass(dof);
   // composer.addPass/setSize hand every pass drawing-buffer pixels, so bloom has always run at device size; keep that look
-  const bloom = new UnrealBloomPass(new THREE.Vector2(W, H), 0.8, 0.5, 0.72);
-  composer.addPass(bloom);
+  // cine: its own half-res Gaussian bloom (below); main.js keeps writing bloom.strength, so a stand-in object takes it
+  const bloom = cine ? { strength: 0.6, radius: 0.5, threshold: 0.72, separableBlurMaterials: [] } : new UnrealBloomPass(new THREE.Vector2(W, H), 0.8, 0.5, 0.72);
+  if (!cine) composer.addPass(bloom);
 
   // 4. auto exposure + tone map, entirely on the GPU (no readback, no stall).
   //    HDR frame -> 64x64 weighted log-luminance -> 8x8 -> 1x1 mean -> adapt (ping-pong 1x1 float state) -> tone map reads the state texture.
@@ -372,7 +392,8 @@ export function createPost({ THREE, renderer, scene, cam }) {
       col+=(n-.5)*grain*(1.-dot(col,vec3(.33))*0.6); // grain sits mostly in the shadows, like film
       gl_FragColor=vec4(col,1.); }`
   });
-  composer.addPass(lens);
+  if (!cine) composer.addPass(lens);
+  const C = cine ? createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, tonePass, smaa, bloom, FS_VERT }) : null;
 
   // ---------------------------------------------------------------- per-frame state (no allocations)
   const curVP = new THREE.Matrix4(), prevVP = new THREE.Matrix4(), invRel = new THREE.Matrix4(), toCam = new THREE.Matrix4(), _t = new THREE.Matrix4(), _o = new THREE.Vector3(), lastPos = new THREE.Vector3(), lastQuat = new THREE.Quaternion();
@@ -382,6 +403,7 @@ export function createPost({ THREE, renderer, scene, cam }) {
     renderer.setSize(w, h); cam.aspect = w / h; cam.updateProjectionMatrix();
     const p = renderer.getPixelRatio(); bufW = Math.max(1, Math.floor(w * p));
     composer.setSize(w, h); lens.uniforms.res.value.set(w, h); resetNext = true;
+    if (C) C.setSize();
   }
 
   function update({ dt = 1 / 60, t = 0, ca, focus, aperture, maxblur } = {}) {
@@ -391,6 +413,8 @@ export function createPost({ THREE, renderer, scene, cam }) {
     if (maxblur !== undefined) dof.uniforms.maxblur.value = maxblur;
     if (ca !== undefined) lens.uniforms.ca.value = ca;
     lens.uniforms.time.value = t;
+    if (C) C.time = t;
+    const taaOn = !!C && C.taaOn() && !trails.enabled;
 
     // camera motion estimate -> decide whether blur runs this frame
     cam.updateMatrixWorld(); curVP.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
@@ -409,26 +433,41 @@ export function createPost({ THREE, renderer, scene, cam }) {
       }
     }
     // trails: history is invalid after a reset, a detected cut, a resize, or while the feature is off
-    if (!trails.enabled || !have || resetNext || dp >= motion.cutDist || ang >= Math.min(motion.cutAngle, trails.cutAngle)) mbPass.histOk = false;
-    if (trails.enabled) { mbPass.invVP.copy(invRel); mbPass.histRel.multiplyMatrices(mbPass.histVP, toCam); }
+    // (cine TAA shares the history: same rules)
+    const hist = trails.enabled || taaOn;
+    if (!hist || !have || resetNext || dp >= motion.cutDist || ang >= Math.min(motion.cutAngle, trails.cutAngle)) mbPass.histOk = false;
+    if (hist) { mbPass.invVP.copy(invRel); mbPass.histRel.multiplyMatrices(mbPass.histVP, toCam); }
     else if (mbPass.hist) { mbPass.hist.forEach(t => t.dispose()); mbPass.hist = null; } // free ~2 full-res HDR buffers while off
     if (!ao.enabled && mbPass.aoA) { mbPass.aoA.dispose(); mbPass.aoB.dispose(); mbPass.aoA = mbPass.aoB = null; }
     if (!ao.enabled && mbPass.tmp) { mbPass.tmp.dispose(); mbPass.tmp = null; }
-    mbPass.blur = on;
-    const fx = on || trails.enabled || ao.enabled;   // depth target + FX pass only when something needs them
+    mbPass.blur = on; mbPass.taa = taaOn;
+    const fx = on || trails.enabled || ao.enabled || taaOn;   // depth target + FX pass only when something needs them
     motion.active = on; trails.active = trails.enabled; ao.active = ao.enabled;
     // DOF taps reach 0.4 * maxblur of the width; under half a pixel the pass is invisible, so skip it
     const dofOn = 0.4 * dof.uniforms.maxblur.value * bufW >= 0.5;
-    mbPass.enabled = fx; dof.enabled = dofOn; scenePass.useRT = fx || dofOn;
+    mbPass.enabled = fx; dof.enabled = dofOn; scenePass.useRT = fx || dofOn || !!C;
+    if (C) C.jitter(taaOn);
     prevVP.copy(curVP); lastPos.copy(cam.position); lastQuat.copy(cam.quaternion); have = true; resetNext = false;
   }
 
-  function render() { composer.render(lastDt); }
+  function render() { if (C) C.render(); else composer.render(lastDt); }
 
   // boot hook: run the whole chain twice with every stage forced on (blur + optional AO/trails, then the plain copy path)
   // so all pass programs compile now instead of on the frame that first needs them. The scene pass is skipped (the
   // output is garbage; call it while the canvas is hidden). History and exposure restart clean afterwards.
   function warm({ fx = true } = {}) {
+    if (C) { // cine: every stage and every quality level's programs, one forced pass each
+      const keep = [scenePass.enabled, mbPass.enabled, mbPass.blur, mbPass.taa, dof.enabled, trails.enabled, ao.enabled];
+      try {
+        scenePass.enabled = false; mbPass.enabled = true; dof.enabled = true; trails.enabled = false; ao.enabled = fx;
+        mbPass.blur = true; mbPass.taa = true; C.render(true, 0);
+        mbPass.blur = false; mbPass.taa = false; ao.enabled = false; C.render(true, 1);
+      } finally {
+        [scenePass.enabled, mbPass.enabled, mbPass.blur, mbPass.taa, dof.enabled, trails.enabled, ao.enabled] = keep;
+        mbPass.histOk = false; tonePass.snap = true; resetNext = true;
+      }
+      return;
+    }
     const keep = [scenePass.enabled, scenePass.useRT, mbPass.enabled, mbPass.blur, dof.enabled, trails.enabled, ao.enabled];
     try {
       scenePass.enabled = false; scenePass.useRT = true; mbPass.enabled = true; dof.enabled = true;
@@ -449,6 +488,352 @@ export function createPost({ THREE, renderer, scene, cam }) {
     motion, auto, trails, ao,
     resetMotion() { resetNext = true; },          // call on hard cuts if you know about them (big jumps are also auto-detected)
     snapExposure() { tonePass.snap = true; },     // jump exposure to target next frame (no adaptation)
-    getExposure
+    getExposure,
+    // cine only (D6.1): live lens knobs, look tunables, quality ladder 0..3 (see createCine)
+    cine: !!C, fx: C ? C.fx : null, look: C ? C.look : null, lensFrame: C ? o => C.lensFrame(o) : () => {},
+    setQuality: C ? l => C.setQuality(l) : () => {}, setPostQuality: C ? l => C.setQuality(l) : () => {}, getQuality: () => (C ? C.level : -1),
+    gpuTimes: C ? () => C.gpuTimes() : () => null
   };
+}
+
+// ================================================================ CINE (D6.1 film chain, opt-in)
+// One look for the Mars run and the footer: ACES (Hill fit) + a warm grade, half-res Gaussian bloom, anamorphic streaks
+// on the hottest lights only, mild vignette, light temporal grain, no chromatic aberration. The grade GLSL is shared
+// verbatim with d61/foot-glsl.js (CINE_GLSL there): change both or neither.
+// Chain: scene (jittered at q3) -> [AO, TAA | trails, motion blur] -> DOF -> bloom + streak (half / quarter res)
+//        -> exposure + bloom/streak/dirt/flash composite + tone + grade (one pass) -> SMAA (q2) -> lens: heat shimmer,
+//        FXAA (q1), vignette, grain, dither (one pass) -> canvas.
+// Quality ladder (setQuality / setPostQuality): 3 TAA, bloom from half res, 5 mips, streak | 2 SMAA, same bloom |
+//        1 FXAA, bloom from quarter res, 4 mips, streak | 0 no AA, quarter res, 3 mips, no streak. Level changes only
+//        resize or skip passes: every program is compiled by warm().
+export const CINE_GLSL = /* glsl */ `
+const mat3 cACI=mat3(.59719,.07600,.02840, .35458,.90834,.13383, .04823,.01566,.83777);
+const mat3 cACO=mat3(1.60475,-.10208,-.00327, -.53108,1.10813,-.07276, -.07367,-.00605,1.07602);
+vec3 cRRT(vec3 v){ vec3 a=v*(v+.0245786)-.000090537, b=v*(.983729*v+.4329510)+.238081; return a/b; }
+// exposed scene-linear -> display-linear: a hair warm white balance, then ACES (Hill fit; three's ACESFilmic is this after its /0.6)
+vec3 cineTone(vec3 c){ return clamp(cACO*cRRT(cACI*(c*vec3(1.025,1.,.96))),0.,1.); }
+vec3 cineOETF(vec3 c){ c=max(c,0.); return mix(c*12.92, 1.055*pow(c,vec3(1./2.4))-.055, step(.0031308,c)); }
+// display-encoded grade. Vibrance (rust ground and teal sky a touch richer, already-saturated plumes left alone),
+// shadow toe lift (rich, not crushed; true black stays black), teal-leaning shadows, warm lifted highlights.
+vec3 cineGrade(vec3 o){
+  float l=dot(o,vec3(.2126,.7152,.0722));
+  float mx=max(o.r,max(o.g,o.b)), mn=min(o.r,min(o.g,o.b)), s=(mx-mn)/max(mx,1e-4);
+  o=max(mix(vec3(l),o,1.05+.14*(1.-s)),0.);
+  vec3 u=1.-clamp(o,0.,1.); o+=.16*o*u*u*u*u;
+  float sh=6.*l*(1.-l)*(1.-l)*(1.-l);
+  o+=sh*vec3(-.010,.003,.012);
+  o+=smoothstep(.5,1.,l)*vec3(.022,.008,-.014);
+  return clamp(o,0.,1.);
+}
+float cH12(vec2 p){ vec3 p3=fract(vec3(p.xyx)*.1031); p3+=dot(p3,p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
+// light temporal grain on display values (strongest in the mids, like film) + a 1/255 dither so dark gradients never band
+vec3 cineGrain(vec3 o, vec2 fc, float t, float amt){
+  float g=cH12(fc+fract(t*7.31)*vec2(97.,57.))-.5, l=dot(o,vec3(.299,.587,.114));
+  return o+g*amt*(.35+2.4*l*(1.-l))+(cH12(fc*1.37+13.)-.5)/255.;
+}
+`;
+
+const CINE_LIVE = new Set();
+// governor hook: applies to every live cine post (0 = cheapest .. 3 = best)
+export function setPostQuality(level) { for (const c of CINE_LIVE) c.setQuality(level); }
+
+function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, tonePass, smaa, bloom, FS_VERT }) {
+  const HF = THREE.HalfFloatType, LIN = THREE.LinearFilter;
+  const mk = () => new THREE.WebGLRenderTarget(1, 1, { type: HF, depthBuffer: false, minFilter: LIN, magFilter: LIN, generateMipmaps: false });
+  const fsq = new FullScreenQuad(null);
+  const mat = (frag, uniforms) => new THREE.ShaderMaterial({ uniforms, vertexShader: FS_VERT, fragmentShader: frag, depthTest: false, depthWrite: false });
+  const draw = (m, target) => { fsq.material = m; renderer.setRenderTarget(target); fsq.render(renderer); };
+
+  // live knobs (per frame, from main.js) and look tunables
+  const fx = { flash: 0, heat: 0, heatAt: null, dirt: 0, streak: 1, bloom: 0 };
+  const look = {
+    bloom: 0.5,        // x bloom.strength (main.js writes 0.6 .. 0.9)
+    threshold: 1.0, knee: 0.6,   // bloom soft knee on scene-linear HDR (pre exposure)
+    streakThr: 6,      // streaks only above this (see CINEMA-NOTES: hero lights >= 10, everything else <= 3)
+    streak: 0.2, streakTint: new THREE.Color(0.86, 0.92, 1.0),
+    vignette: 0.3, grain: 0.04,
+    taaStill: 0.9, taaMove: 0.7   // history weight, camera still / moving fast
+  };
+  const QL = [
+    { aa: 0, div: 2, lv: 3, streak: false },
+    { aa: 1, div: 2, lv: 4, streak: true },
+    { aa: 2, div: 1, lv: 5, streak: true },
+    { aa: 3, div: 1, lv: 5, streak: true }
+  ];
+  const BW = [0.46, 0.3, 0.15, 0.06, 0.03];
+  let level = -1, Q = QL[3], explicit = false, frame = 0;
+
+  // ---------------------------------------------------------------- bloom + streak (half / quarter res)
+  const rtPre = mk(), rtT = [], rtL = [], rtS = [mk(), mk()];
+  for (let i = 0; i < 5; i++) { rtT.push(mk()); rtL.push(mk()); }
+  const mPre = mat(`
+    uniform sampler2D tSrc; uniform vec2 uTexel; uniform float uThr, uKnee; varying vec2 vUv;
+    vec3 tap(vec2 o){ vec3 c=texture2D(tSrc,vUv+o*uTexel).rgb; return any(isnan(c)) ? vec3(0.) : min(c,vec3(6e4)); }
+    float lum(vec3 c){ return dot(c,vec3(.2126,.7152,.0722)); }
+    void main(){
+      vec3 a=tap(vec2(-1,-1)), b=tap(vec2(1,-1)), c=tap(vec2(-1,1)), e=tap(vec2(1,1));
+      float wa=1./(1.+lum(a)), wb=1./(1.+lum(b)), wc=1./(1.+lum(c)), we=1./(1.+lum(e));   // Karis average: no fireflies
+      vec3 m=(a*wa+b*wb+c*wc+e*we)/(wa+wb+wc+we);
+      float l=lum(m), s=clamp(l-uThr+uKnee,0.,2.*uKnee); s=s*s/(4.*uKnee+1e-5);
+      gl_FragColor=vec4(m*max(s,l-uThr)/max(l,1e-4),1.); }`,
+    { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() }, uThr: { value: 1 }, uKnee: { value: 0.6 } });
+  const mBlur = mat(`
+    uniform sampler2D tSrc; uniform vec2 uDir; varying vec2 vUv;
+    void main(){
+      vec3 c=texture2D(tSrc,vUv).rgb*.227027;
+      c+=(texture2D(tSrc,vUv+uDir*1.3846154).rgb+texture2D(tSrc,vUv-uDir*1.3846154).rgb)*.3162162;
+      c+=(texture2D(tSrc,vUv+uDir*3.2307692).rgb+texture2D(tSrc,vUv-uDir*3.2307692).rgb)*.0702703;
+      gl_FragColor=vec4(c,1.); }`, { tSrc: { value: null }, uDir: { value: new THREE.Vector2() } });
+  // streak: 2x4 pre-texel box of the bloom prefilter, a second, much higher threshold, then 3 long horizontal passes
+  const mSDown = mat(`
+    uniform sampler2D tSrc; uniform vec2 uTexel; uniform float uThr; varying vec2 vUv;
+    void main(){
+      vec3 c=(texture2D(tSrc,vUv+vec2(-.5,-1.)*uTexel).rgb+texture2D(tSrc,vUv+vec2(.5,-1.)*uTexel).rgb
+             +texture2D(tSrc,vUv+vec2(-.5,1.)*uTexel).rgb+texture2D(tSrc,vUv+vec2(.5,1.)*uTexel).rgb)*.25;
+      float l=dot(c,vec3(.2126,.7152,.0722));
+      gl_FragColor=vec4(c*max(l-uThr,0.)/max(l,1e-4),1.); }`, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() }, uThr: { value: 6 } });
+  const mSBlur = mat(`
+    uniform sampler2D tSrc; uniform float uStep; uniform float uTx; varying vec2 vUv;
+    void main(){ vec3 c=texture2D(tSrc,vUv).rgb; float ws=1.;
+      for(int i=1;i<=6;i++){ float w=exp(-float(i)*.42); vec2 o=vec2(float(i)*uStep*uTx,0.);
+        c+=(texture2D(tSrc,vUv+o).rgb+texture2D(tSrc,vUv-o).rgb)*w; ws+=2.*w; }
+      gl_FragColor=vec4(c/ws,1.); }`, { tSrc: { value: null }, uStep: { value: 1 }, uTx: { value: 1 } });
+
+  // ---------------------------------------------------------------- TAA resolve (HDR, before DOF / bloom)
+  mbPass.mTaa = mat(`
+    uniform sampler2D tColor; uniform sampler2D tDepth; uniform sampler2D tHist; uniform mat4 invVP; uniform mat4 histVP; uniform vec2 res;
+    uniform float valid, wStill, wMove; varying vec2 vUv;
+    vec3 yc(vec3 c){ return vec3(dot(c,vec3(.25,.5,.25)), dot(c,vec3(.5,0.,-.5)), dot(c,vec3(-.25,.5,-.25))); }
+    vec3 rgb(vec3 y){ return vec3(y.x+y.y-y.z, y.x+y.z, y.x-y.y-y.z); }
+    vec3 san(vec3 c){ return any(isnan(c)) ? vec3(0.) : min(c,vec3(6e4)); }
+    vec3 histCR(vec2 uv){ // 5-tap Catmull-Rom: keeps static detail sharp under constant resampling
+      vec2 sp=uv*res, tp=floor(sp-.5)+.5, f=sp-tp;
+      vec2 w0=f*(-.5+f*(1.-.5*f)), w1=1.+f*f*(-2.5+1.5*f), w2=f*(.5+f*(2.-1.5*f)), w3=f*f*(-.5+.5*f);
+      vec2 w12=w1+w2, t12=(tp+w2/w12)/res, t0=(tp-1.)/res, t3=(tp+2.)/res;
+      vec3 s=texture2D(tHist,vec2(t12.x,t0.y)).rgb*(w12.x*w0.y)+texture2D(tHist,vec2(t0.x,t12.y)).rgb*(w0.x*w12.y)+texture2D(tHist,t12).rgb*(w12.x*w12.y)
+            +texture2D(tHist,vec2(t3.x,t12.y)).rgb*(w3.x*w12.y)+texture2D(tHist,vec2(t12.x,t3.y)).rgb*(w12.x*w3.y);
+      return max(s/(w12.x*w0.y+w0.x*w12.y+w12.x*w12.y+w3.x*w12.y+w12.x*w3.y),vec3(0.)); }
+    void main(){
+      vec2 t=1./res; vec3 c=san(texture2D(tColor,vUv).rgb);
+      if(valid<.5){ gl_FragColor=vec4(c,1.); return; }
+      // 3x3 neighbourhood stats in YCoCg (tone-compressed so a hot plume pixel cannot widen the box) + nearest depth of the cross
+      vec3 m1=vec3(0.), m2=vec3(0.); float d=1.;
+      for(int y=-1;y<=1;y++) for(int x=-1;x<=1;x++){
+        vec2 o=vec2(float(x),float(y))*t; vec3 s=san(texture2D(tColor,vUv+o).rgb); s=yc(s/(1.+dot(s,vec3(.2126,.7152,.0722))));
+        m1+=s; m2+=s*s; if(x==0||y==0) d=min(d,texture2D(tDepth,vUv+o).x); }
+      vec4 wp=invVP*vec4(vUv*2.-1.,d*2.-1.,1.); wp/=wp.w; vec4 pc=histVP*wp;
+      vec2 puv=pc.xy/max(pc.w,1e-6)*.5+.5;
+      if(pc.w<=1e-4 || any(lessThan(puv,vec2(0.))) || any(greaterThan(puv,vec2(1.)))){ gl_FragColor=vec4(c,1.); return; }
+      vec3 h=histCR(puv); float hl=dot(h,vec3(.2126,.7152,.0722)); vec3 hy=yc(h/(1.+hl));
+      vec3 mu=m1/9., sg=sqrt(max(m2/9.-mu*mu,0.));
+      vec3 lo=mu-sg*1.1, hi=mu+sg*1.1;
+      // clip toward the mean (variance clipping): stale history from moving objects / disocclusions is pulled in, not kept
+      vec3 dv=hy-mu, ex=max(abs(dv)/max(hi-mu,vec3(1e-5)),vec3(1.)); hy=mu+dv/max(ex.x,max(ex.y,ex.z));
+      h=rgb(hy); h=h/max(1.-dot(h,vec3(.2126,.7152,.0722)),1e-3);   // back to HDR (inverse of the compression)
+      float mpx=length((vUv-puv)*res), w=mix(wStill,wMove,smoothstep(.5,6.,mpx));
+      float wc=(1.-w)/(1.+dot(c,vec3(.2126,.7152,.0722))), wh=w/(1.+dot(h,vec3(.2126,.7152,.0722)));
+      gl_FragColor=vec4(max((c*wc+h*wh)/(wc+wh),vec3(0.)),1.); }`,
+    { tColor: { value: null }, tDepth: { value: null }, tHist: { value: null }, invVP: { value: null }, histVP: { value: null },
+      res: { value: new THREE.Vector2(1, 1) }, valid: { value: 0 }, wStill: { value: 0.9 }, wMove: { value: 0.7 } });
+  mbPass.direct = true;
+
+  // ---------------------------------------------------------------- tone: exposure state + bloom/streak/dirt/flash + ACES + grade
+  const dirt = dirtTexture(THREE);
+  const toneU = { tDiffuse: { value: null }, tExp: { value: null }, tB0: { value: rtL[0].texture }, tB1: { value: rtL[1].texture }, tB2: { value: rtL[2].texture },
+    tB3: { value: rtL[3].texture }, tB4: { value: rtL[4].texture }, tS: { value: rtS[1].texture }, tDirt: { value: dirt },
+    uBw: { value: new THREE.Vector4() }, uBw4: { value: 0 }, uBloom: { value: 0.3 }, uStreak: { value: 0 }, uSTint: { value: look.streakTint },
+    uFlash: { value: 0 }, uDirt: { value: 0 } };
+  tonePass.mTone = mat(`
+    uniform sampler2D tDiffuse, tExp, tB0, tB1, tB2, tB3, tB4, tS, tDirt; uniform vec4 uBw; uniform float uBw4, uBloom, uStreak, uFlash, uDirt; uniform vec3 uSTint;
+    varying vec2 vUv;
+    ${CINE_GLSL}
+    void main(){
+      vec3 c=texture2D(tDiffuse,vUv).rgb; c=any(isnan(c)) ? vec3(0.) : min(c,vec3(6e4));
+      vec3 b=texture2D(tB0,vUv).rgb*uBw.x+texture2D(tB1,vUv).rgb*uBw.y+texture2D(tB2,vUv).rgb*uBw.z+texture2D(tB3,vUv).rgb*uBw.w+texture2D(tB4,vUv).rgb*uBw4;
+      float f2=uFlash*uFlash;
+      c+=b*(uBloom+2.5*uFlash);                                       // the flash is the lens flooding: bloom swells first
+      c+=texture2D(tS,vUv).rgb*uSTint*uStreak;
+      if(uDirt>0.) c+=texture2D(tDirt,vUv).rgb*(texture2D(tB2,vUv).rgb*.3+texture2D(tB3,vUv).rgb+texture2D(tB4,vUv).rgb)*uDirt*1.6;
+      c+=f2*vec3(1.,.72,.5)*.9;                                       // warm wash in HDR: the tone curve rolls it to cream, never flat orange
+      float e=texture2D(tExp,vec2(.5)).r*(1.+1.6*f2);
+      vec3 o=cineGrade(cineOETF(cineTone(c*e/.6)));
+      gl_FragColor=vec4(o,1.); }`, toneU);
+
+  // ---------------------------------------------------------------- lens: heat shimmer, FXAA, vignette, grain, dither
+  const lensU = { tDiffuse: { value: null }, res: { value: new THREE.Vector2(1, 1) }, time: { value: 0 }, grain: { value: look.grain }, vig: { value: look.vignette },
+    heat: { value: 0 }, heatAt: { value: new THREE.Vector2(0.5, 0.5) }, heatLocal: { value: 0 }, fxaa: { value: 0 } };
+  const mLens = mat(`
+    uniform sampler2D tDiffuse; uniform vec2 res, heatAt; uniform float time, grain, vig, heat, heatLocal, fxaa; varying vec2 vUv;
+    ${CINE_GLSL}
+    float vh(vec2 p){ return cH12(p*1.17+.31); }
+    float vn(vec2 x){ vec2 i=floor(x),f=fract(x); f=f*f*(3.-2.*f); return mix(mix(vh(i),vh(i+vec2(1,0)),f.x),mix(vh(i+vec2(0,1)),vh(i+vec2(1,1)),f.x),f.y); }
+    float lu(vec3 c){ return dot(c,vec3(.299,.587,.114)); }
+    vec3 fx3(vec2 uv){ // FXAA (console variant): 5 taps, edge-directed blur, rejects when it leaves the local range
+      vec2 px=1./res; vec3 nw=texture2D(tDiffuse,uv+vec2(-.5,-.5)*px).rgb, ne=texture2D(tDiffuse,uv+vec2(.5,-.5)*px).rgb,
+        sw=texture2D(tDiffuse,uv+vec2(-.5,.5)*px).rgb, se=texture2D(tDiffuse,uv+vec2(.5,.5)*px).rgb, m=texture2D(tDiffuse,uv).rgb;
+      float a=lu(nw), b=lu(ne), c=lu(sw), d=lu(se), l=lu(m), lmin=min(l,min(min(a,b),min(c,d))), lmax=max(l,max(max(a,b),max(c,d)));
+      if(lmax-lmin<max(.0312,lmax*.125)) return m;
+      vec2 dir=vec2(-((a+b)-(c+d)),(a+c)-(b+d));
+      float rd=max((a+b+c+d)*.03125,1./128.); dir=clamp(dir/(min(abs(dir.x),abs(dir.y))+rd),-8.,8.)*px;
+      vec3 A=.5*(texture2D(tDiffuse,uv-dir*.1667).rgb+texture2D(tDiffuse,uv+dir*.1667).rgb);
+      vec3 B=A*.5+.25*(texture2D(tDiffuse,uv-dir*.5).rgb+texture2D(tDiffuse,uv+dir*.5).rgb);
+      float lb=lu(B); return (lb<lmin||lb>lmax) ? A : B; }
+    void main(){
+      vec2 uv=vUv;
+      if(heat>0.){ // refraction through hot air: two octaves of drifting noise, rising; entry = edge weighted, local = around heatAt
+        float asp=res.x/res.y; vec2 q=vec2(uv.x*asp,uv.y);
+        vec2 n=vec2(vn(q*6.+vec2(0.,-time*1.6)),vn(q*6.+vec2(5.2,3.-time*1.3)))-.5;
+        n+=.5*(vec2(vn(q*15.+vec2(1.,-time*3.1)),vn(q*15.+vec2(9.,-time*2.7)))-.5);
+        vec2 dq=(uv-heatAt)*vec2(asp,1.);
+        float w=heatLocal>.5 ? exp(-dot(dq,dq)*30.)*smoothstep(-.06,.06,uv.y-heatAt.y) : .3+.7*smoothstep(.15,.75,length((uv-.5)*vec2(asp,1.)));
+        uv+=n*heat*w*vec2(.0035,.006); }
+      vec3 col=fxaa>.5 ? fx3(uv) : texture2D(tDiffuse,uv).rgb;
+      vec2 c=vUv-.5; float r2=dot(c,c);
+      col*=mix(1.,smoothstep(.75,.12,r2*1.6),vig);
+      gl_FragColor=vec4(clamp(cineGrain(col,gl_FragCoord.xy,time,grain),0.,1.),1.); }`, lensU);
+
+  // ---------------------------------------------------------------- sizing + quality
+  let w = 1, h = 1, bw = 1, bh = 1;
+  function setSize() {
+    w = composer.renderTarget1.width; h = composer.renderTarget1.height; lensU.res.value.set(w, h);
+    bw = Math.max(1, w >> Q.div); bh = Math.max(1, h >> Q.div);
+    rtPre.setSize(bw, bh); mPre.uniforms.uTexel.value.set(0.5 * (1 << Q.div) / w, 0.5 * (1 << Q.div) / h); // 4 taps at source-texel corners of the 2^div block
+    let sw = bw, sh = bh;
+    for (let i = 0; i < 5; i++) { const dw = Math.max(1, i ? sw >> 1 : sw), dh = Math.max(1, i ? sh >> 1 : sh); rtT[i].setSize(dw, dh); rtL[i].setSize(dw, dh); sw = dw; sh = dh; }
+    const stw = Math.max(1, bw >> 1), sth = Math.max(1, bh >> 2);
+    rtS[0].setSize(stw, sth); rtS[1].setSize(stw, sth);
+    mSDown.uniforms.uTexel.value.set(1 / bw, 1 / bh);
+    let tot = 0; for (let i = 0; i < Q.lv; i++) tot += BW[i];
+    const k = i => (i < Q.lv ? BW[i] / tot : 0);
+    toneU.uBw.value.set(k(0), k(1), k(2), k(3)); toneU.uBw4.value = k(4);
+    mbPass.histOk = false;
+  }
+  function setQuality(l) {
+    explicit = true; l = Math.max(0, Math.min(3, Math.round(+l || 0)));
+    if (l === level) return; level = l; Q = QL[l]; api.level = l; setSize();
+    if (Q.aa !== 3 && mbPass.hist) { mbPass.hist.forEach(t => t.dispose()); mbPass.hist = null; mbPass.histOk = false; } // free 2 full-res HDR buffers
+  }
+
+  // ---------------------------------------------------------------- GPU timing (debug: EXT_disjoint_timer_query_webgl2, if exposed)
+  const gl = renderer.getContext(), tq = gl.getExtension && gl.getExtension('EXT_disjoint_timer_query_webgl2');
+  const times = {}, pend = [];
+  let profiling = false;
+  const tBeg = name => { if (!profiling || !tq) return null; const q = gl.createQuery(); gl.beginQuery(tq.TIME_ELAPSED_EXT, q); return [name, q]; };
+  const tEnd = e => { if (!e) return; gl.endQuery(tq.TIME_ELAPSED_EXT); pend.push(e); };
+  function poll() {
+    if (!tq) return;
+    const dis = gl.getParameter(tq.GPU_DISJOINT_EXT);
+    for (let i = pend.length - 1; i >= 0; i--) {
+      const [n, q] = pend[i]; if (!gl.getQueryParameter(q, gl.QUERY_RESULT_AVAILABLE)) continue;
+      if (!dis) { const ms = gl.getQueryParameter(q, gl.QUERY_RESULT) / 1e6; times[n] = times[n] == null ? ms : times[n] * 0.9 + ms * 0.1; }
+      gl.deleteQuery(q); pend.splice(i, 1);
+    }
+  }
+
+  // ---------------------------------------------------------------- per frame
+  const T1 = () => composer.renderTarget1, T2 = () => composer.renderTarget2;
+  const other = tex => (tex === T1().texture ? T2() : T1());
+  const fakeRead = { texture: null };
+  const halton = (i, b) => { let f = 1, r = 0; while (i > 0) { f /= b; r += f * (i % b); i = Math.floor(i / b); } return r; };
+  function jitter(on) {
+    if (!on) { scenePass.jx = scenePass.jy = 0; return; }
+    const i = (frame % 8) + 1; scenePass.jx = halton(i, 2) - 0.5; scenePass.jy = halton(i, 3) - 0.5;
+  }
+  function render(force = false, warmStep = 0) {
+    if (level < 0) setQuality(window.__d5?.quality === 'low' ? 1 : 3), explicit = false;
+    frame++; poll();
+    const r = renderer, q = force ? (warmStep ? { aa: 1, lv: 5, streak: true } : { aa: 2, lv: 5, streak: true }) : Q;
+    let e = tBeg('scene');
+    if (scenePass.enabled) { scenePass.useRT = true; scenePass.render(r); }
+    tEnd(e);
+    let cur = scenePass.rt.texture;
+    // HDR FX (AO, TAA, motion blur): output stays in its own target when nothing follows (no copy)
+    e = tBeg('hdrfx');
+    if (mbPass.enabled) { const u = mbPass.mTaa.uniforms; u.wStill.value = look.taaStill; u.wMove.value = look.taaMove; mbPass.render(r, T1()); cur = mbPass.outTex || T1().texture; }
+    tEnd(e);
+    e = tBeg('dof');
+    if (dof.enabled) {
+      const u = dof.uniforms, tg = other(cur); u.tColor.value = cur; u.tDepth.value = scenePass.rt.depthTexture; u.nearClip.value = cam.near; u.farClip.value = cam.far;
+      r.setRenderTarget(tg); dof.fsQuad.render(r); cur = tg.texture;
+    }
+    tEnd(e);
+    // bloom chain (+ streak), half or quarter res
+    e = tBeg('bloom');
+    mPre.uniforms.tSrc.value = cur; mPre.uniforms.uThr.value = look.threshold; mPre.uniforms.uKnee.value = look.knee; draw(mPre, rtPre);
+    for (let i = 0; i < q.lv; i++) {
+      const tw = rtT[i].width, th = rtT[i].height;
+      mBlur.uniforms.tSrc.value = i ? rtL[i - 1].texture : rtPre.texture; mBlur.uniforms.uDir.value.set(1 / tw, 0); draw(mBlur, rtT[i]);
+      mBlur.uniforms.tSrc.value = rtT[i].texture; mBlur.uniforms.uDir.value.set(0, 1 / th); draw(mBlur, rtL[i]);
+    }
+    const sOn = q.streak && (force || fx.streak > 0);
+    if (sOn) {
+      mSDown.uniforms.tSrc.value = rtPre.texture; mSDown.uniforms.uThr.value = Math.max(0, look.streakThr - look.threshold); draw(mSDown, rtS[1]);
+      const tx = 1 / rtS[0].width; mSBlur.uniforms.uTx.value = tx;
+      mSBlur.uniforms.tSrc.value = rtS[1].texture; mSBlur.uniforms.uStep.value = 1; draw(mSBlur, rtS[0]);
+      mSBlur.uniforms.tSrc.value = rtS[0].texture; mSBlur.uniforms.uStep.value = 4; draw(mSBlur, rtS[1]);
+      mSBlur.uniforms.tSrc.value = rtS[1].texture; mSBlur.uniforms.uStep.value = 16; draw(mSBlur, rtS[0]);
+      toneU.tS.value = rtS[0].texture;
+    }
+    tEnd(e);
+    // tone (exposure state is updated inside tonePass)
+    e = tBeg('tone');
+    const bl = bloom.strength;
+    toneU.uBloom.value = look.bloom * bl * (1 + fx.bloom); toneU.uStreak.value = sOn ? look.streak * fx.streak : 0;
+    toneU.uFlash.value = force ? 0.5 : Math.min(1, Math.max(0, fx.flash)); toneU.uDirt.value = force ? 1 : Math.max(0, fx.dirt);
+    let X = other(cur); fakeRead.texture = cur; tonePass.render(r, X, fakeRead); cur = X.texture;
+    tEnd(e);
+    e = tBeg('aa');
+    if (q.aa === 2) { const Y = other(cur); smaa.renderToScreen = false; smaa.render(r, Y, X); cur = Y.texture; }
+    tEnd(e);
+    e = tBeg('lens');
+    lensU.tDiffuse.value = cur; lensU.time.value = api.time; lensU.fxaa.value = q.aa === 1 ? 1 : 0;
+    lensU.grain.value = look.grain; lensU.vig.value = look.vignette;
+    const ht = force ? 0.5 : Math.max(0, fx.heat); lensU.heat.value = ht;
+    if (fx.heatAt) { lensU.heatAt.value.set(fx.heatAt[0], fx.heatAt[1]); lensU.heatLocal.value = 1; } else lensU.heatLocal.value = 0;
+    draw(mLens, null);
+    tEnd(e);
+  }
+
+  const api = {
+    fx, look, level, time: 0,
+    taaOn: () => (level < 0 ? (window.__d5?.quality !== 'low') : Q.aa === 3),
+    jitter, render, setSize, setQuality,
+    profile(on = true) { profiling = !!on && !!tq; return profiling; },
+    // one call per frame from main.js sets every lens knob from the story clocks (curves live here, with the look):
+    // entry e 0..1 (p .40-.60, swap at e .30), gR = rockets' colony clock (ignite .80, liftoff .83), plume = [u, v] screen uv of
+    // the engines (y up) or null. Anything not passed counts as outside its window.
+    lensFrame({ entry = -1, gR = -1, plume = null } = {}) {
+      const ss = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); }, g = (x, c, w) => Math.exp(-(((x - c) / w) ** 2));
+      const inE = entry > 0 && entry < 1 ? 1 : 0, e = entry;
+      // entry: plasma shimmer from the frame edges in, the lens floods at the swap (covers the cut), dirt catches it
+      const eHeat = inE * 0.9 * ss(0.05, 0.22, e) * (1 - ss(0.42, 0.62, e)), eFlash = inE * 0.85 * g(e, 0.30, 0.045);
+      const eDirt = inE * 0.7 * ss(0.16, 0.30, e) * (1 - ss(0.30, 0.52, e)), eBloom = inE * 0.6 * ss(0.1, 0.3, e) * (1 - ss(0.3, 0.55, e));
+      // launch: heat haze over the engines, a short flare at liftoff, dirt lit by the plume, streaks a touch hotter
+      const L = gR >= 0.78 ? ss(0.79, 0.83, gR) : 0, lFlash = gR >= 0.78 ? 0.25 * g(gR, 0.835, 0.012) : 0;
+      fx.heat = Math.max(eHeat, plume ? 0.55 * L : 0); fx.heatAt = eHeat >= 0.55 * L || !plume ? null : [plume[0], plume[1]];
+      fx.flash = Math.max(eFlash, lFlash); fx.dirt = Math.max(eDirt, 0.45 * L); fx.bloom = Math.max(eBloom, 0.25 * L); fx.streak = 1 + 0.3 * L;
+    },
+    gpuTimes() { profiling = !!tq; const o = {}; let s = 0; for (const k in times) { o[k] = +times[k].toFixed(3); s += times[k]; } o.total = +s.toFixed(3); o.supported = !!tq; return o; }
+  };
+  setSize(); CINE_LIVE.add(api);
+  return api;
+}
+
+// lens dirt: soft dust blobs + a few faint aperture rings, drawn once (lit only by the bloom, so invisible until a hot light hits it)
+function dirtTexture(THREE) {
+  if (typeof document === 'undefined') return null;
+  const cv = document.createElement('canvas'); cv.width = 512; cv.height = 288;
+  const g = cv.getContext('2d'); let s = 7; const R = () => (s = (s * 16807) % 2147483647) / 2147483647;
+  g.fillStyle = '#000'; g.fillRect(0, 0, 512, 288); g.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 90; i++) {
+    const x = R() * 512, y = R() * 288, r = 3 + R() * R() * 46, a = 0.03 + R() * 0.09, gr = g.createRadialGradient(x, y, 0, x, y, r);
+    gr.addColorStop(0, `rgba(255,238,214,${a})`); gr.addColorStop(0.6, `rgba(255,232,206,${a * 0.45})`); gr.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = gr; g.beginPath(); g.arc(x, y, r, 0, 6.2832); g.fill();
+  }
+  g.lineWidth = 2;
+  for (let i = 0; i < 7; i++) {
+    const x = R() * 512, y = R() * 288, r = 14 + R() * 30, a = 0.05 + R() * 0.05; g.strokeStyle = `rgba(255,236,220,${a})`; g.beginPath();
+    for (let k = 0; k <= 6; k++) { const t = k / 6 * 6.2832 + 0.3; g[k ? 'lineTo' : 'moveTo'](x + r * Math.cos(t), y + r * Math.sin(t)); } g.stroke();
+  }
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.NoColorSpace; return t;
 }
