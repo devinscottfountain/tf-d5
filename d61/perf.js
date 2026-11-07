@@ -186,19 +186,20 @@ export function createPerf() {
       if (!force && (!L.on || now() - L.since < 2000 || L.seg !== (seg || L.seg))) return Promise.resolve(null); // warm and settled first (compiles, uploads)
       S.benching = true; const ms = [], px = new Uint8Array(4), t00 = now();
       const sync = () => gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      const next = force ? f => setTimeout(f, 0) : f => ric(f, { timeout: 1500 }); // force: one sample per task, no idle wait (the loader animates, idle slots are short)
       return new Promise(res => {
         const one = dl => {
           if (!L.on && !force) { S.benching = false; return res(null); }
-          if (scrolling() && now() - t00 < 4000) { ric(one, { timeout: 1500 }); return; } // a re-queued rIC restarts its timeout, so cap the wait here
+          if (!force && scrolling() && now() - t00 < 4000) { next(one); return; } // a re-queued rIC restarts its timeout, so cap the wait here
           const need = ms.length ? ms[0] * 2 + 2 : 12; // drain + render must fit the idle slot, or a visible frame pays for it
-          if (dl && dl.timeRemaining && dl.timeRemaining() < need && now() - t00 < 6000) { ric(one, { timeout: 1500 }); return; }
+          if (!force && dl && dl.timeRemaining && dl.timeRemaining() < need && now() - t00 < 6000) { next(one); return; }
           let t0; try { sync(); t0 = now(); fn(); sync(); } catch (_) { S.benching = false; return res(null); } // drain the live frames queued on the GPU first
           ms.push(now() - t0);
-          if (ms.length < n) { ric(one, { timeout: 1500 }); return; }
-          ms.sort((a, b) => a - b); S.bench = { ms: ms[ms.length >> 1], pr: (L.prNow && +L.prNow()) || quality(L, S.applied < 0 ? S.level : S.applied).pr }; // the ratio really drawn S.benching = false;
+          if (ms.length < n) { next(one); return; }
+          ms.sort((a, b) => a - b); S.bench = { ms: ms[ms.length >> 1], pr: (L.prNow && +L.prNow()) || quality(L, S.applied < 0 ? S.level : S.applied).pr }; S.benching = false; // pr: the ratio really drawn
           fromBench(L, S); res(S.bench);
         };
-        ric(one, { timeout: 1500 });
+        next(one);
       });
     },
     // idle warm-up queue; need = ms of idle time the job wants per slot. hold(fn): jobs wait while fn() is true
