@@ -1,10 +1,10 @@
-// D6.1 footer colony: geodesic glass domes with planted interiors (foot-model-plants.js), grow lamps, small
-// opaque hab domes, the long row of pressurised cylinders + boxy units with lit windows, masts, end-on tank farm,
-// solar arrays and a pressurised rover. All merged per material through the bucket B.
+// D6.1 footer colony: the timelapse city seen from its edge at dusk (plan: foot-model-plan.js). Hub + outer geodesic glass
+// domes with planted interiors (foot-model-plants.js) and grow lamps, ribbed glass corridors, fab sheds on the outer
+// ring, masts and a parked pressurised rover. All merged per material through the bucket B.
 import { makePlanter } from './foot-model-plants.js';
 import { TS, rng, fbm, height, geodesic, soup, boxUV, rrect, extrude, smoothNormals } from './foot-model-kit.js';
 
-export function buildColony({ THREE, B, M, high }) {
+export function buildColony({ THREE, B, M, high, plan }) {
   const r = rng(77), V3 = THREE.Vector3;
   const gy = (x, z) => height(x, z);
   const geoCache = new Map(); const geo = f => geoCache.get(f) || geoCache.set(f, geodesic(THREE, f)).get(f);
@@ -65,76 +65,43 @@ export function buildColony({ THREE, B, M, high }) {
       B.P(M.lamp, new THREE.SphereGeometry(0.22 + R * 0.008, 6, 4).translate(cx + Math.cos(a) * rr, y0 + h, cz + Math.sin(a) * rr)); }
   }
 
-  // ---------------------------------------------------------------- pressurised cylinder along x, on saddles, ribs, window band
-  const cylSeg = high ? 28 : 14;
-  function cyl(x0, x1, z, R = 2.5, { win = 4, lift = 0.9 } = {}) {
-    const L = x1 - x0, cx = (x0 + x1) / 2, y = Math.min(gy(x0, z), gy(x1, z), gy(cx, z)) + lift + R;
-    B.P(M.hab, boxUV(THREE, new THREE.CylinderGeometry(R, R, L, cylSeg, 1, true).rotateZ(Math.PI / 2).translate(cx, y, z), TS.habitat_panel));
-    for (const s of [-1, 1]) B.P(M.hab, boxUV(THREE, new THREE.SphereGeometry(R, cylSeg, 6, 0, Math.PI * 2, 0, Math.PI / 2).scale(1, 0.42, 1).rotateZ(-s * Math.PI / 2).translate(cx + s * L / 2, y, z), TS.habitat_panel));
-    const nr = Math.max(2, Math.round(L / 4));
-    for (let i = 0; i <= nr; i++) B.P(M.frame, boxUV(THREE, new THREE.CylinderGeometry(R + 0.2, R + 0.2, 0.3, cylSeg, 1, true).rotateZ(Math.PI / 2).translate(x0 + 0.4 + (L - 0.8) * i / nr, y, z), TS.dome_frame));
-    for (const s of [-1, 1]) B.P(M.frame, boxUV(THREE, new THREE.BoxGeometry(0.5, lift + R * 0.6, R * 1.5).translate(cx + s * L * 0.3, y - R * 0.7 - lift / 2, z), TS.dome_frame));
-    for (let i = 0; i < win; i++) { const wx = x0 + L * (i + 0.5) / win + (r() - 0.5) * 0.6, lit = r() < 0.7;
-      B.P(lit ? M.window : M.dark, new THREE.BoxGeometry(0.9, 0.45, 0.5).translate(wx, y + 0.25, z + R)); }   // half sunk, 0.25 m proud
-    return y;
-  }
-  // end-on tank (axis along z) for the farm on the right
-  function tank(x, z, R, L) {
-    const y = gy(x, z) + 0.8 + R;
-    B.P(M.stainless, boxUV(THREE, new THREE.CylinderGeometry(R, R, L, cylSeg, 1, true).rotateX(Math.PI / 2).translate(x, y, z), TS.stainless));
-    for (const s of [-1, 1]) B.P(M.stainless, boxUV(THREE, new THREE.SphereGeometry(R, cylSeg, 6, 0, Math.PI * 2, 0, Math.PI / 2).scale(1, 0.38, 1).rotateX(s * Math.PI / 2).translate(x, y, z + s * L / 2), TS.stainless));
-    for (const s of [-1, 1]) B.P(M.frame, boxUV(THREE, new THREE.BoxGeometry(R * 1.6, 0.8 + R * 0.5, 0.4).translate(x, y - R * 0.75 - 0.4, z + s * L * 0.3), TS.dome_frame));
-  }
   // boxy unit with rounded vertical edges, roof kit, window band
-  function unit(cx, cz, w, h, d, { win = 5, ry = 0 } = {}) {
+  function unit(cx, cz, w, h, d, { win = 5, ry = 0, kit = true } = {}) {
     const y = Math.min(gy(cx - w / 2, cz), gy(cx + w / 2, cz)) + 0.5, tr = new THREE.Matrix4().makeRotationY(ry).setPosition(cx, y, cz), T = g => g.applyMatrix4(tr);
     B.P(M.hab, boxUV(THREE, T(extrude(THREE, rrect(THREE, w, d, Math.min(1.4, d * 0.25)), h, 0, 1, 3).rotateX(-Math.PI / 2).translate(0, h / 2, 0)), TS.habitat_panel));
     B.P(M.frame, boxUV(THREE, T(new THREE.BoxGeometry(w - 0.6, 0.5, d - 0.6).translate(0, -0.25, 0)), TS.dome_frame));
     B.P(M.dark, T(new THREE.BoxGeometry(w + 0.3, 0.14, d + 0.3).translate(0, h * 0.62, 0)));             // seam band, 0.15 m proud
-    for (let i = 0; i < 3; i++) B.P(M.frame, boxUV(THREE, T(new THREE.BoxGeometry(1 + r() * 1.6, 0.6 + r() * 0.8, 1 + r()).translate((r() - 0.5) * (w - 3), h + 0.4, (r() - 0.5) * (d - 3))), TS.dome_frame));
+    if (kit) for (let i = 0; i < 3; i++) B.P(M.frame, boxUV(THREE, T(new THREE.BoxGeometry(1 + r() * 1.6, 0.6 + r() * 0.8, 1 + r()).translate((r() - 0.5) * (w - 3), h + 0.4, (r() - 0.5) * (d - 3))), TS.dome_frame));
     for (let i = 0; i < win; i++) { const wx = -w / 2 + w * (i + 0.5) / win, lit = r() < 0.65;
       B.P(lit ? M.window : M.dark, T(new THREE.BoxGeometry(1.1, 0.6, 0.5).translate(wx, h * 0.45, d / 2))); }   // half sunk, 0.25 m proud
   }
-  const tube = (x0, x1, z, y, R = 1.1) => B.P(M.hab, boxUV(THREE, new THREE.CylinderGeometry(R, R, x1 - x0, 12, 1, true).rotateZ(Math.PI / 2).translate((x0 + x1) / 2, y, z), TS.habitat_panel));
+  // glass corridor (timelapse): white tube on the ground line, ribs every 3 m, lit window strip along the camera side
+  function corridor([x0, z0], [x1, z1]) {
+    const L = Math.hypot(x1 - x0, z1 - z0), a = Math.atan2(-(z1 - z0), x1 - x0), R = plan.tubeR, cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+    const y = Math.min(gy(x0, z0), gy(x1, z1), gy(cx, cz)) + plan.tubeY - 0.6, tr = new THREE.Matrix4().makeRotationY(a).setPosition(cx, y, cz), T = g => g.applyMatrix4(tr);
+    B.P(M.hab, boxUV(THREE, T(new THREE.CylinderGeometry(R, R, L, high ? 20 : 12, 1, true).rotateZ(Math.PI / 2)), TS.habitat_panel));
+    const nr = Math.round(L / 3);
+    for (let i = 0; i <= nr; i++) B.P(M.frame, boxUV(THREE, T(new THREE.CylinderGeometry(R + 0.16, R + 0.16, 0.35, high ? 20 : 12, 1, true).rotateZ(Math.PI / 2).translate(-L / 2 + L * i / nr, 0, 0)), TS.dome_frame));
+    for (const s of [-1, 1]) B.P(M.window, T(new THREE.BoxGeometry(L - 2, 0.32, 0.3).translate(0, 0.3, s * (R - 0.05))));
+    B.P(M.frame, boxUV(THREE, T(new THREE.BoxGeometry(L, 0.8, R * 1.6).translate(0, -R + 0.1, 0)), TS.dome_frame));
+  }
   function mast(x, z, h) {
     const y = gy(x, z);
     B.P(M.frame, boxUV(THREE, new THREE.CylinderGeometry(0.12, 0.2, h, 6, 1, true).translate(x, y + h / 2, z), TS.dome_frame));
     B.P(M.frame, boxUV(THREE, new THREE.CylinderGeometry(0.9, 0.2, 0.4, 10).rotateZ(0.6).translate(x + 0.4, y + h * 0.82, z), TS.dome_frame));
     B.P(M.beacon, new THREE.SphereGeometry(0.22, 6, 4).translate(x, y + h + 0.2, z));
   }
-  function solar(x0, z0, nx, nz) {
-    for (let i = 0; i < nx; i++) for (let j = 0; j < nz; j++) { const x = x0 + i * 7.2, z = z0 - j * 5, y = gy(x, z);
-      B.P(M.solar, new THREE.BoxGeometry(6.6, 0.08, 3.2).rotateX(-0.55).translate(x, y + 1.5, z));
-      B.P(M.frame, new THREE.BoxGeometry(0.15, 1.4, 0.15).translate(x, y + 0.7, z)); }
-  }
+  // ---------------------------------------------------------------- layout: the timelapse city plan (foot-model-plan.js)
+  // hub dome + four outer domes on glass corridors; the small hab domes, streetlights, rovers and figures are in foot-model-life.js
+  const view = d => Math.abs(Math.atan2(d.x, -d.z)) < 0.36;              // planted only where the lens can see in
+  plan.domes.forEach((d, i) => dome(d.x, d.z, d.R, d.hub ? (high ? 6 : 4) : (high ? 4 : 2), { green: view(d) && (high || i < 2) }));
+  for (const t of plan.tubes) corridor(t.from, t.to);
+  for (const f of plan.fabs) unit(f.x, f.z, f.w, f.h, f.d, { win: 3, ry: f.ry, kit: false });
+  const hub = plan.domes[0];
+  mast(hub.x + hub.R + 6, hub.z + 4, 16); mast(hub.x - hub.R - 4, hub.z + 10, 11); mast(plan.build[0] + 22, plan.build[1] - 6, 12);
 
-  // ---------------------------------------------------------------- layout (Figma 22951:8878, camera at the origin looking -z)
-  // (compositor lens: eye 1.7 m, vfov 30, horizon 30% from top; pad sits ~8.5 m below the eye)
-  dome(-41, -282, 18, high ? 6 : 4);                      // the big glass dome, left of centre
-  dome(-101, -336, 9, high ? 4 : 2);                      // small glass dome, far left
-  dome(70, -318, 9.2, high ? 4 : 2, { ry: -0.3 });        // small glass dome by the near Starship
-  dome(-76, -372, 6.5, 2, { vest: false });               // tucked behind, mostly hidden
-  // the hab row
-  const Z = -300;
-  unit(-18, Z, 8.5, 4.6, 7, { win: 4 });
-  const yc = cyl(-12.5, -1, Z - 2, 2.3, { win: 4 }); tube(-14.5, -12, Z - 2, yc - 0.6, 0.9);
-  dome(3.2, Z - 3, 3.6, 2, { glass: false, vest: false });
-  cyl(7.5, 17.5, Z - 1, 2.2, { win: 3 }); tube(5.5, 8, Z - 1, yc - 0.6, 0.9);
-  dome(21.5, Z - 4, 3.4, 2, { glass: false, vest: false });
-  cyl(25.5, 35.5, Z - 2, 2.1, { win: 3 });
-  dome(39.5, Z - 3, 3.5, 2, { glass: false, vest: false });
-  unit(49, Z - 3, 10, 5.4, 7.5, { win: 5 });
-  unit(63, Z + 8, 11, 4, 8, { win: 5, ry: 0.04 });
-  // second rank, half hidden: depth behind the row
-  cyl(-30, -14, Z - 22, 2.6, { win: 3 }); cyl(8, 30, Z - 26, 2.7, { win: 3 }); unit(36, Z - 30, 10, 6.5, 8, { win: 3 });
-  // tank farm on the right, end-on
-  for (let i = 0; i < (high ? 9 : 5); i++) tank(88 + i * 7.4 * (high ? 1 : 1.6), -352 - (i % 2) * 5, 2.2, 8);
-  // masts and arrays
-  mast(-29, Z + 6, 14); mast(-25.5, Z + 10, 10); mast(56, Z - 12, 12);
-  if (high) solar(-160, -352, 4, 2);
-
-  // ---------------------------------------------------------------- pressurised rover, mid-ground, heading left across the frame
-  const rover = { x: 9, z: -250, ry: 0.35 };
+  // ---------------------------------------------------------------- pressurised rover, parked on the outer ring road's verge
+  const rover = (() => { const [x, z] = plan.ring(211, 3.3), [x2, z2] = plan.ring(211, 3.32); return { x, z, ry: Math.atan2(-(z2 - z), x2 - x) + 0.25 }; })();   // parked on the outer ring's verge
   { const y = gy(rover.x, rover.z), tr = new THREE.Matrix4().makeRotationY(rover.ry).setPosition(rover.x, y, rover.z), T = g => g.applyMatrix4(tr), V2 = THREE.Vector2;
     const side = new THREE.Shape([[-2.8, 0.75], [2.4, 0.75], [2.95, 1.05], [3.0, 1.6], [2.55, 2.35], [-2.5, 2.45], [-2.85, 2.2]].map(p => new V2(...p)));
     B.P(M.rover, boxUV(THREE, T(extrude(THREE, side, 2.3, high ? 0.08 : 0, 1)), TS.rover_paint));

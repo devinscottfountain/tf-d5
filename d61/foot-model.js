@@ -18,7 +18,9 @@ import { texBinder, placeholders } from '../d6/hero-model-kit.js';
 import { buildTerrain } from './foot-model-terrain.js';
 import { buildColony } from './foot-model-colony.js';
 import { leafAtlas } from './foot-model-plants.js';
-import { buildStarships } from './foot-model-starship.js';
+import { buildStarships, buildPadTower } from './foot-model-starship.js';
+import { footerPlan } from './foot-model-plan.js';
+import { buildLife } from './foot-model-life.js';
 
 export const FOOT_ROLES = ['regolith', 'mars_rock', 'dome_glass', 'dome_frame', 'foliage', 'habitat_panel', 'stainless', 'rover_paint'];
 
@@ -42,6 +44,7 @@ export function buildFooterScene({ THREE, quality = 'high' } = {}) {
     dark: S({ color: 0x121315, roughness: 0.55, metalness: 0.2 }),
     solar: S({ color: 0x0e1828, roughness: 0.22, metalness: 0.7 }),
     pad: S({ color: 0x4d4642, roughness: 0.95 }),
+    tower: S({ color: 0xc0682e, roughness: 0.62, metalness: 0.15, emissive: 0x1c0a03 }),   // timelapse crane orange, a touch of self-light so it never goes black
     window: Object.assign(HDR(1.9, 1.2, 0.6), { polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }),
     lamp: HDR(3.6, 2.1, 0.9),
     beacon: HDR(5, 0.5, 0.25),
@@ -90,13 +93,17 @@ export function buildFooterScene({ THREE, quality = 'high' } = {}) {
   // ---------------------------------------------------------------- build
   const B = buckets(THREE);
   const terrain = buildTerrain({ THREE, group: root, M, high });
-  const colony = buildColony({ THREE, B, M, high });
+  const plan = footerPlan({ high });
+  const colony = buildColony({ THREE, B, M, high, plan });
+  // the two ships that landed first stay parked; the first ship built on the pad has launched, so a second one stands there now
   const ships = buildStarships({ THREE, B, M, high, ships: [
-    { x: 84, z: -470, ry: 0.14 },                        // near, taller in frame; flaps kept in the silhouette plane
-    { x: 185, z: -700, ry: -0.12 },                       // far right
-    { x: -357, z: -1000, ry: 0.2, lod: 0 },              // far left, against the ridge
+    { x: plan.land[0][0], z: plan.land[0][1], ry: 0.14 },
+    { x: plan.land[1][0], z: plan.land[1][1], ry: -0.5 },
+    { x: plan.build[0], z: plan.build[1], ry: 0.3, pad: 15 },
   ] });
+  const tower = buildPadTower({ THREE, B, M, high, x: plan.tower[0], z: plan.tower[1], ship: plan.build });
   const merged = B.flush(root, 'colony');
+  const life = buildLife({ THREE, root, plan, high, lamps: tower.lamps });
   for (const m of merged) if (m.material === M.glass) m.renderOrder = 2;
 
   // ---------------------------------------------------------------- lights: warm fill inside the big dome (compositor owns key + sky)
@@ -135,17 +142,18 @@ export function buildFooterScene({ THREE, quality = 'high' } = {}) {
   function update(t) {
     const ph = (t * 0.7) % 1; M.beacon.color.copy(beacon).multiplyScalar(ph < 0.07 ? 1 : 0.08);
     leafU.uBack.value.setRGB(0.55, 0.42, 0.12).multiplyScalar(1 + 0.06 * Math.sin(t * 0.6));
+    life.update(t);
   }
 
   // stats
-  let tris = 0, calls = 0, inst = 0; root.traverse(o => { if (!o.isMesh) return; if (o.isInstancedMesh) inst += o.count; calls += o.material.transparent && o.material.side === THREE.DoubleSide ? 2 : 1;
+  let tris = 0, calls = 0, inst = 0; root.traverse(o => { if (o.isPoints) calls++; if (!o.isMesh) return; if (o.isInstancedMesh) inst += o.count; calls += o.material.transparent && o.material.side === THREE.DoubleSide ? 2 : 1;
     const g = o.geometry, n = (g.index ? g.index.count : g.attributes.position.count) / 3; tris += n * (o.isInstancedMesh ? o.count : 1); });
 
   return {
     root, lights, update,
     applyTextures(tex) { tb.apply(tex); },
-    anchors: { steel: steelU, domes: colony.domes, rover: colony.rover, ships, glass: M.glass, foliage: leafU.uBack },
+    anchors: { steel: steelU, domes: colony.domes, rover: colony.rover, ships, tower, glass: M.glass, foliage: leafU.uBack, lights: life.lightsU, habs: life.habU },
     materials: M, stats: { tris: Math.round(tris), drawCalls: calls, instances: inst },
-    dispose() { root.traverse(o => o.isMesh && o.geometry.dispose()); terrain.dispose(); M.foliage.map?.dispose(); Object.values(M).forEach(m => m.dispose()); black.dispose(); },
+    dispose() { root.traverse(o => o.isMesh && o.geometry.dispose()); terrain.dispose(); life.dispose(); M.foliage.map?.dispose(); Object.values(M).forEach(m => m.dispose()); black.dispose(); },
   };
 }

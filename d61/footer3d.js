@@ -193,13 +193,19 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
     setLogoU();
   }
 
-  // ---------------------------------------------------------------- camera: eye level, fixed gaze, pointer parallax by translation
+  // ---------------------------------------------------------------- camera: eye level, steady gaze, pointer parallax by translation
+  // Cinematic drift: the scroll-in eases a short push toward the city (DOLLY.push m); at rest a slow lateral dolly
+  // (two long incommensurate sines, so it never visibly loops) and a faint breathing push. Gaze stays parked, so the
+  // horizon holds and only the foreground rocks slide against the city.
   let prog = 0, ptrX = 0, ptrY = 0, sx = 0, sy = 0, clock = 0;
   const nX = noise1(3), nY = noise1(7), nG = noise1(11), nH = noise1(17);
+  const DOLLY = { push: 6, side: 1.4, sideT: [61, 97], breathe: 1.2, breatheT: 47 };
   const look = new V3(), eye = new V3();
   function pose(t) {
     sx += (ptrX - sx) * 0.05; sy += (ptrY - sy) * 0.05;
-    eye.set(EYE[0] + sx * 0.45 + 0.03 * nX(t * 0.13), EYE[1] - sy * 0.12 + 0.015 * nY(t * 0.17), EYE[2]);
+    const w = 2 * Math.PI, lat = DOLLY.side * (0.75 * Math.sin(w * t / DOLLY.sideT[0]) + 0.25 * Math.sin(w * t / DOLLY.sideT[1] + 1.3));
+    const push = DOLLY.push * (1 - ease(prog)) - DOLLY.breathe * (0.5 - 0.5 * Math.cos(w * t / DOLLY.breatheT));
+    eye.set(EYE[0] + lat + sx * 0.45 + 0.03 * nX(t * 0.13), EYE[1] - sy * 0.12 + 0.015 * nY(t * 0.17), EYE[2] + push);
     cam.position.copy(eye);
     look.set(eye.x * 0.6, eye.y - Math.tan(lens.pitch) * 1000, eye.z - 1000);   // gaze shifts less than the eye: parallax, horizon steady
     cam.lookAt(look);

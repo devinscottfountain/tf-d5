@@ -49,10 +49,42 @@ export function buildStarships({ THREE, B, M, high, ships }) {
     const T = g => g.clone().applyMatrix4(tr);
     B.P(M.stainless, T(body)); steelParts.forEach(g => B.P(M.stainless, T(g))); flapParts.forEach(g => B.P(M.flap || M.stainless, T(g)));
     darkParts.forEach(g => B.P(M.dark, T(g))); if (lod) legs.forEach(g => B.P(M.stainless, T(g)));
-    B.P(M.pad, boxUV(THREE, new THREE.CylinderGeometry(11, 12, 2.4, high ? 32 : 16).translate(s.x, gy - 0.6, s.z), TS.habitat_panel));
+    const pr = s.pad || 11;
+    B.P(M.pad, boxUV(THREE, new THREE.CylinderGeometry(pr, pr + 1, 2.4, high ? 32 : 16).translate(s.x, gy - 0.6, s.z), TS.habitat_panel));
     B.P(M.beacon, new THREE.SphereGeometry(0.35, 8, 6).translate(0, 50.6, 0).applyMatrix4(tr));
     out.push({ x: s.x, z: s.z, y: gy + 0.6 + LIFT, top: gy + 0.6 + LIFT + 50.4 * (s.k || 1) });
   }
   [body, aft, fwd, ...steelParts, ...flapParts, ...darkParts, ...legs].forEach(g => g.dispose());
   return out;
+}
+
+// the build pad's crane tower (as in the Jezero timelapse): square lattice, X-braced bays, a slewing jib over the ship and a
+// counter-jib with its ballast. Merged into M.tower; returns work-lamp positions (for the light points) and the beacon tip.
+export function buildPadTower({ THREE, B, M, high, x, z, ship, H = 57 }) {
+  const gy = height(x, z), parts = [], box = (w, h, d, px, py, pz) => parts.push(new THREE.BoxGeometry(w, h, d).translate(px, py, pz));
+  const W = 3, leg = 0.7, bay = 6, br = 0.28;
+  for (const sx of [-W, W]) for (const sz of [-W, W]) box(leg, H, leg, sx, H / 2, sz);
+  // bays: rings + one diagonal per face (alternating), the diagonals are what make it read as a lattice
+  const diag = (ax, az, bx, bz, y0, y1) => { const a = new THREE.Vector3(ax, y0, az), b = new THREE.Vector3(bx, y1, bz), L = a.distanceTo(b);
+    parts.push(new THREE.BoxGeometry(br, L, br).applyMatrix4(new THREE.Matrix4().lookAt(a, b, new THREE.Vector3(0, 0, 1)).multiply(new THREE.Matrix4().makeRotationX(Math.PI / 2))).translate((ax + bx) / 2, (y0 + y1) / 2, (az + bz) / 2)); };
+  for (let y = 2, i = 0; y < H - 1; y += bay, i++) {
+    box(2 * W, br, br, 0, y, -W); box(2 * W, br, br, 0, y, W); box(br, br, 2 * W, -W, y, 0); box(br, br, 2 * W, W, y, 0);
+    if (!high && i % 2) continue;
+    const f = i % 2 ? 1 : -1, y1 = Math.min(H - 1, y + bay);
+    diag(-W * f, -W, W * f, -W, y, y1); diag(W * f, W, -W * f, W, y, y1); diag(-W, W * f, -W, -W * f, y, y1); diag(W, -W * f, W, W * f, y, y1);
+  }
+  // jib toward the ship, counter-jib behind with ballast, cab and a short hook line
+  const a = Math.atan2(-(ship[1] - z), ship[0] - x), reach = Math.hypot(ship[0] - x, ship[1] - z) + 4;
+  const top = [];
+  top.push(new THREE.BoxGeometry(reach + 2, 1.4, 1.4).translate(reach / 2, 0, 0), new THREE.BoxGeometry(14, 1.2, 1.2).translate(-7, 0, 0),
+    new THREE.BoxGeometry(4, 3, 2.6).translate(-12.5, -0.8, 0), new THREE.BoxGeometry(2.2, 2.4, 2.2).translate(1, -1.6, 1.8),
+    new THREE.BoxGeometry(1.2, 6, 1.2).translate(0, 3.6, 0), new THREE.BoxGeometry(0.12, 9, 0.12).translate(reach - 6, -4.5, 0));
+  const jm = new THREE.Matrix4().makeRotationY(a).setPosition(0, H + 0.7, 0);
+  for (const g of top) parts.push(g.applyMatrix4(jm));
+  const tr = new THREE.Matrix4().setPosition(x, gy - 0.2, z);
+  for (const g of parts) B.P(M.tower, boxUV(THREE, g.applyMatrix4(tr), TS.dome_frame));
+  B.P(M.beacon, new THREE.SphereGeometry(0.4, 8, 6).translate(x, gy + H + 7, z));
+  const lamps = []; for (let y = 10; y < H; y += 12) lamps.push([x + W + 0.5, gy + y, z + W + 0.5]);
+  for (let i = 0; i < 3; i++) lamps.push([x + Math.cos(-a) * (8 + i * (reach - 10) / 2), gy + H - 0.2, z + Math.sin(-a) * (8 + i * (reach - 10) / 2)]);
+  return { lamps, top: gy + H };
 }
