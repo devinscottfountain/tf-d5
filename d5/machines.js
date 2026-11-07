@@ -630,3 +630,336 @@ export function createMachines({ THREE, group, D = 4 }) {
   furniture();
   return { exA, exB, trucks, dozer, pump, mixers, crane, crew, towers, tris: TRIS, materials: MAT };
 }
+
+// =====================================================================================================================
+// Jezero colony life (D6.1): pressurised rovers on the avenues (headlights at dusk, dust trails), graded roads with lamp
+// pools, comms masts, and a few tiny suited figures by the landed ships and the build pad. Silhouette scale only.
+// createColonyLife({ THREE, colony, layout, envMap, high, arrive, hideLines }) -> { group, update(g, t, night, gR), tris, draws }
+//   layout: colonyLayout() from habitat.js; g = city build progress, gR = raw colony progress (ships land in gR < arrive).
+//   Moving things never cast shadows (main.js only re-renders the shadow map when the build changes). One draw per kind.
+export function createColonyLife({ THREE, colony, layout: L, envMap = null, high = true, arrive = 0.1, hideLines = null }) {
+  const V3 = THREE.Vector3, group = new THREE.Group(); group.name = 'colonyLife'; colony.add(group);
+  let seed = 4242; const rnd = () => { seed |= 0; seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const sst = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  const TAU = Math.PI * 2, RINGS = L.rings.map(r => r.r), ringBt = R => 0.02 + R / 236 * 0.55;
+  const S1 = L.ships[0], SHIP_AVE = 3 * Math.PI / 2, SPUR = [[0, -160], [S1.x - 15, S1.z - 2]]; // the first road: hub -> avenue 270 deg -> spur to ship 1
+  let TRIS = 0; const tri = g => (TRIS += (g.index ? g.index.count : g.attributes.position.count) / 3);
+  const U = { uT: { value: 0 }, uG: { value: 0 }, uNight: { value: 0 }, uPx: { value: 800 }, uDay: { value: 1 } };
+  const pxHook = (r, s, cam) => { const rt = r.getRenderTarget(), h = rt ? rt.height : r.getDrawingBufferSize(tmpV2).y; U.uPx.value = h * 0.5 * cam.projectionMatrix.elements[5]; };
+  const tmpV2 = new THREE.Vector2();
+  if (hideLines) hideLines.forEach(m => (m.visible = false)); // the graded roads below replace main.js's 1 px road lines
+
+  // ------------------------------------------------------------ paths: polylines resampled every metre, corners rounded
+  function mkPath(pts, closed) {
+    let P = [];
+    for (let i = 0; i < pts.length - (closed ? 0 : 1); i++) { // split to <= 3 m so the rounding stays local to each corner
+      const a = pts[i], b = pts[(i + 1) % pts.length], n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 3));
+      for (let k = 0; k < n; k++) P.push([a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n]);
+    }
+    if (!closed) P.push(pts[pts.length - 1]);
+    for (let it = 0; it < 3; it++) { // Chaikin
+      const Q = []; const n = P.length;
+      if (!closed) Q.push(P[0]);
+      for (let i = 0; i < (closed ? n : n - 1); i++) { const a = P[i], b = P[(i + 1) % n]; Q.push([a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25], [a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]); }
+      if (!closed) Q.push(P[n - 1]); P = Q;
+    }
+    const cum = [0]; for (let i = 1; i < P.length + (closed ? 1 : 0); i++) { const a = P[i - 1], b = P[i % P.length]; cum.push(cum[i - 1] + Math.hypot(b[0] - a[0], b[1] - a[1])); }
+    const len = cum[cum.length - 1], N = Math.max(2, Math.floor(len)), out = new Float32Array((N + 1) * 2);
+    for (let k = 0, j = 0; k <= N; k++) { const s = k / N * len; while (j < cum.length - 2 && cum[j + 1] < s) j++; const f = (s - cum[j]) / Math.max(1e-6, cum[j + 1] - cum[j]), a = P[j % P.length], b = P[(j + 1) % P.length]; out[k * 2] = a[0] + (b[0] - a[0]) * f; out[k * 2 + 1] = a[1] + (b[1] - a[1]) * f; }
+    return { P: out, N, len, closed, step: len / N };
+  }
+  const arc = (R, a0, a1) => { const n = Math.max(2, Math.ceil(Math.abs(a1 - a0) * R / 6)), o = []; for (let i = 0; i <= n; i++) { const a = a0 + (a1 - a0) * i / n; o.push([Math.cos(a) * R, Math.sin(a) * R]); } return o; };
+  const ave = (a, r0, r1) => [[Math.cos(a) * r0, Math.sin(a) * r0], [Math.cos(a) * r1, Math.sin(a) * r1]];
+  function at(path, s, o) { // position + tangent at arc length s
+    const q = path.closed ? ((s % path.len) + path.len) % path.len : Math.min(path.len - 1e-3, Math.max(0, s)), u = q / path.step, i = Math.floor(u), f = u - i;
+    const P = path.P, i1 = path.closed ? (i + 1) % (path.N + 1) : Math.min(i + 1, path.N), j0 = Math.max(0, i - 1), j1 = Math.min(path.N, i + 2);
+    o.x = P[i * 2] + (P[i1 * 2] - P[i * 2]) * f; o.z = P[i * 2 + 1] + (P[i1 * 2 + 1] - P[i * 2 + 1]) * f;
+    const tx = P[j1 * 2] - P[j0 * 2], tz = P[j1 * 2 + 1] - P[j0 * 2 + 1], tl = Math.hypot(tx, tz) || 1; o.tx = tx / tl; o.tz = tz / tl; return o;
+  }
+
+  // routes: sector loops between rings (the tube-free quadrants also use the inner ring), full ring laps, and two shuttles
+  const routes = [];
+  const Q4 = Math.PI / 4;
+  for (let k = 0; k < 8; k++) {
+    const a0 = k * Q4, a1 = a0 + Q4, tubeFree = k % 2 === 1, ri = tubeFree ? 62 : 132, ro = tubeFree ? 132 : 204;
+    routes.push({ path: mkPath([...ave(a0, ri, ro), ...arc(ro, a0, a1), ...ave(a1, ro, ri).slice(0), ...arc(ri, a1, a0)], true), bt: ringBt(ro) + 0.01, w: 1 });
+    if (k % 2 === 0) routes.push({ path: mkPath([...ave(a0, 132, 204), ...arc(204, a0, a1), ...ave(a1, 204, 132), ...arc(132, a1, a0)], true), bt: ringBt(204) + 0.01, w: 1 });
+  }
+  for (const R of [132, 204]) routes.push({ path: mkPath(arc(R, 0, TAU).slice(0, -1), true), bt: ringBt(R) + 0.02, w: 1.5 });
+  const shipRun = { path: mkPath([[Math.cos(SHIP_AVE) * 24, Math.sin(SHIP_AVE) * 24], [0, -160], SPUR[1]], false), bt: -1, dwell: 26 };
+  const farmRun = { path: mkPath(ave(Q4, 24, 248), false), bt: 0.3, dwell: 40 };
+  const padRun = { path: mkPath([[0, -24], [0, -96], [-3.5, -101]], false), bt: 0.25, dwell: 30 }; // deliveries to the build pad's apron
+  const NR = high ? 40 : 20, rovers = [];
+  const loopR = routes, wsum = loopR.reduce((s, r) => s + r.w, 0);
+  for (let i = 0; i < NR; i++) {
+    let r;
+    if (i < 3) r = shipRun; else if (i === 3 || i === 7) r = padRun; else if (i === 5) r = farmRun;
+    else { let x = rnd() * wsum; r = loopR.find(q => (x -= q.w) < 0) || loopR[0]; }
+    rovers.push({ r, s0: rnd() * 2000, v: 7.5 + rnd() * 3, dir: rnd() < 0.5 ? 1 : -1, bt: Math.max(0, r.bt) + rnd() * 0.06, h: rnd(), ship: r === shipRun, k: i });
+  }
+  rovers.forEach((v, i) => { if (v.ship) v.s0 = i * 0.33; }); // ship runs leave the hub one after another (cycle offset, see pose)
+
+  // ------------------------------------------------------------ rover: pressurised cabin on a 6-wheel chassis, forward +x
+  const part = (g, kind) => { const n = g.index ? g.toNonIndexed() : g; if (n !== g) g.dispose(); n.deleteAttribute('uv'); n.setAttribute('kind', new THREE.Float32BufferAttribute(new Float32Array(n.attributes.position.count).fill(kind), 1)); return n; };
+  const roverGeo = (() => {
+    const seg = high ? 14 : 9, G = [];
+    G.push(part(new THREE.BoxGeometry(6.0, 0.42, 2.3).translate(0, 0.98, 0), 0));                                  // chassis
+    const cab = new THREE.CapsuleGeometry(1.18, 3.3, 4, seg); cab.rotateZ(Math.PI / 2); cab.scale(1, 0.84, 1); cab.translate(-0.15, 2.2, 0); G.push(part(cab, 1));
+    for (const x of [-2.15, 0, 2.15]) for (const z of [-1.32, 1.32]) {
+      const w = new THREE.CylinderGeometry(0.6, 0.6, 0.5, seg); w.rotateX(Math.PI / 2); w.translate(x, 0.6, z); G.push(part(w, 2));
+      const f = new THREE.BoxGeometry(1.5, 0.08, 0.62).translate(x, 1.28, z * 1.02); G.push(part(f, 0));                    // fenders
+    }
+    G.push(part(new THREE.BoxGeometry(2.6, 0.08, 1.7).translate(-0.7, 3.27, 0), 3));                                  // roof solar
+    G.push(part(new THREE.BoxGeometry(0.16, 0.14, 1.5).translate(1.55, 3.2, 0), 4));                                  // roof light bar
+    G.push(part(new THREE.BoxGeometry(0.05, 1.3, 0.05).translate(-1.9, 3.85, 0.62), 0));                              // whip mast
+    G.push(part(new THREE.BoxGeometry(0.5, 0.9, 1.9).translate(-3.05, 1.95, 0), 1));                                  // rear suitport bulkhead
+    for (const z of [-0.5, 0.5]) G.push(part(new THREE.CylinderGeometry(0.3, 0.3, 0.06, 10).rotateZ(Math.PI / 2).translate(-3.32, 2.05, z), 0)); // suitports
+    for (const z of [-0.85, 0.85]) { G.push(part(new THREE.BoxGeometry(0.1, 0.16, 0.36).translate(3.02, 1.28, z), 4)); G.push(part(new THREE.BoxGeometry(0.1, 0.14, 0.3).translate(-3.02, 1.3, z * 1.15), 5)); }
+    const g = mergeGeometries(G); G.forEach(x => x.dispose()); g.computeBoundingSphere(); return g;
+  })();
+  const roverMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5, metalness: 0.15, envMap, envMapIntensity: 0.6 });
+  roverMat.onBeforeCompile = sh => {
+    Object.assign(sh.uniforms, U);
+    sh.vertexShader = 'attribute float kind; varying float vK; varying vec3 vLP;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvK = kind; vLP = position;');
+    sh.fragmentShader = 'uniform float uNight; varying float vK; varying vec3 vLP;\n' + sh.fragmentShader
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        float glassF = 0., lampF = 0., tailF = 0.;
+        if (vK < 0.5) diffuseColor.rgb = vec3(0.16, 0.15, 0.14);
+        else if (vK < 1.5) {
+          vec3 c = vec3(0.86, 0.84, 0.8);
+          c = mix(c, vec3(0.86, 0.36, 0.14), step(1.62, vLP.y) * step(vLP.y, 1.8));                       // coral stripe
+          float side = step(2.32, vLP.y) * step(vLP.y, 2.68) * step(-1.7, vLP.x) * step(vLP.x, 1.5) * step(0.25, fract(vLP.x / 0.8));
+          glassF = max(step(2.05, vLP.x) * step(2.0, vLP.y), side);                                         // wraparound nose glazing + cabin strip
+          c = mix(c, vec3(0.04, 0.05, 0.06), glassF);
+          c = mix(c, c * vec3(0.9, 0.68, 0.5), (1. - smoothstep(1.2, 1.9, vLP.y)) * 0.7);                   // regolith dust low on the hull
+          diffuseColor.rgb = c;
+        } else if (vK < 2.5) diffuseColor.rgb = mix(vec3(0.08, 0.075, 0.07), vec3(0.42, 0.4, 0.37), step(1.565, abs(vLP.z)) * step(abs(vLP.y - 0.6), 0.32)); // tyre, pale hub face
+        else if (vK < 3.5) diffuseColor.rgb = vec3(0.04, 0.06, 0.11);
+        else if (vK < 4.5) { lampF = 1.; diffuseColor.rgb = vec3(0.9); }
+        else { tailF = 1.; diffuseColor.rgb = vec3(0.4, 0.04, 0.03); }`)
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = mix(roughnessFactor, 0.08, max(glassF, step(2.5, vK) * step(vK, 3.5)));')
+      .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nmetalnessFactor = mix(metalnessFactor, 0.7, glassF);')
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        totalEmissiveRadiance += vec3(1., 0.9, 0.75) * lampF * (0.3 + 2.4 * uNight) + vec3(1., 0.08, 0.04) * tailF * (0.3 + 3. * uNight)
+          + vec3(1., 0.6, 0.3) * glassF * uNight * 0.9 * step(vLP.x, 2.0);                                 // warm cabin through the side strip`)
+      .replace('#include <lights_fragment_maps>', '#include <lights_fragment_maps>\niblIrradiance *= 1. - 0.9 * uNight; radiance *= 1. - 0.9 * uNight;');
+  };
+  roverMat.customProgramCacheKey = () => 'life-rover';
+  const roverMesh = new THREE.InstancedMesh(roverGeo, roverMat, NR); roverMesh.receiveShadow = true; roverMesh.castShadow = false;
+  roverMesh.boundingSphere = new THREE.Sphere(new V3(0, 0, 0), 420); roverMesh.frustumCulled = false; group.add(roverMesh); tri(roverGeo);
+
+  // ground decal per rover: soft contact shadow under the hull + the headlight pool on the road ahead (premultiplied: glow adds, shadow darkens)
+  const decalGeo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).translate(0.5, 0, 0).scale(26, 1, 14).translate(-5, 0.06, 0);
+  const aOn = new THREE.InstancedBufferAttribute(new Float32Array(NR * 2), 2); decalGeo.setAttribute('aOn', aOn); aOn.setUsage(THREE.DynamicDrawUsage);
+  const decalMat = new THREE.ShaderMaterial({
+    uniforms: U, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
+    blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
+    vertexShader: `attribute vec2 aOn; varying vec2 vP; varying vec2 vOn; void main(){ vP = position.xz; vOn = aOn;
+      gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(position, 1.); }`,
+    fragmentShader: `uniform float uDay; varying vec2 vP; varying vec2 vOn; void main(){
+      float sh = (1. - smoothstep(0.55, 1.05, length(vP / vec2(3.7, 1.75)))) * (0.35 + 0.25 * uDay);
+      float x = vP.x - 3.1, w = 0.9 + max(x, 0.) * 0.42, lat = abs(vP.y);
+      float pool = step(0., x) * smoothstep(0., 1.5, x) * exp(-x / 5.) * (1. - smoothstep(w * 0.55, w, lat)) * (1. - smoothstep(14., 20., x));
+      gl_FragColor = vec4(vec3(1., 0.86, 0.66) * pool * vOn.x * 0.5, sh * vOn.y); }`,
+  });
+  const decal = new THREE.InstancedMesh(decalGeo, decalMat, NR); decal.frustumCulled = false; decal.renderOrder = -1; group.add(decal);
+
+  // ------------------------------------------------------------ suited figures: helmet, PLSS, legs swing in the shader
+  const figGeo = (() => {
+    const G = [], limb = (g, l) => { const n = part(g, 0); n.setAttribute('limb', new THREE.Float32BufferAttribute(new Float32Array(n.attributes.position.count).fill(l), 1)); return n; };
+    for (const s of [-1, 1]) G.push(limb(new THREE.BoxGeometry(0.2, 0.86, 0.2).translate(0, -0.43, 0).translate(0, 0.9, s * 0.13), s));   // legs, pivot at the hip
+    for (const s of [-1, 1]) G.push(limb(new THREE.BoxGeometry(0.15, 0.66, 0.15).translate(0, -0.33, 0).translate(0, 1.5, s * 0.3), -s * 0.7)); // arms swing against the legs
+    G.push(limb(new THREE.BoxGeometry(0.34, 0.66, 0.48).translate(0, 1.24, 0), 0));                               // torso
+    G.push(limb(new THREE.BoxGeometry(0.26, 0.6, 0.42).translate(-0.29, 1.3, 0), 0));                             // PLSS backpack
+    G.push(limb(new THREE.IcosahedronGeometry(0.17, 1).translate(0.02, 1.72, 0), 2));                              // helmet
+    const g = mergeGeometries(G); G.forEach(x => x.dispose()); return g;
+  })();
+  const NF = high ? 16 : 9, aWalk = new THREE.InstancedBufferAttribute(new Float32Array(NF * 2), 2); aWalk.setUsage(THREE.DynamicDrawUsage); figGeo.setAttribute('aWalk', aWalk);
+  const figMat = new THREE.MeshStandardMaterial({ color: 0xe8e4dc, roughness: 0.75, metalness: 0 });
+  figMat.onBeforeCompile = sh => {
+    Object.assign(sh.uniforms, U);
+    sh.vertexShader = 'uniform float uT; attribute float limb; attribute vec2 aWalk; varying float vLimb; varying float vFy;\n' + sh.vertexShader
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        vLimb = limb; vFy = position.y;
+        if (abs(limb) > 0.5 && abs(limb) < 1.5) { float hip = abs(limb) > 0.9 ? 0.9 : 1.5; float sw = sin(uT * 7.5 + aWalk.x) * aWalk.y * sign(limb) * (abs(limb) > 0.9 ? 0.45 : 0.35);
+          vec2 q = vec2(transformed.x, transformed.y - hip); transformed.xy = vec2(q.x * cos(sw) - q.y * sin(sw), q.x * sin(sw) + q.y * cos(sw) + hip); }
+        transformed.y += abs(sin(uT * 7.5 + aWalk.x)) * aWalk.y * 0.04;`);
+    sh.fragmentShader = 'uniform float uNight; varying float vLimb; varying float vFy;\n' + sh.fragmentShader
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        diffuseColor.rgb *= vFy < 0.25 ? 0.45 : (vFy < 0.95 ? 0.86 : 1.);                                 // boots, dusty legs`);
+  };
+  figMat.customProgramCacheKey = () => 'life-fig';
+  const figMesh = new THREE.InstancedMesh(figGeo, figMat, NF); figMesh.castShadow = false; figMesh.receiveShadow = true; figMesh.frustumCulled = false; group.add(figMesh); tri(figGeo);
+  // scripts: ship crews walk out from the legs once the dust settles; the pad crew works the apron until the launch clears it
+  // gR clock (rockets.js table, CINEMA-NOTES): pad pours 0.30, scaffold drops 0.71-0.76, ignition 0.80. Crew and pad deliveries clear by 0.77.
+  const PAD_ON = 0.31, PAD_OFF = 0.77;
+  const figs = [], [bp, tw] = [L.buildPad, L.buildPad.tower];
+  L.ships.forEach((s, si) => { for (let k = 0; k < (high ? 4 : 2); k++) {
+    const a = rnd() * TAU, a2 = a + (rnd() - 0.5) * 1.2, r0 = 6.5, r1 = 11 + rnd() * 9;
+    figs.push({ A: [s.x + Math.cos(a) * r0, s.z + Math.sin(a) * r0], B: [s.x + Math.cos(a2) * r1, s.z + Math.sin(a2) * r1], v: 1 + rnd() * 0.4, dwell: 4 + rnd() * 10, ph: rnd() * 60,
+      on: arrive + 0.012 + si * 0.02 + k * 0.006, off: 2, stand: k === 2 }); } });
+  while (figs.length < NF) {
+    let A, B, tries = 0;
+    do { const a = rnd() * TAU, r = 19 + rnd() * 9, a2 = a + (rnd() - 0.5) * 0.8, r2 = 19 + rnd() * 9; A = [bp.x + Math.cos(a) * r, bp.z + Math.sin(a) * r]; B = [bp.x + Math.cos(a2) * r2, bp.z + Math.sin(a2) * r2]; }
+    while (++tries < 20 && (Math.hypot(A[0] - tw.x, A[1] - tw.z) < 7 || Math.hypot(B[0] - tw.x, B[1] - tw.z) < 7 || A[0] > bp.x + 18 || B[0] > bp.x + 18)); // off the tower and off the avenue
+    figs.push({ A, B, v: 0.9 + rnd() * 0.5, dwell: 3 + rnd() * 12, ph: rnd() * 60, on: PAD_ON + rnd() * 0.1, off: PAD_OFF - rnd() * 0.03, stand: rnd() < 0.3 });
+  }
+  figs.length = Math.min(figs.length, NF);
+
+  // ------------------------------------------------------------ comms masts: red/white lattice towers with a dish, on clear ground
+  const clearOf = (x, z, m) => L.habs.every(l => Math.hypot(l.x - x, l.z - z) > l.r + m) && L.fabs.every(f => Math.hypot(f.x - x, f.z - z) > Math.max(f.w, f.d) * 0.6 + m)
+    && L.domes.every(d => Math.hypot(d.x - x, d.z - z) > d.r + m) && RINGS.every(R => Math.abs(Math.hypot(x, z) - R) > 6 + m * 0.3)
+    && [...Array(8)].every((_, k) => { const a = k * Q4, r = x * Math.cos(a) + z * Math.sin(a); return r < 14 || Math.abs(-x * Math.sin(a) + z * Math.cos(a)) > 6; })
+    && Math.hypot(x - bp.x, z - bp.z) > 34 && L.ships.every(s => Math.hypot(x - s.x, z - s.z) > 30);
+  const masts = [];
+  for (const [r, a, h] of [[30, 2.6, 34], [226, 0.62, 28], [222, 2.0, 30], [230, 3.6, 26], [218, 4.35, 30], [228, 5.4, 26], [140, 5.1, 24], [116, 1.2, 22]]) {
+    for (let d = 0; d < 40; d++) { const aa = a + (d % 2 ? 1 : -1) * Math.ceil(d / 2) * 0.015, x = Math.cos(aa) * r, z = Math.sin(aa) * r; if (clearOf(x, z, 4)) { masts.push({ x, z, h, rot: rnd() * TAU, bt: 0.15 + r / 240 * 0.45 + rnd() * 0.05 }); break; } }
+    if (!high && masts.length >= 5) break;
+  }
+  const mastGeo = (() => {
+    const G = [], H = 1, legs = 3, bw = 0.07, top = 0.016, B = 0.055; // unit height, scaled per instance
+    const P = (i, y) => { const a = i / legs * TAU, r = B + (top - B) * y; return new V3(Math.cos(a) * r, y, Math.sin(a) * r); };
+    const bar = (p, q, w) => { const d = q.clone().sub(p), l = d.length(), g = new THREE.BoxGeometry(w, l, w); g.translate(0, l / 2, 0); g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new V3(0, 1, 0), d.normalize())); g.translate(p.x, p.y, p.z); return part(g, 0); };
+    const N = high ? 9 : 6;
+    for (let i = 0; i < legs; i++) { G.push(bar(P(i, 0), P(i, H), 0.006)); for (let k = 0; k < N; k++) G.push(bar(P(i, k / N), P((i + 1) % legs, (k + 1) / N), 0.0028)); }
+    const dish = new THREE.SphereGeometry(0.05, high ? 12 : 8, 4, 0, TAU, 0, 0.9); dish.rotateZ(-1.2); dish.translate(0.03, 0.8, 0); G.push(part(dish, 1));
+    G.push(part(new THREE.BoxGeometry(0.004, 0.18, 0.004).translate(0, 1.09, 0), 0));
+    G.push(part(new THREE.BoxGeometry(0.03, 0.05, 0.03).translate(0.02, 0.62, 0.02), 1));                         // equipment box
+    const g = mergeGeometries(G); G.forEach(x => x.dispose()); return g;
+  })();
+  const mastMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.55, metalness: 0.3, envMap, envMapIntensity: 0.5 });
+  mastMat.onBeforeCompile = sh => {
+    Object.assign(sh.uniforms, U);
+    sh.vertexShader = 'attribute float kind; varying float vK; varying float vMy;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvK = kind; vMy = position.y;');
+    sh.fragmentShader = 'uniform float uNight; varying float vK; varying float vMy;\n' + sh.fragmentShader
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        diffuseColor.rgb = vK > 0.5 ? vec3(0.85, 0.83, 0.8) : mix(vec3(0.84, 0.82, 0.78), vec3(0.78, 0.26, 0.12), step(0.5, fract(vMy * 7.)));`)
+      .replace('#include <lights_fragment_maps>', '#include <lights_fragment_maps>\niblIrradiance *= 1. - 0.9 * uNight; radiance *= 1. - 0.9 * uNight;');
+  };
+  mastMat.customProgramCacheKey = () => 'life-mast';
+  const mastMesh = new THREE.InstancedMesh(mastGeo, mastMat, Math.max(1, masts.length)); mastMesh.castShadow = mastMesh.receiveShadow = true;
+  mastMesh.boundingSphere = new THREE.Sphere(new V3(0, 10, 0), 300); group.add(mastMesh); tri(mastGeo);
+
+  // ------------------------------------------------------------ graded roads: compacted lanes, tyre ruts, lamp pools (analytic, so overlaps match exactly)
+  const roadGeo = (() => {
+    const pos = [], idx = [], quad = (a, b, c, d) => { const o = pos.length / 3; pos.push(...a, ...b, ...c, ...d); idx.push(o, o + 1, o + 2, o, o + 2, o + 3); }, W = 4.2, Y = 0.035;
+    for (const R of RINGS) { const n = 256; for (let i = 0; i < n; i++) { const a0 = i / n * TAU, a1 = (i + 1) / n * TAU, c0 = Math.cos(a0), s0 = Math.sin(a0), c1 = Math.cos(a1), s1 = Math.sin(a1);
+      quad([c0 * (R - W), Y, s0 * (R - W)], [c1 * (R - W), Y, s1 * (R - W)], [c1 * (R + W), Y, s1 * (R + W)], [c0 * (R + W), Y, s0 * (R + W)]); } }
+    const strip = (ax, az, bx, bz, n) => { const dx = bx - ax, dz = bz - az, l = Math.hypot(dx, dz), nx = -dz / l * W, nz = dx / l * W;
+      for (let i = 0; i < n; i++) { const f0 = i / n, f1 = (i + 1) / n; quad([ax + dx * f0 - nx, Y, az + dz * f0 - nz], [ax + dx * f0 + nx, Y, az + dz * f0 + nz], [ax + dx * f1 + nx, Y, az + dz * f1 + nz], [ax + dx * f1 - nx, Y, az + dz * f1 - nz]); } };
+    for (let k = 0; k < 8; k++) { const a = k * Q4; strip(Math.cos(a) * 19, Math.sin(a) * 19, Math.cos(a) * 252, Math.sin(a) * 252, 24); }
+    strip(SPUR[0][0], SPUR[0][1], SPUR[1][0], SPUR[1][1], 6);
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals(); g.computeBoundingSphere(); return g;
+  })();
+  const roadMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.97, metalness: 0, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+  const RGL = /* glsl */ `
+    uniform float uG, uNight; varying vec2 vRP;
+    float segD(vec2 p, vec2 a, vec2 b){ vec2 pa = p - a, ba = b - a; float h = clamp(dot(pa, ba) / dot(ba, ba), 0., 1.); return length(pa - ba * h); }
+    // nearest road: d = |lateral offset|, build alpha, lamp pool
+    void road(vec2 p, out float d, out float lat, out float built, out float pool){
+      float r = length(p), an = atan(p.y, p.x); if (an < 0.) an += 6.2831853;
+      d = 1e4; built = 0.; pool = 0.; lat = 0.;
+      for (int i = 0; i < 3; i++) { float R = i == 0 ? 62. : (i == 1 ? 132. : 204.), l = r - R;
+        if (abs(l) < d) { d = abs(l); lat = l; float bt = 0.02 + R / 236. * 0.55; built = smoothstep(bt, bt + 0.06, uG);
+          float st = 6.2831853 / 100., ai = floor(an / st + 0.5), lb = 0.04 + R / 236. * 0.55 + ai / 100. * 0.08, al = (an - ai * st) * R;
+          pool = smoothstep(lb, lb + 0.025, uG) * (exp(-(al * al + (l - 2.6) * (l - 2.6)) / 6.) + exp(-(al * al + (l + 2.6) * (l + 2.6)) / 6.)); } }
+      for (int k = 0; k < 8; k++) { float a = float(k) * 0.78539816; vec2 u = vec2(cos(a), sin(a)); float al = dot(p, u), l = dot(p, vec2(-u.y, u.x));
+        if (al > 19. && al < 252. && abs(l) < d) { d = abs(l); lat = l; built = (k == 6 ? smoothstep(0., 0.04, uG + 0.04) : smoothstep(al / 250. * 0.6 - 0.04, al / 250. * 0.6 + 0.01, uG)) * smoothstep(252., 242., al);
+          float rk = 24. + 4. * clamp(floor((al - 24.) / 4. + 0.5), 0., 56.), lb = 0.02 + rk / 250. * 0.62, da = al - rk;
+          pool = smoothstep(lb, lb + 0.025, uG) * (exp(-(da * da + (l - 3.) * (l - 3.)) / 6.) + exp(-(da * da + (l + 3.) * (l + 3.)) / 6.)); } }
+      { float sd = segD(p, vec2(${SPUR[0][0].toFixed(1)}, ${SPUR[0][1].toFixed(1)}), vec2(${SPUR[1][0].toFixed(1)}, ${SPUR[1][1].toFixed(1)}));
+        if (sd < d) { d = sd; lat = sd; built = smoothstep(0., 0.04, uG + 0.04) * smoothstep(0., 7., length(p - vec2(${SPUR[1][0].toFixed(1)}, ${SPUR[1][1].toFixed(1)}))); pool = 0.; } }
+    }
+`;
+  roadMat.onBeforeCompile = sh => {
+    Object.assign(sh.uniforms, U);
+    sh.vertexShader = 'varying vec2 vRP;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvRP = position.xz;');
+    sh.fragmentShader = RGL + sh.fragmentShader
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        float rd, rl, rb, rp; road(vRP, rd, rl, rb, rp);
+        float fw = max(fwidth(rl), 1e-3), al = abs(rl), rf = 1. - smoothstep(0.08, 0.5, fw);               // ruts fade before they alias
+        float rut = 0.; for (int i = 0; i < 4; i++) { float c = float(i) < 2. ? 1.6 : -1.6, o = mod(float(i), 2.) < 0.5 ? 0.82 : -0.82; float q = (rl - c - o) / max(0.28, fw); rut += exp(-q * q); }
+        float edge = 1. - smoothstep(3.0, 4.2, al);
+        diffuseColor.rgb = mix(vec3(0.36, 0.22, 0.13), vec3(0.25, 0.15, 0.09), min(rut, 1.) * rf);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.6, 0.42, 0.28), smoothstep(2.8, 3.6, al) * 0.5);   // pushed-up berm, paler
+        diffuseColor.a = edge * rb * (0.42 + 0.22 * min(rut, 1.) * rf);
+        float rPool = rp * edge;`)
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        totalEmissiveRadiance += vec3(1., 0.62, 0.3) * rPool * 0.09 * uNight * uNight;`);
+  };
+  roadMat.customProgramCacheKey = () => 'life-road';
+  const roads = new THREE.Mesh(roadGeo, roadMat); roads.receiveShadow = true; roads.renderOrder = -2; group.add(roads); tri(roadGeo);
+
+  // ------------------------------------------------------------ lights + dust: two point clouds, rewritten each frame
+  const NL = NR * 5 + NF + masts.length * 2, lP = new Float32Array(NL * 3), lC = new Float32Array(NL * 4); // rgb + world size
+  const lightGeo = new THREE.BufferGeometry(); lightGeo.setAttribute('position', new THREE.BufferAttribute(lP, 3).setUsage(THREE.DynamicDrawUsage)); lightGeo.setAttribute('aC', new THREE.BufferAttribute(lC, 4).setUsage(THREE.DynamicDrawUsage));
+  const lightMat = new THREE.ShaderMaterial({ uniforms: U, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    vertexShader: `uniform float uPx; attribute vec4 aC; varying vec3 vC; void main(){ vec4 mv = modelViewMatrix * vec4(position, 1.); vC = aC.rgb;
+      float px = aC.w * uPx / max(-mv.z, 1.); vC *= min(1., px * px); gl_PointSize = clamp(px, 1.5, 28.); gl_Position = projectionMatrix * mv; if (dot(aC.rgb, vec3(1.)) < 1e-3) gl_Position = vec4(2., 2., 2., 1.); }`,
+    fragmentShader: `varying vec3 vC; void main(){ float d = length(gl_PointCoord - .5) * 2.; gl_FragColor = vec4(vC * (exp(-d * d * 5.) + 0.35 * exp(-d * d * 1.2)) * (1. - smoothstep(0.85, 1., d)), 1.); }` });
+  const lights = new THREE.Points(lightGeo, lightMat); lights.frustumCulled = false; lights.onBeforeRender = pxHook; group.add(lights);
+  const K = high ? 12 : 7, ND = NR * K, dP = new Float32Array(ND * 3), dA = new Float32Array(ND * 2); // alpha, world size
+  const dustGeo = new THREE.BufferGeometry(); dustGeo.setAttribute('position', new THREE.BufferAttribute(dP, 3).setUsage(THREE.DynamicDrawUsage)); dustGeo.setAttribute('aD', new THREE.BufferAttribute(dA, 2).setUsage(THREE.DynamicDrawUsage));
+  const dustMat = new THREE.ShaderMaterial({ uniforms: U, transparent: true, depthWrite: false, blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
+    vertexShader: `uniform float uPx; attribute vec2 aD; varying float vA; void main(){ vec4 mv = modelViewMatrix * vec4(position, 1.); float px = aD.y * uPx / max(-mv.z, 1.);
+      vA = aD.x * min(1., px / 2.); gl_PointSize = clamp(px, 1., 64.); gl_Position = projectionMatrix * mv; if (aD.x < 1e-3) gl_Position = vec4(2., 2., 2., 1.); }`,
+    fragmentShader: `uniform float uDay; varying float vA; void main(){ float d = length(gl_PointCoord - .5) * 2., a = vA * exp(-d * d * 2.6) * (1. - smoothstep(0.8, 1., d));
+      gl_FragColor = vec4(vec3(0.74, 0.5, 0.32) * (0.12 + 0.88 * uDay) * a, a); }` });
+  const dust = new THREE.Points(dustGeo, dustMat); dust.frustumCulled = false; dust.onBeforeRender = pxHook; dust.renderOrder = 2; group.add(dust);
+
+  // ------------------------------------------------------------ per frame
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), yA = new V3(0, 1, 0), sc = new V3(), pv = new V3(), o = {}, o2 = {};
+  function pose(v, T) { // -> { x, z, tx, tz (travel direction), moving }
+    const p = v.r.path;
+    if (p.closed) { at(p, v.s0 + v.dir * v.v * T, o); if (v.dir < 0) { o.tx = -o.tx; o.tz = -o.tz; } o.moving = 1; o.sb = v.s0 + v.dir * v.v * T; o.db = v.dir; return o; }
+    const tr = p.len / v.v, C = 2 * tr + 2 * v.r.dwell, u = (((T + v.s0 * C) % C) + C) % C; let s, d = 1, mv = 1;
+    if (u < tr) s = u * v.v; else if (u < tr + v.r.dwell) { s = p.len; mv = 0; } else if (u < 2 * tr + v.r.dwell) { s = p.len - (u - tr - v.r.dwell) * v.v; d = -1; } else { s = 0; mv = 0; d = -1; }
+    at(p, s, o); if (d < 0) { o.tx = -o.tx; o.tz = -o.tz; } o.moving = mv; o.sb = s; o.db = d; return o;
+  }
+  const LANE = 1.7;
+  function update(g, t, night, gR = g) {
+    U.uT.value = t; U.uG.value = g; U.uNight.value = night; U.uDay.value = 1 - night;
+    const T = t + g * 120, Tf = t + gR * 60; // timelapse clocks: scroll speeds the traffic up, walkers a little
+    let li = 0; const L4 = (x, y, z, r, gg, b, s) => { lP[li * 3] = x; lP[li * 3 + 1] = y; lP[li * 3 + 2] = z; lC[li * 4] = r; lC[li * 4 + 1] = gg; lC[li * 4 + 2] = b; lC[li * 4 + 3] = s; li++; };
+    rovers.forEach((v, i) => {
+      const live = v.ship ? sst(arrive + 0.004 + v.k * 0.01, arrive + 0.02 + v.k * 0.01, gR) : v.r === padRun ? sst(PAD_ON, PAD_ON + 0.02, gR) * (1 - sst(PAD_OFF - 0.02, PAD_OFF, gR)) : sst(v.bt, v.bt + 0.02, g);
+      const P = pose(v, T), hd = Math.atan2(P.tz, P.tx), rx = -P.tz, rz = P.tx, x = P.x + rx * LANE, z = P.z + rz * LANE;
+      q.setFromAxisAngle(yA, -hd); m4.compose(pv.set(x, 0, z), q, sc.setScalar(Math.max(live, 1e-4))); roverMesh.setMatrixAt(i, m4); decal.setMatrixAt(i, m4);
+      const head = sst(0.05 + v.h * 0.25, 0.14 + v.h * 0.25, night) * live; aOn.setXY(i, head, live);
+      const fx = P.tx, fz = P.tz, hh = head * 1.8, tl = head * 0.9 * (P.moving ? 1 : 0.4);
+      for (const s of [-0.85, 0.85]) { L4(x + fx * 3.15 + rx * s, 1.28, z + fz * 3.15 + rz * s, hh, hh * 0.9, hh * 0.75, 0.55); L4(x - fx * 3.15 + rx * s * 1.15, 1.3, z - fz * 3.15 + rz * s * 1.15, tl, tl * 0.08, tl * 0.05, 0.4); }
+      const bk = live * (0.25 + 0.75 * night) * (Math.sin(t * 3 + i * 1.3) > 0.6 ? 1 : 0); L4(x - fx * 0.4, 3.45, z - fz * 0.4, bk, bk * 0.55, bk * 0.1, 0.3); // amber roof beacon
+      // dust: puffs stream back along the road behind the wheels, rising and spreading as they age
+      const ph = (T * 1.6 + v.h * 7) % 1, mvA = P.moving * live * (0.85 - 0.6 * night);
+      for (let k = 0; k < K; k++) {
+        const age = (k + ph) / K, s = P.sb - P.db * (3.6 + age * K * 2.4), j = i * K + k;
+        at(v.r.path, s, o2); const side = ((k * 7 + i) % 3 - 1) * 0.9 * age, wx = age * age * 4;
+        dP[j * 3] = o2.x + rx * (LANE + side) + wx; dP[j * 3 + 1] = 0.5 + age * 2.6; dP[j * 3 + 2] = o2.z + rz * (LANE + side) + wx * 0.4;
+        dA[j * 2] = mvA * Math.sin(Math.PI * Math.min(1, age * 1.3)) * 0.34 * (1 - age); dA[j * 2 + 1] = 2.2 + age * 7;
+      }
+    });
+    roverMesh.instanceMatrix.needsUpdate = decal.instanceMatrix.needsUpdate = true; aOn.needsUpdate = true;
+    figs.forEach((f, i) => {
+      const live = sst(f.on, f.on + 0.01, gR) * (1 - sst(f.off - 0.01, f.off, gR)), dx = f.B[0] - f.A[0], dz = f.B[1] - f.A[1], l = Math.hypot(dx, dz), tr = l / f.v;
+      let x = f.A[0], z = f.A[1], hd = Math.atan2(dz, dx), w = 0;
+      if (!f.stand) { const C = 2 * tr + 2 * f.dwell, u = (Tf + f.ph) % C;
+        if (u < tr) { const k = u / tr; x += dx * k; z += dz * k; w = 1; } else if (u < tr + f.dwell) { x = f.B[0]; z = f.B[1]; hd += Math.PI; }
+        else if (u < 2 * tr + f.dwell) { const k = 1 - (u - tr - f.dwell) / tr; x += dx * k; z += dz * k; hd += Math.PI; w = 1; } }
+      else hd += Math.sin(Tf * 0.05 + f.ph) * 1.5;
+      q.setFromAxisAngle(yA, -hd); m4.compose(pv.set(x, 0, z), q, sc.setScalar(Math.max(live, 1e-4))); figMesh.setMatrixAt(i, m4);
+      aWalk.setXY(i, f.ph * 3.1, w);
+      const hl = live * sst(0.2, 0.6, night) * 0.9; L4(x + Math.cos(hd) * 0.2, 1.72, z + Math.sin(hd) * 0.2, hl, hl * 0.92, hl * 0.8, 0.22); // helmet lamp
+    });
+    figMesh.instanceMatrix.needsUpdate = true; aWalk.needsUpdate = true;
+    masts.forEach((m, i) => {
+      const k = sst(m.bt, m.bt + 0.05, g); q.setFromAxisAngle(yA, m.rot); m4.compose(pv.set(m.x, 0, m.z), q, sc.set(m.h, Math.max(m.h * k, 1e-3), m.h)); mastMesh.setMatrixAt(i, m4);
+      const b = k > 0.98 ? (0.35 + 0.65 * night) * (Math.sin(t * 2.2 + i) > 0.3 ? 1.6 : 0.05) : 0; L4(m.x, m.h * 1.18, m.z, b, b * 0.1, b * 0.06, 0.8); L4(m.x, m.h * 0.62, m.z, b * 0.5, b * 0.05, b * 0.03, 0.6);
+    });
+    if (!masts.length) mastMesh.setMatrixAt(0, m4.makeScale(0, 0, 0));
+    mastMesh.instanceMatrix.needsUpdate = true;
+    while (li < NL) L4(0, -50, 0, 0, 0, 0, 0);
+    lightGeo.attributes.position.needsUpdate = lightGeo.attributes.aC.needsUpdate = true; dustGeo.attributes.position.needsUpdate = dustGeo.attributes.aD.needsUpdate = true;
+  }
+  update(0, 0, 0, 0);
+  return { group, update, masts, tris: TRIS, draws: 7, counts: { rovers: NR, figures: figs.length, masts: masts.length } };
+}

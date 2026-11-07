@@ -12,6 +12,58 @@
 //   A.night.value = 0..1   // every night glow (glass, windows, lamps, dome interiors) reads this
 //
 // Units: 1 unit = 1 m once main.js applies its scale. Local up is +y.
+//
+// colonyLayout({ high, rockets }): the Jezero plan as plain data (same numbers and same seeded stream as main.js), for the
+// D6.1 footer and the colony life in machines.js. See the API note in d61/CINEMA-NOTES.md.
+
+// D6.1 cinematic look (staggered lights at dusk): on with D5_CFG.cine, or by default whenever 6.1's rockets flag is set.
+// D5 and D6 never set either, so their programs and pixels are unchanged.
+const D5C = (typeof window !== 'undefined' && window.D5_CFG) || {};
+export const CINE = D5C.mode === 'mars' && (D5C.cine ?? !!D5C.rockets);
+
+// ---------------------------------------------------------------------------------------------------------------
+// city plan. Mirrors populateColony() in main.js: rings, 8 avenues, hub + 4 outer domes, glass corridors, hab lots
+// (seed 7 Park-Miller, the stream main.js starts the colony with), fab sheds, the solar farm, the old pad, the rocket sites.
+export function colonyLayout({ high = true, rockets = true } = {}) {
+  const rnd = (() => { let a = 7; return () => ((a = (a * 16807) % 2147483647) / 2147483647); })();
+  const RINGS = [62, 132, 204], AVE = 8, ROCK_SITES = { land: [[55, -150], [15, -168]], build: [-25, -100] };
+  const domes = [{ x: 0, z: 0, r: 20, bt: 0.02, kind: 'hub' }], tubes = [];
+  for (let k = 0; k < 4; k++) { const a = Math.PI / 8 + k * Math.PI / 2; domes.push({ x: Math.cos(a) * 96, z: Math.sin(a) * 96, r: 15, bt: 0.26 + k * 0.08, kind: 'outer' }); tubes.push({ a, r0: 19, len: 62, y: 2.6, radius: 2.4, bt: 0.12 + k * 0.07 }); }
+  const angD = (a, b) => Math.abs(((a - b) % (Math.PI * 2) + Math.PI * 3) % (Math.PI * 2) - Math.PI);
+  const habs = [], fabs = [];
+  for (let r = 34; r < 238; r += 14) {
+    let a = r * 0.11;
+    while (a < r * 0.11 + Math.PI * 2 - 0.05) {
+      const rd = Math.min(6.6, 2.6 + rnd() * 3.2 + 5 * Math.exp(-r / 70)), x = Math.cos(a) * r, z = Math.sin(a) * r;
+      const nearAve = [...Array(AVE)].some((_, k) => angD(a, k * Math.PI / 4) * r < rd + 4);
+      const nearTube = r < 86 && tubes.some(t => angD(a, t.a) * r < rd + 3.5);
+      const clear = !(nearAve || nearTube || RINGS.some(R => Math.abs(r - R) < rd + 3.5) || domes.some(d => Math.hypot(x - d.x, z - d.z) < d.r + rd + 3));
+      if (clear && rnd() > 0.1) {
+        const bt = 0.06 + (r / 238) * 0.58 + rnd() * 0.08;
+        if (r > 175 && rnd() < 0.28) fabs.push({ x, z, w: 8 + rnd() * 4, d: 5, h: 2.5 + rnd() * 2.5, rot: a, bt });
+        else habs.push({ x, z, r: rd, ys: 0.72 + rnd() * 0.35, rot: rnd() * 6.28, bt, seed: rnd() * 50 });
+      }
+      a += (2 * rd + 2.6) / r;
+    }
+  }
+  // the same skips main.js applies: every other hab in build order on the low tier, and the rocket zones kept clear
+  const order = [...habs].sort((a, b) => a.bt - b.bt);
+  if (!high) order.forEach((l, i) => (l.skip = i % 2 === 1));
+  if (rockets) order.forEach(l => { if (ROCK_SITES.land.some(([x, z]) => Math.hypot(l.x - x, l.z - z) < l.r + 16) || Math.hypot(l.x - ROCK_SITES.build[0], l.z - ROCK_SITES.build[1]) < l.r + 30) l.skip = true; });
+  // dome type per hab, the same hash the shell shader uses (0 mostly glass, 1 skylight crown, 2 window band, 3 mixed)
+  const ih = (x, z) => { const s = Math.sin(x * 0.1271 + z * 0.3117 + 1.7) * 43758.5453; return s - Math.floor(s); };
+  habs.forEach(l => { const h = ih(l.x, l.z); l.type = h < 0.26 ? 0 : h < 0.56 ? 1 : h < 0.8 ? 2 : 3; l.h = l.r * l.ys; });
+  const solar = [];
+  for (let r = 262; r < 345; r += 4.2) for (let a = 0.25; a < 1.35; a += 3.2 / r) solar.push({ x: Math.cos(a) * r, z: Math.sin(a) * r, bt: 0.22 + (r - 262) / 83 * 0.22 + (a - 0.25) * 0.12 });
+  return {
+    units: 'm, colony space (+y up); bt = build start in city progress 0..1',
+    rings: RINGS.map(r => ({ r, bt: 0.02 + r / 236 * 0.55 })),
+    avenues: [...Array(AVE)].map((_, k) => ({ a: k * Math.PI / 4, r0: 20, r1: 250, bt: 0 })),
+    domes, tubes, habs: habs.filter(l => !l.skip), fabs, solar: { r0: 262, r1: 345, a0: 0.25, a1: 1.35, panel: [3, 2.2], tilt: 0.5, cells: solar },
+    oldPad: { x: Math.cos(-0.55) * 300, z: Math.sin(-0.55) * 300, r: 26 },
+    ships: ROCK_SITES.land.map(([x, z]) => ({ x, z })), buildPad: { x: ROCK_SITES.build[0], z: ROCK_SITES.build[1], r: 16.5, tower: { x: ROCK_SITES.build[0] - 12, z: ROCK_SITES.build[1] + 10 } },
+  };
+}
 
 const HASH = /* glsl */ `
 float habInstHash(){
@@ -32,6 +84,11 @@ void habType(float h, out float frac, out vec3 w){
 float habHasVest(float h){ return step(0.42, fract(h * 7.31)); }
 float habHasAnt(float h){ return step(0.62, fract(h * 3.77)); }
 `;
+// CINE only: each hab (and each room in it) switches on at its own point in the dusk, warm, then all ride up together
+const LIT = /* glsl */ `
+float habLit(float h, float j){ float t0 = 0.03 + 0.6 * fract(h * 13.7 + j); return smoothstep(t0, t0 + 0.04, night) * (0.55 + 0.45 * night); }
+`;
+const LITF = CINE ? LIT : ''; // prepended to fragment shaders after their night uniform
 // env reflections fade at night (the env map is a static golden-hour capture); hemi/ambient are dimmed by main.js
 const ENV_NIGHT = /* glsl */ `#include <lights_fragment_maps>
   iblIrradiance *= 1. - 0.9 * night; radiance *= 1. - 0.9 * night;`;
@@ -155,7 +212,10 @@ export function createHabitatAssets({ THREE, renderer, envMap = null, frameDetai
 
   // shared material plumbing: every patched material gets its own program cache key
   function patch(mat, key, fn) {
-    mat.onBeforeCompile = sh => { sh.uniforms.night = night; fn(sh); };
+    mat.onBeforeCompile = sh => { sh.uniforms.night = night; fn(sh);
+      // cine: geometric specular AA (GRADE note) so far struts and glass facets stop sparkling
+      if (CINE) sh.fragmentShader = sh.fragmentShader.replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+        { vec3 dnx = dFdx(normal), dny = dFdy(normal); float k = min(.18, 2. * max(dot(dnx, dnx), dot(dny, dny))); roughnessFactor = sqrt(roughnessFactor * roughnessFactor + k); }`); };
     mat.customProgramCacheKey = () => 'hab-' + key;
     mats.push(mat); return mat;
   }
@@ -216,7 +276,7 @@ export function createHabitatAssets({ THREE, renderer, envMap = null, frameDetai
       float ih = habInstHash(), frac; vec3 hw; habType(ih, frac, hw);
       transformed *= kind < 0.5 ? step(frac, dot(hw, sel)) : habHasVest(ih);
       vSel = sel; vBary = bary; vKind = kind; vIh = ih; vY = position.y; vFrac = frac;`);
-    sh.fragmentShader = `uniform float night; varying vec3 vSel; varying vec3 vBary; varying float vKind; varying float vIh; varying float vY; varying float vFrac;\n` + sh.fragmentShader
+    sh.fragmentShader = `uniform float night; varying vec3 vSel; varying vec3 vBary; varying float vKind; varying float vIh; varying float vY; varying float vFrac;\n` + LITF + sh.fragmentShader
       .replace('#include <color_fragment>', `#include <color_fragment>
       float pr = fract(vSel.z * 17.3 + vIh * 5.1), edge = min(min(vBary.x, vBary.y), vBary.z), seam = smoothstep(0.012, 0.075, edge);
       float solar = vKind < 0.5 ? step(0.9, vSel.z) * step(vFrac, 0.3) * step(0.22, vY) * step(vY, 0.86) : 0.;
@@ -236,7 +296,7 @@ export function createHabitatAssets({ THREE, renderer, envMap = null, frameDetai
       .replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>
       metalnessFactor = mix(metalnessFactor, 0.55, max(solar, win));`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
-      totalEmissiveRadiance += vec3(1., 0.62, 0.3) * win * (0.15 + 2.6 * night);`)
+      totalEmissiveRadiance += vec3(1., 0.62, 0.3) * win * (0.15 + 2.6 * ${CINE ? 'habLit(vIh, 0.)' : 'night'});`)
       .replace('#include <lights_fragment_maps>', ENV_NIGHT);
   });
 
@@ -246,7 +306,7 @@ export function createHabitatAssets({ THREE, renderer, envMap = null, frameDetai
       float ih = habInstHash(), frac; vec3 hw; habType(ih, frac, hw);
       transformed *= 1. - step(frac, dot(hw, sel));
       vSel = sel; vBary = bary; vIh = ih; vY = position.y;`);
-    sh.fragmentShader = `uniform float night; varying vec3 vSel; varying vec3 vBary; varying float vIh; varying float vY;\n` + sh.fragmentShader
+    sh.fragmentShader = `uniform float night; varying vec3 vSel; varying vec3 vBary; varying float vIh; varying float vY;\n` + LITF + sh.fragmentShader
       .replace('#include <color_fragment>', `#include <color_fragment>
       float pr = fract(vSel.z * 23.7 + vIh * 3.3), edge = min(min(vBary.x, vBary.y), vBary.z), mull = 1. - smoothstep(0.03, 0.07, edge);
       diffuseColor.rgb = mix(mix(vec3(0.30, 0.34, 0.39), vec3(0.42, 0.33, 0.24), step(0.62, pr)), vec3(0.2, 0.19, 0.18), mull);`)
@@ -257,7 +317,7 @@ export function createHabitatAssets({ THREE, renderer, envMap = null, frameDetai
       metalnessFactor = mix(metalnessFactor, 0.4, mull);`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
       float on = 0.45 + 0.55 * step(0.3, fract(vIh * 11.3)), lit = 0.35 + 0.65 * step(0.38, fract(pr * 5.7 + vIh));
-      totalEmissiveRadiance += vec3(1., 0.56, 0.24) * night * on * lit * (1. - mull) * (0.7 + 0.9 * (1. - vY)) * 1.7;`)
+      totalEmissiveRadiance += vec3(1., 0.56, 0.24) * ${CINE ? 'habLit(vIh, floor(pr * 4.) * 0.17)' : 'night'} * on * lit * (1. - mull) * (0.7 + 0.9 * (1. - vY)) * 1.7;`)
       .replace('#include <lights_fragment_maps>', ENV_NIGHT);
   });
   habGlassMat.userData.night = night;
@@ -389,7 +449,7 @@ export function createHabitatAssets({ THREE, renderer, envMap = null, frameDetai
       #else
         vSc = vec3(length(modelMatrix[0].xyz), length(modelMatrix[1].xyz), length(modelMatrix[2].xyz));
       #endif`);
-    sh.fragmentShader = `uniform float night; varying float vKind; varying vec3 vLP; varying vec3 vSc; varying vec3 vN0;\n` + sh.fragmentShader
+    sh.fragmentShader = `uniform float night; varying float vKind; varying vec3 vLP; varying vec3 vSc; varying vec3 vN0;\n` + LITF + sh.fragmentShader
       .replace('#include <color_fragment>', `#include <color_fragment>
       vec3 m = vLP * vSc; float ax = abs(vN0.x) > 0.5 ? m.z : m.x;
       float win = 0., lamp = 0., solar = 0.;
@@ -412,7 +472,7 @@ export function createHabitatAssets({ THREE, renderer, envMap = null, frameDetai
       metalnessFactor = mix(metalnessFactor, 0.6, max(win, solar));`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
       float bay = step(0.3, fract(floor(m.x / 1.4) * 0.618 + vSc.x * 0.37));
-      totalEmissiveRadiance += vec3(1., 0.66, 0.36) * win * night * (0.4 + 1.8 * bay) + vec3(1., 0.85, 0.6) * lamp * (0.4 + 4. * night);`)
+      totalEmissiveRadiance += vec3(1., 0.66, 0.36) * win * ${CINE ? 'habLit(fract(vSc.x * 0.37 + vSc.y * 1.31), floor(m.x / 1.4) * 0.11)' : 'night'} * (0.4 + 1.8 * bay) + vec3(1., 0.85, 0.6) * lamp * (0.4 + 4. * night);`)
       .replace('#include <lights_fragment_maps>', ENV_NIGHT);
   });
   const shedDepthMat = depthMat('shed', SHED_V, SHED_SEL);
@@ -420,9 +480,9 @@ export function createHabitatAssets({ THREE, renderer, envMap = null, frameDetai
   // ============================== clear glass (big domes + corridors): mirror at grazing angles, see-through face-on ==============================
   function clearGlass(key, { remap = 0, baryMull = true, color = 0x8a96a2 } = {}) {
     return patch(new THREE.MeshStandardMaterial({ color, roughness: 0.035, metalness: 0.9, envMap, envMapIntensity: 1.4, transparent: true, depthWrite: false, emissive: 0xffffff, emissiveIntensity: 0 }), key, sh => {
-      sh.vertexShader = (baryMull ? 'attribute vec3 bary; varying vec3 vBary;\n' : '') + `varying float vGY;\n` + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
-        ${baryMull ? 'vBary = bary;' : ''} vGY = position.y;`);
-      sh.fragmentShader = (baryMull ? 'varying vec3 vBary;\n' : '') + `uniform float night; varying float vGY;\n` + sh.fragmentShader
+      sh.vertexShader = (baryMull ? 'attribute vec3 bary; varying vec3 vBary;\n' : '') + `varying float vGY;\n` + (CINE ? 'varying float vOh;\n' + HASH : '') + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+        ${baryMull ? 'vBary = bary;' : ''} vGY = position.y;${CINE ? ' vOh = habInstHash();' : ''}`);
+      sh.fragmentShader = (baryMull ? 'varying vec3 vBary;\n' : '') + `uniform float night; varying float vGY;\n` + (CINE ? 'varying float vOh;\n' : '') + LITF + sh.fragmentShader
         .replace('#include <color_fragment>', `#include <color_fragment>
         float mull = ${baryMull ? '1. - smoothstep(0.035, 0.08, min(min(vBary.x, vBary.y), vBary.z))' : '0.'};
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.16, 0.15, 0.14), mull);`)
@@ -430,7 +490,7 @@ export function createHabitatAssets({ THREE, renderer, envMap = null, frameDetai
         roughnessFactor = mix(roughnessFactor, 0.5, mull);`)
         .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
         totalEmissiveRadiance = emissive * vec3(1., 0.6, 0.3) * (1. - mull);
-        totalEmissiveRadiance += vec3(1., 0.58, 0.26) * night * 0.22 * (1. - mull) * (1.2 - vGY);`)
+        totalEmissiveRadiance += vec3(1., 0.58, 0.26) * ${CINE ? 'habLit(vOh, 0.31)' : 'night'} * 0.22 * (1. - mull) * (1.2 - vGY);`)
         .replace('#include <lights_fragment_maps>', ENV_NIGHT)
         .replace('#include <opaque_fragment>', `
         // the sun glint on near-mirror glass overflows half float (inf), which bloom/DOF smear into a hard square: cap it
@@ -486,10 +546,10 @@ export function createHabitatAssets({ THREE, renderer, envMap = null, frameDetai
       diffuseColor.rgb *= vKind > 0.5 ? 0.6 : 1.;`).replace('#include <lights_fragment_maps>', ENV_NIGHT);
   });
   const interiorMat = patch(new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.85, metalness: 0.05 }), 'interior', sh => {
-    sh.vertexShader = `attribute float kind; varying float vKind;\n` + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
-      vKind = kind;`);
-    sh.fragmentShader = `uniform float night; varying float vKind;\n` + sh.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
-      totalEmissiveRadiance += vec3(1., 0.66, 0.36) * step(0.5, vKind) * (0.2 + 3.2 * night);`);
+    sh.vertexShader = `attribute float kind; varying float vKind;${CINE ? ' varying float vOh;\n' + HASH : ''}\n` + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+      vKind = kind;${CINE ? ' vOh = habInstHash();' : ''}`);
+    sh.fragmentShader = `uniform float night; varying float vKind;${CINE ? ' varying float vOh;' : ''}\n` + LITF + sh.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+      totalEmissiveRadiance += vec3(1., 0.66, 0.36) * step(0.5, vKind) * (0.2 + 3.2 * ${CINE ? 'habLit(vOh, 0.31)' : 'night'});`);
   });
   const baseMat = new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.95 }); mats.push(baseMat);
 
@@ -512,7 +572,11 @@ export function createHabitatAssets({ THREE, renderer, envMap = null, frameDetai
     gm.opacity = 0;
 
     const glowMat = new THREE.MeshBasicMaterial({ color: 0xff9a50, transparent: true, opacity: 0, side: THREE.BackSide, blending: THREE.AdditiveBlending, depthWrite: false });
-    glowMat.onBeforeCompile = sh => {
+    glowMat.onBeforeCompile = CINE ? sh => {
+      sh.uniforms.night = night;
+      sh.vertexShader = 'varying float vGY; varying float vOh;\n' + HASH + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvGY = position.y; vOh = habInstHash();');
+      sh.fragmentShader = 'uniform float night; varying float vGY; varying float vOh;\n' + LIT + sh.fragmentShader.replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb *= 2.6 * (0.35 + 1.1 * (1. - vGY)) * habLit(vOh, 0.31) / max(night, 0.02);');
+    } : sh => {
       sh.vertexShader = 'varying float vGY;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvGY = position.y;');
       sh.fragmentShader = 'varying float vGY;\n' + sh.fragmentShader.replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb *= 2.6 * (0.35 + 1.1 * (1. - vGY));');
     };
