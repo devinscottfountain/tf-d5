@@ -70,7 +70,7 @@ export function createRockets({ THREE, foot, colony, envMap, high, sites, light 
   const glowTex = (() => { const c = document.createElement('canvas'); c.width = c.height = 64; const x = c.getContext('2d'), g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
     g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.25, 'rgba(255,190,120,0.6)'); g.addColorStop(1, 'rgba(0,0,0,0)'); x.fillStyle = g; x.fillRect(0, 0, 64, 64); return new THREE.CanvasTexture(c); })();
   const glowMat = () => new THREE.SpriteMaterial({ map: glowTex, color: 0xffc08a, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true });
-  const mkPlume = () => { const m = flareTag(new THREE.Mesh(plumeG, plumeMat.clone())), s = flareTag(new THREE.Sprite(glowMat())); group.add(m, s); return { m, s }; };
+  const mkPlume = () => { const m = flareTag(new THREE.Mesh(plumeG, plumeMat.clone())), s = flareTag(new THREE.Sprite(glowMat())); m.renderOrder = s.renderOrder = 3; /* over the smoke */ group.add(m, s); return { m, s }; };
   // ground glow: additive disc on the ground, a hot core under the engines plus a ring that runs out with the dust front (the light sweep)
   const gGeo = new THREE.PlaneGeometry(2, 2).rotateX(-Math.PI / 2);
   const gMat = new THREE.ShaderMaterial({
@@ -79,7 +79,7 @@ export function createRockets({ THREE, foot, colony, envMap, high, sites, light 
     vertexShader: 'varying vec2 vP; void main(){ vP = position.xz; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.); }',
     fragmentShader: `uniform float uI, uCR, uS, uR, uRI; varying vec2 vP;
       void main(){ float r = length(vP) * uS, e = 1. - smoothstep(.7, 1., length(vP)); float k = r / uCR;
-        float core = uI * (exp(-k * k * 2.) * 1.4 + .35 / (1. + k * k * 3.)), w = max(uR * .14, 8.), ring = uRI * exp(-pow((r - uR) / w, 2.)) * (1. - .6 * r / uS);
+        float core = uI * (exp(-k * k * 2.) * 1.4 + .35 / (1. + k * k * 3.)), w = max(uR * .3, 10.), ring = uRI * exp(-pow((r - uR) / w, 2.)) * (1. - .6 * r / uS);
         gl_FragColor = vec4(vec3(1., .58, .28) * (core + ring) * e, 1.); }`
   });
   const mkGlow = (x, z, S) => { const m = new THREE.Mesh(gGeo, gMat.clone()); m.position.set(x, 0.35, z); m.scale.setScalar(S); m.material.uniforms.uS.value = S; m.frustumCulled = false; m.renderOrder = 1; group.add(m); return m; };
@@ -198,12 +198,12 @@ export function createRockets({ THREE, foot, colony, envMap, high, sites, light 
         p += vec3(cos(c.y), 0., sin(c.y)) * spread * c.w + vec3(.35, 0., 1.) * max(age, 0.) * 260. * smoothstep(0., 500., y);
         p.y += max(age, 0.) * (40. * low + 30.) * c.z;
         vec4 mv = modelViewMatrix * vec4(p, 1.);
-        vA = age > 0. ? .42 * smoothstep(0., .003, age) * mix(1., .5, c.x) * (1. - .35 * smoothstep(.08, .2, age)) : 0.;
+        vA = age > 0. ? .42 * smoothstep(0., .012, age) * mix(1., .5, c.x) * (1. - .35 * smoothstep(.08, .2, age)) : 0.;
         vHot = uBurn * exp(-distance(p, uShip) / 40.); vY = y; vS = c.z;
         gl_PointSize = vA > .002 ? clamp((5. + spread * 1.25) * uVH / -mv.z, 1., 256.) : 0.; gl_Position = projectionMatrix * mv; }`,
     fragmentShader: `uniform float uNight; varying float vA, vHot, vY, vS;
       void main(){ vec2 q = gl_PointCoord - .5; float r = length(q), lump = .78 + .22 * sin(q.x * 12. + vS * 50.) * sin(q.y * 10. - vS * 31.);
-        vec3 col = mix(vec3(.66, .55, .48), vec3(.17, .15, .18), uNight) + vec3(1., .56, .32) * .5 * smoothstep(150., 900., vY) * uNight + vec3(1., .6, .3) * vHot * 1.1;
+        vec3 col = mix(vec3(.66, .55, .48), vec3(.17, .15, .18), uNight) + vec3(1., .56, .32) * .8 * smoothstep(150., 900., vY) * uNight + vec3(1., .6, .3) * vHot * 1.1;
         gl_FragColor = vec4(col, vA * pow((1. - smoothstep(0., .5, r)), 1.4) * lump); }`
   }));
   column.frustumCulled = false; group.add(column);
@@ -244,7 +244,7 @@ export function createRockets({ THREE, foot, colony, envMap, high, sites, light 
       const flash = Math.exp(-Math.pow((g - g1) / 0.0035, 2)), gu = landGlow[i].material.uniforms;
       gu.uI.value = burn * sst(140, 0, y) * 0.55 * flick + flash * 1.1; gu.uCR.value = 16 + 26 * flash; landGlow[i].visible = gu.uI.value > 0.003;
       const ph = cl01((g - (g1 - 0.022)) / 0.09);
-      dU.uE.value[i].set(ph > 0 && ph < 1 ? 8 + 78 * Math.pow(ph, 0.5) : 0, 18 * Math.pow(ph, 0.6) * (1 - 0.65 * sst(0.45, 1, ph)), 0.24 * sst(0, 0.07, ph) * Math.pow(1 - ph, 1.3), burn * near);
+      dU.uE.value[i].set(ph > 0 && ph < 1 ? 8 + 78 * Math.pow(ph, 0.5) : 0, 24 * Math.pow(ph, 0.6) * (1 - 0.65 * sst(0.45, 1, ph)), 0.34 * sst(0, 0.06, ph) * Math.pow(1 - ph, 1.2), burn * near);
       const fl = flares[i + 1]; fl.pos.set(x, y + 0.5, z).applyMatrix4(group.matrixWorld); fl.i = burn * flick;
       if (burn * flick > fireI) { fireI = burn * flick; fireP.set(x, y - 3, z); }
     });
@@ -269,14 +269,14 @@ export function createRockets({ THREE, foot, colony, envMap, high, sites, light 
       LO.m.position.copy(LP.m.position); LO.m.quaternion.copy(shipQ); LO.m.scale.set(10 * hi * (0.6 + 0.4 * lift), L0 * 1.35, 10 * hi * (0.6 + 0.4 * lift));
       let U = LP.m.material.uniforms; U.uI.value = burn * 1.1; U.uT.value = t; U.uN.value = 5; U.uD.value = burn; U.uH.value = 14;
       U = LO.m.material.uniforms; U.uI.value = burn * 0.28; U.uT.value = t + 1;
-      LP.s.position.copy(LP.m.position).addScaledVector(tmp.copy(up).applyQuaternion(shipQ), -4); LP.s.scale.setScalar((20 + 26 * lift) * Math.sqrt(hi) * burn * flick); LP.s.material.opacity = Math.min(1, burn * 1.1);
+      LP.s.position.copy(LP.m.position).addScaledVector(tmp.copy(up).applyQuaternion(shipQ), -4); LP.s.scale.setScalar((20 + 26 * lift) * hi * burn * flick); LP.s.material.opacity = Math.min(1, burn * 1.1);
     }
     if (fire) { const li = 1500 * burn * flick; if (li > 260 * fireI) { fire.position.copy(shipP); fire.position.y -= 6; fire.intensity = li; } else { fire.position.copy(fireP); fire.intensity = 260 * fireI; } }
     const fl0 = flares[0]; toWorld(fl0.pos, LP.s.position); fl0.i = on ? burn * flick : 0;
     // ground: hot core under the engines while low, a warm ring that runs out ahead of the dust wave (the light sweep)
     const wave = cl01((g - T.lift + 0.006) / 0.15), front = 18 + 26 * sst(T.ignite, T.lift, g) + 640 * Math.pow(wave, 0.55);
     const pu = padGlow.material.uniforms, low = Math.exp(-y / 140);
-    pu.uI.value = burn * flick * low * 0.9; pu.uCR.value = 40 + 0.4 * y; pu.uR.value = front * 1.04; pu.uRI.value = 0.5 * burn * Math.pow(1 - wave, 1.5) * sst(T.lift - 0.004, T.lift + 0.01, g);
+    pu.uI.value = burn * flick * low * 0.9; pu.uCR.value = 40 + 0.4 * y; pu.uR.value = front * 1.04; pu.uRI.value = 0.32 * burn * Math.pow(1 - wave, 1.5) * sst(T.lift - 0.004, T.lift + 0.01, g);
     padGlow.visible = pu.uI.value + pu.uRI.value > 0.003;
     const dl = g >= T.ignite ? 1 : 0;
     dU.uE.value[2].set(dl ? front : 0, 8 + 42 * Math.pow(wave, 0.7) + 14 * sst(T.ignite, T.lift, g), dl * 0.3 * sst(T.ignite, T.ignite + 0.012, g) * (1 - 0.72 * sst(T.lift + 0.06, 1, g)), burn * low);
