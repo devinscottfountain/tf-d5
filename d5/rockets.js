@@ -62,7 +62,7 @@ export function createRockets({ THREE, foot, colony, envMap, high, sites, light 
         vec3 c = mix(vec3(1., .96, .9), vec3(1., .62, .3), smoothstep(0., .35, vY)); c = mix(c, vec3(.9, .32, .1), smoothstep(.35, .95, vY));
         float dia = pow(.5 + .5 * cos(vY * uN * 6.2832), 14.) * (1. - smoothstep(.04, .55, vY)) * core * uD;
         float fl = .86 + .14 * sin(vY * 41. - uT * 73.) * sin(vY * 17. - uT * 29.);
-        float a = pow(1. - vY, 1.4) * (.25 + .75 * f) * fl * smoothstep(0., .03, vY + .01);
+        float a = pow(max(1. - vY, 0.), 1.4) * (.25 + .75 * f) * fl * smoothstep(0., .03, vY + .01);
         gl_FragColor = vec4((c * a + vec3(1., .88, .96) * dia * 1.8) * uI * 2.2 + vec3(1., .93, .85) * exp(-vY * 14.) * core * uH * uI, 1.); }` // uH: HDR hot spot at the nozzle (scene-linear ~10+, the grade streaks it)
   });
   const prof = []; for (let i = 0; i <= 14; i++) { const v = i / 14; prof.push(new THREE.Vector2(Math.max(0.02, (0.55 + 0.45 * sst(0, 0.28, v)) * (1 - 0.72 * v * v)), -v)); }
@@ -79,7 +79,7 @@ export function createRockets({ THREE, foot, colony, envMap, high, sites, light 
     vertexShader: 'varying vec2 vP; void main(){ vP = position.xz; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.); }',
     fragmentShader: `uniform float uI, uCR, uS, uR, uRI; varying vec2 vP;
       void main(){ float r = length(vP) * uS, e = 1. - smoothstep(.7, 1., length(vP)); float k = r / uCR;
-        float core = uI * (exp(-k * k * 2.) * 1.4 + .35 / (1. + k * k * 3.)), w = max(uR * .3, 10.), ring = uRI * exp(-pow((r - uR) / w, 2.)) * (1. - .6 * r / uS);
+        float core = uI * (exp(-k * k * 2.) * 1.4 + .35 / (1. + k * k * 3.)), w = max(uR * .3, 10.), ring = uRI * exp(-((r - uR) / w) * ((r - uR) / w)) * (1. - .6 * r / uS);
         gl_FragColor = vec4(vec3(1., .58, .28) * (core + ring) * e, 1.); }`
   });
   const mkGlow = (x, z, S) => { const m = new THREE.Mesh(gGeo, gMat.clone()); m.position.set(x, 0.35, z); m.scale.setScalar(S); m.material.uniforms.uS.value = S; m.frustumCulled = false; m.renderOrder = 1; group.add(m); return m; };

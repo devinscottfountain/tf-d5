@@ -439,7 +439,9 @@ function init() {
   // ---------- Mars: D5 in mars mode, imported when its track is ~1.5 viewports away ----------
   let marsP = null;
   q('.d6-mline')?.remove(); // the D6 mission belt is not part of 6.1: gone before D5 collects its [data-w] overlays (CSS hides it too)
-  const loadMars = () => marsP || (marsP = (window.D5_CFG = Object.assign({ ahead: 1 }, window.D5_CFG, { mode: 'mars', look: 'lit', beats: true, rockets: true, cine: true, onProgress: solcProgress }),
+  // set before any d5 module evaluates: d5/habitat.js reads it at load and the footer imports habitat.js too (CODE REVIEW #1)
+  const marsCfg = () => (window.D5_CFG = Object.assign({ ahead: 1 }, window.D5_CFG, { mode: 'mars', look: 'lit', beats: true, rockets: true, cine: true, onProgress: solcProgress }));
+  const loadMars = () => marsP || (marsP = (marsCfg(),
     import(new URL('../d5/main.js', import.meta.url).href).catch(e => console.warn('d6 mars:', e))));
   D6.loadMars = loadMars;
   // 6.1: benefits + the tech carousel sit between solutions and the track. They are opaque (z 2 over the fixed layer), so
@@ -665,7 +667,7 @@ function init() {
   // ---------- 3D footer: lazy-imported as it nears, setProgress 0 (entering) -> 1 (at rest) ----------
   const footEl = q('.d61-foot'), footHost = q('.d61-foot-canvas');
   let foot = null, footP = null, footRun = false, footFail = false, footQ = null;
-  const loadFooter = () => footP || (footP = import(new URL('./footer3d.js', import.meta.url).href).then(m => {
+  const loadFooter = () => footP || (footP = (marsCfg(), import(new URL('./footer3d.js', import.meta.url).href)).then(m => {
     if (!m?.createFooter) throw new Error('no createFooter');
     foot = m.createFooter({ THREE, host: footHost, quality: QUALITY, base: new URL('./', import.meta.url).href });
     D6.footer = foot; stamp('footBuilt');

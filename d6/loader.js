@@ -134,16 +134,17 @@ export function runLoader({ THREE, el, reduced = false, minMs = 1200, maxMs = 20
   const minP = deadline(P ? t0 + (reduced ? 0 : minMs) : Math.max(minMs, reduced ? 0 : t0 + 900));
   const maxP = deadline(P ? Math.max(fallbackMs, t0 + minMs) : Math.max(maxMs, t0 + (reduced ? 300 : 1100)));
   // progress mode: complete = real progress 1 and the shown bar caught up with it
+  let poll = null; // removed on exit too: after a fallback, progress may never reach 1
   const fullP = !P ? null : new Promise(r => {
     const hit = () => { if (progress.value() >= 1 && shown.v >= 1) { gsap.ticker.remove(poll); r(); } };
-    const poll = () => hit(); gsap.ticker.add(poll); hit();
+    poll = () => hit(); gsap.ticker.add(poll); hit();
   });
   let gates = [], fallback = false, exited = false;
   const done = new Promise(resolve => {
     // gate() promises are collected before the next microtask settles; give callers one tick to add them
     Promise.resolve().then(() => Promise.race([Promise.all([minP, ...gates, ...(P ? [fullP] : [])]), maxP.then(() => { if (!exited) fallback = P && !(progress.value() >= 1); })])).then(() => {
       exited = true;
-      if (P) { gsap.ticker.remove(step); if (curve) curve.push([Math.round(performance.now()), +progress.value().toFixed(4), +shown.v.toFixed(4), fallback ? 'fallback' : 'exit']); }
+      if (P) { gsap.ticker.remove(step); if (poll) gsap.ticker.remove(poll); if (curve) curve.push([Math.round(performance.now()), +progress.value().toFixed(4), +shown.v.toFixed(4), fallback ? 'fallback' : 'exit']); }
       // the mark's WebGL context goes as soon as it has faded, so it never overlaps the hero renderer for long
       const killMark = () => { if (mark) { mark.dispose(); mark = null; } };
       const out = gsap.timeline({ onComplete: () => { intro.kill(); killMark(); el.remove(); resolve(); } });

@@ -242,7 +242,7 @@ float afbm(vec2 p, float fw){ float v = 0., a = .5; for (int i = 0; i < 5; i++){
 const JEZERO_GLSL = /* glsl */ `
 const vec2 JC = vec2(6000., 6500.); const float JR = 22500.;
 const vec2 JA = vec2(-14900., -1600.); const vec2 JAX = vec2(0.992, 0.123);   // delta apex at the inlet, fan axis toward the colony
-float rimCrest(float az){ return 640. + 160. * sin(az * 3. + 1.) + 90. * sin(az * 7. + 2.3) - 520. * exp(-pow((az + 2.77) / 0.09, 2.)); }
+float rimCrest(float az){ return 640. + 160. * sin(az * 3. + 1.) + 90. * sin(az * 7. + 2.3) - 520. * exp(-((az + 2.77) / 0.09) * ((az + 2.77) / 0.09)); }
 float jezH(vec2 p, float fw, out vec3 alb){
   vec2 q = p - JC; float r = length(q) / JR, az = atan(q.y, q.x);
   float n1 = afbm(p / 7000., fw / 7000.), n2 = afbm(p / 900. + 3., fw / 900.);
@@ -251,7 +251,7 @@ float jezH(vec2 p, float fw, out vec3 alb){
   float h = rn < 1. ? mix(0., crest, pow(smoothstep(0.80, 1.0, rn), 1.6)) : crest * exp(-(rn - 1.) * 4.5) + 380. * (1. - exp(-(rn - 1.) * 4.5));
   // delta fan
   vec2 v = p - JA; float dA = length(v) / 13000., ph = atan(v.x * JAX.y - v.y * JAX.x, dot(v, JAX));
-  float edge = 1. + (afbm(vec2(ph * 5., 2.), 0.) - 0.5) * 0.35 - 0.3 * pow(ph / 0.95, 2.);
+  float edge = 1. + (afbm(vec2(ph * 5., 2.), 0.) - 0.5) * 0.35 - 0.3 * (ph / 0.95) * (ph / 0.95);
   float fan = (1. - smoothstep(edge - 0.04, edge, dA)) * (1. - smoothstep(0.8, 1.1, abs(ph)));
   float fingers = (0.5 + 0.5 * sin(ph * 17. + n1 * 14. + n2 * 3.)) * smoothstep(0.2, 0.7, dA);
   h += fan * (95. * (1. - pow(dA, 1.8)) + 18. * fingers);
@@ -265,7 +265,7 @@ float jezH(vec2 p, float fw, out vec3 alb){
       vec2 o = vec2(i, j), rn2 = vec2(ah(gi + o), ah(gi + o + 7.3));
       float rad = 0.08 + 0.22 * pow(ah(gi + o + 3.1), 2.), on = step(s == 0 ? 0.82 : 0.7, ah(gi + o + 11.7));
       float d = length(o + rn2 * 0.6 + 0.2 - gf) / rad;
-      h += on * sc * rad * 0.07 * ((d < 1. ? (d * d - 1.) : 0.) + 0.25 * exp(-pow((d - 1.) / 0.18, 2.))) * (1. - smoothstep(0.3, 0.9, fw / sc * 4.));
+      h += on * sc * rad * 0.07 * ((d < 1. ? (d * d - 1.) : 0.) + 0.25 * exp(-((d - 1.) / 0.18) * ((d - 1.) / 0.18))) * (1. - smoothstep(0.3, 0.9, fw / sc * 4.));
     }
   }
   // colour: plains butterscotch fines, darker crater floor + dark sand, pale layered delta, bright bedrock on the rim

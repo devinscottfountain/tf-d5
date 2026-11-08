@@ -271,7 +271,7 @@ void main(){
   float val = mix(m0, 2. * m0 / (m0 + m1), 0.12);
   vec3 col = A * sunCol * val * uSunI;
   col += A * vec3(0.95, 0.60, 0.36) * 0.03 * smoothstep(-0.05, 0.6, mu);           // dust fill, day side only
-  col += vec3(0.95, 0.45, 0.22) * 0.016 * exp(-pow((mu - 0.01) / 0.07, 2.));         // thin warm twilight band on the terminator
+  col += vec3(0.95, 0.45, 0.22) * 0.016 * exp(-((mu - 0.01) / 0.07) * ((mu - 0.01) / 0.07));         // thin warm twilight band on the terminator
   col += A * vec3(0.5, 0.3, 0.25) * 0.004 * (1. - smoothstep(-0.2, 0.05, mu));       // whisper of night so the dark side still has shape
   // limb haze: optical depth of a thin dust layer grows as 1/cos toward the edge; brighter on the lit side, a faint blue forward lobe
   float hz = clamp(pow(slant, 5.) * 0.45 + pow(slant, 16.) * 0.5, 0., 0.7);
