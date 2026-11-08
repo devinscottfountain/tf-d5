@@ -336,10 +336,10 @@ panel.castShadow = panel.receiveShadow = true; panel.boundingSphere = bnd(360); 
 // landing pad + a lander that keeps touching down and lifting off through the timelapse
 const PAD = new THREE.Vector3(Math.cos(-0.55) * 300, 0, Math.sin(-0.55) * 300);
 {
-  const pad = new THREE.Mesh(new THREE.CylinderGeometry(24, 26, 0.6, 48), new THREE.MeshStandardMaterial({ color: 0x5c524a, roughness: 0.9 })); pad.position.copy(PAD); pad.castShadow = pad.receiveShadow = true; colony.add(pad);
+  const pad = new THREE.Mesh(new THREE.CylinderGeometry(24, 26, 0.6, 48), new THREE.MeshStandardMaterial({ color: 0x5c524a, roughness: 0.9 })); pad.position.copy(PAD); pad.castShadow = pad.receiveShadow = true; pad.visible = !ROCK; colony.add(pad); // D6.1 rockets replace the old lander pad
   const p = [], b = []; for (let i = 0; i < 32; i++) { const a = i / 32 * Math.PI * 2; p.push(PAD.x + Math.cos(a) * 22, 0.8, PAD.z + Math.sin(a) * 22); b.push(0.3); }
   const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3)); g.setAttribute('bt', new THREE.Float32BufferAttribute(b, 1));
-  colony.add(new THREE.Points(g, ptsMat(`attribute float bt; uniform float g; uniform float t; uniform float night; varying vec3 vC; varying float vA; void main(){ vec4 mv=modelViewMatrix*vec4(position,1.); vC=vec3(0.5,0.85,1.); vA=step(bt,g)*(0.3+0.7*night)*(0.6+0.4*sin(t*4.+position.x)); gl_PointSize=clamp(600./-mv.z,1.5,6.); gl_Position=projectionMatrix*mv; }`, DOT)));
+  const padRing = new THREE.Points(g, ptsMat(`attribute float bt; uniform float g; uniform float t; uniform float night; varying vec3 vC; varying float vA; void main(){ vec4 mv=modelViewMatrix*vec4(position,1.); vC=vec3(0.5,0.85,1.); vA=step(bt,g)*(0.3+0.7*night)*(0.6+0.4*sin(t*4.+position.x)); gl_PointSize=clamp(600./-mv.z,1.5,6.); gl_Position=projectionMatrix*mv; }`, DOT)); padRing.visible = !ROCK; colony.add(padRing);
 }
 const lander = new THREE.Group(); colony.add(lander);
 {
