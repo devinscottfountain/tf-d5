@@ -550,7 +550,8 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
     bloom: 0.5,        // x bloom.strength (main.js writes 0.6 .. 0.9)
     threshold: 1.0, knee: 0.6,   // bloom soft knee on scene-linear HDR (pre exposure)
     streakThr: 6,      // streaks only above this (see CINEMA-NOTES: hero lights >= 10, everything else <= 3)
-    streak: 0.2, streakTint: new THREE.Color(0.86, 0.92, 1.0),
+    streak: 0,         // anamorphic streak gain: OFF for launch (unverified on the real plume); 0.2 was the tested look. Programs stay warmed
+    streakTint: new THREE.Color(0.86, 0.92, 1.0),
     vignette: 0.3, grain: 0.04,
     taaStill: 0.9, taaMove: 0.7   // history weight, camera still / moving fast
   };
@@ -765,7 +766,7 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
       mBlur.uniforms.tSrc.value = i ? rtL[i - 1].texture : rtPre.texture; mBlur.uniforms.uDir.value.set(1 / tw, 0); draw(mBlur, rtT[i]);
       mBlur.uniforms.tSrc.value = rtT[i].texture; mBlur.uniforms.uDir.value.set(0, 1 / th); draw(mBlur, rtL[i]);
     }
-    const sOn = q.streak && (force || fx.streak > 0);
+    const sOn = q.streak && (force || (fx.streak > 0 && look.streak > 0));
     if (sOn) {
       mSDown.uniforms.tSrc.value = rtPre.texture; mSDown.uniforms.uThr.value = Math.max(0, look.streakThr - look.threshold); draw(mSDown, rtS[1]);
       const tx = 1 / rtS[0].width; mSBlur.uniforms.uTx.value = tx;
