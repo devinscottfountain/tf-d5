@@ -239,3 +239,23 @@ Verified (swiftshader, detqa vs a f964bad copy): D6 `{mode:'mars'}` s0.2 + s0.7 
 Open (not fixed, owners decide): perf.js only steps up on >83 Hz displays, so on a 60 Hz Air one emergency drop (6 of 10 frames > 33 ms, e.g. a hitch at the swap) is permanent for that segment until reload; post.js lensFrame allocates `[plume[0], plume[1]]` per frame during the launch; post.js CINE_LIVE never drops a post (no dispose).
 
 CHOREOGRAPHER 19:40 FINAL: 4bae612. Warm-up fix: build(0) was hiding unbuilt domes, ships and life during warmColony/throwaway, so they linked on the swap; cine now compiles + throwaway-draws the colony with everything shown. Swiftshader: 122 programs by p 0.4, +2 at the swap, none after. Descent re-aim reads the crater rim on the horizon (p 0.50-0.53). Space dust gated to p > 0.40. Shot sheet: /home/claude/tf/t/cine6/sheet.jpg (1440), /home/claude/tf/t/cine390/sheet.jpg (390).
+
+## DESIGN REVIEW #1 (19:45, be78799; frames from swiftshader at 1440x900 + 390x844 because the pane tab reported document.hidden, then went offline. Re-check on the real GPU)
+Shots: /tmp/claude-0/-home-claude/a48e888e-1d80-5cc4-bc6a-d5ee5c146d9e/scratchpad/cine-qa1/{local (4d73f16, full run), final (be78799), phone, foot-p*.png}
+BLOCKERS
+1. Terrain square seam, p 0.49-1.0 (desktop + phone). The 9 km terrain ends in a hard straight edge against the dome far ground: tan vs brown plate during the descent (p .49/.52), then a dark "lake" band with a bright line under the far ridge in the colony and launch (p .80/.87/.91/.95). Reads as CG. Fix: fade the terrain's last ~1 km into the dome's far-ground colour and fog, so there is no luminance step at the seam (or let the dome draw the ground there). PLANET (sky.js) + CHOREOGRAPHER (terrain in main.js).
+2. Black ellipse right of the landed ships, p 0.56-0.80: the old D5 landing pad (main.js ~l.339, `pad` cylinder 0x5c524a at PAD (256,-157), plus its 32-light ring) still draws under ROCK. Hide it (like lander/plume). CHOREOGRAPHER.
+MAJORS
+3. SOL counter scrim (.d61-solc::before, black radial .78) is a dark smudge on the bright ground and sky, p 0.62-1.0. Make it near-invisible over the colony (about .25) or swap it for a text-shadow. CHOREOGRAPHER (d61.css).
+4. Nav shade (.d6-nav-shade, 160 px black gradient) puts a dark lid over the white entry haze and the colony sky, p 0.43-1.0. Fade it out in the Mars track, or tint it warm. Coordinator or LOADER (nav CSS).
+5. Launch framing, p 1.0-1.06: the camera loses the ground. The frame is a blurred ship with a round glow disc and puffball smoke in an empty brown sky. Keep the horizon and colony in the bottom ~15-20% through p 1.06. CHOREOGRAPHER. Make the glow sprite plume-shaped and smaller (the round halo reads cheap). ROCKETS.
+6. CTA top is a hard straight cut over the scene, p 1.06. Feather the .d5-after top edge (gradient about 160 px). CHOREOGRAPHER (d61.css).
+7. Starships read as matte beige plastic in the colony (p .62-.95), but as dark steel in the footer. They should be stainless: bright, with warm sky reflections and a spec rim in both scenes, so they match. ROCKETS + FOOTER.
+8. Planet limb, beats 1-2 (p .06/.27/.43): a dotted, sparkly bright fringe along the lit limb, and the halo is wide and creamy like an "outer glow". The limb haze should be thinner, dustier and butterscotch. PLANET. Confirm the sparkle on the real GPU.
+9. Entry, p 0.43: radial white streaks read as hyperspace or warp speed rather than atmospheric entry. Make them a heat glow at the leading edge with fewer, shorter, warmer streaks. PLANET + GRADE.
+MINORS
+10. Hab domes in the colony and footer are faceted gold triangles: they look low-poly and will sparkle in motion. COLONY / FOOTER.
+11. Phone p 0.52: the SOL readout shows 0017 (desktop shows 0090). CHOREOGRAPHER.
+12. Footer: flat foreground rock slab and unlit ship silhouettes. FOOTER.
+13. Programs rise during the colony on the phone (103 -> 119, p .52-.95) and at the desktop swap in a seek-jump run. PERFORMANCE: verify on the real GPU.
+Working: the order (ships land before the domes, then the build, ignition with dust and the plume), no black stretch before the CTA, the footer at dusk below the CTA, beat 1/2 copy clear of the disc on desktop and phone, and the warm grade.
