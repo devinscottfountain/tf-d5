@@ -249,7 +249,7 @@ export function d5Adapter(d5) {
   let pr = -1;
   return q => {
     if (q.pr !== pr) { pr = q.pr; d5.renderer.setPixelRatio(q.pr); d5.post.setSize(innerWidth, innerHeight); d5.post.resetMotion?.(); }
-    d5.post.setQuality?.(q.post);
+    (d5.post.setPostQuality || d5.post.setQuality)?.call(d5.post, q.post); // GRADE quality ladder 0..3 (no compiles)
     d5.setQuality?.(q);                                     // shadows / particles: d5/main.js hook (CINEMA-NOTES)
   };
 }

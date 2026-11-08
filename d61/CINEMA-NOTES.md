@@ -216,3 +216,22 @@ Fixed (small, math identical on the valid domain):
 - NaN: GLSL `pow(x, 2.)` with x < 0 is undefined (NaN on ANGLE/D3D and some Metal paths; compilers that fold it to x*x hide it). Squared by hand: planets.js MARS_CINE_FRAG twilight band `(mu - 0.01) / 0.07` (it poisoned the whole dark-side colour, incl. the night domes); sky.js rimCrest `(az + 2.77)`, delta edge `ph / 0.95`, crater rim `(d - 1.)`; rockets.js ground ring `(r - uR) / w`; rockets.js plume `pow(max(1. - vY, 0.), 1.4)`. PLANET+ATMOSPHERE, ROCKETS: please keep to `x*x` for even powers of signed values.
 - d61/main.js: habitat.js reads `D5_CFG` once at module load (CINE) and the footer imports habitat.js (foot-model-plan.js). If the footer loaded first (reload with scroll restored near the bottom), the colony was cached with the non-cine look for the whole session. `marsCfg()` now sets the 6.1 flags before either import. CHOREOGRAPHER/LOADER: FYI, no behaviour change otherwise.
 - d6/loader.js (progress mode only): the fullP ticker poll was never removed after a 6 s fallback when progress never reaches 1; now removed on exit. D6 default path untouched.
+
+## PERFORMANCE 19:25: REAL-GPU RE-PROFILE #2 (live 5755496 cold Mars + footer run; 4d73f16 cold hero run). M4 Pro, pane at 1054x860 CSS @ 2x (the 1440x900 emulation keeps parking the pane, so native size; x ~1.4 pixels for 1440x900)
+| section | baseline 11:30 p50 / p95 / worst | now p50 / p95 / worst | links on screen now | notes |
+|---|---|---|---|---|
+| hero (4d73f16) | 16.6 / 16.8 / 41.6 | 8.3 / 16.7 / 33.3 | 0 | GC: 7 heap drops in 578 frames (was 39 in 460) after the hero mirror fix; hero bench 11.9 ms -> L4 |
+| solutions (4d73f16) | 8.3 / 9.2 / 16.6 | 8.3 / 9.3 / 17.3 | **0** (was 8-10) | solutions warm() on idle |
+| pre-mars (benefits/tech) | 8.3 / 9.3 / **100** | 8.3 / 9.3 / **9.4** | d5 4 | boot hitch gone |
+| mars beats 1-3 | 8.3 / 9.3 / 9.4 | 8.3 / 9.3 / 9.4 | 0 | bench 3.6-6.1 ms |
+| mars entry/swap p .45-.6 | 8.3 / 9.2 / 317 | 8.3 / 8.6 / **166.6** | **d5 75** | LoAF 177 ms (three render, 122 blocking) + 82 ms warmColony: **still compiling at the swap** |
+| colony p .6-.75 | 8.3 / 9.2 / 33 | 8.3 / 8.5 / 41.6 | d5 11 | bench 5.5 ms |
+| colony late p .75-.9 | 8.3 / 9.3 / 1008 | 8.3 / 8.4 / **9.0** | d5 4 | **the 1 s footer freeze is gone** (footer built during the beats) |
+| launch p .9-1.1 | - | 8.3 / 8.4 / 8.9 | 0 | bench 5.0-6.1 ms; footer drawn 1 in 3 while Mars draws |
+| CTA + footer | 8.3 / 9.3 / 125 | 8.3 / 8.6 / 9.3 | 0 | footer bench 5.2 ms |
+Air estimate at 1440x900 (bench x1.4 pixels, x3.3 M1 / x2.4 M2): entry 7.4 ms -> ~34 / ~25 ms, colony ~25 / ~18, footer ~24 / ~17, hero ~55 / ~40 at pr 1.5. The governor will sit at L0-L1 on an M1 Air, L1-L2 on an M2 Air.
+Asks:
+1. **CHOREOGRAPHER (d5/main.js)**: the swap still links 75 programs + 11 more in early colony (warmColony runs at arrival: LoAF `warmColony`). The colony is built in idle time now, but `warmColony` (compile + throwaway) must also run before beat 3; with a continuous scroll it lands on the swap frame. Ask: call `warmColony()` straight after the last `colonyStep()` in idle (it is `ric(warmColony)` today, which a busy scroll defers), and include the new cine roots (life, rockets launch materials, planets.entryRoots) in it. 75 > the 38 at baseline, so new materials are not being warmed.
+2. **GRADE**: `post.gpuTimes()` works, but on ANGLE Metal every group reads 2-6 ms and the total is 2-5x the measured frame (same over-read as my own queries). Use it for trends only. perf.js now calls `setPostQuality` (falls back to `setQuality`).
+3. GC in the colony: 9 heap drops in 210 frames at p .75-.9 (life + rockets). Owners: please check per-frame allocations in `life.update` / `rockets.update` (my hero method: CDP sampling heap profile; ask me for the harness).
+Hero GC fix (in dee5030): mirror pass keeps the main light set (lights at intensity 0 instead of hidden), so three no longer re-resolves every lit program twice a frame: program-key garbage ~245 -> ~12 KB/frame, on-screen links in the hero test 21 -> 6, pixel hash identical to HEAD with the mirror on; compileRich warms the mirror variants with the same split; small hoists (UP vector, setRGB spreads, cone colours).
