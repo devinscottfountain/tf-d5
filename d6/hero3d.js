@@ -273,19 +273,19 @@ function createDaylight({ THREE, renderer, scene, outside, siteLight, high, G0 }
   function update(p, renderer) {
     dayKey(p, K);
     sunDir.set(Math.sin(K.az) * Math.cos(K.el), Math.sin(K.el), -Math.cos(K.az) * Math.cos(K.el));
-    sunCol.setRGB(...K.sunC);
+    sunCol.setRGB(K.sunC[0], K.sunC[1], K.sunC[2]);
     const vis = Math.min(1, Math.max(0, (K.el + 0.02) / 0.1));                         // the ridge holds the direct sun until ~0.08 rad
     sun.color.copy(sunCol); sun.intensity = K.sunI * vis;
     sun.position.copy(sun.target.position).addScaledVector(sunDir, 160);
     if (high) { const on = sun.intensity > 0.001; sun.shadow.autoUpdate = on; for (const t of terr) t.castShadow = on;
       for (const [l] of floods) if (l.castShadow) l.shadow.autoUpdate = l.intensity > 0.001; }   // lights at 0 skip their shadow pass   // no sun-shadow pass at night; with the sun up the machines move, so every frame
-    skyD.uZen.value.setRGB(...K.zen); skyD.uHor.value.setRGB(...K.hor); skyD.uGlow.value.setRGB(...K.glow); skyD.uSunC.value.copy(sunCol).multiplyScalar(25 * vis); skyD.uMix.value = K.mix;
+    skyD.uZen.value.setRGB(K.zen[0], K.zen[1], K.zen[2]); skyD.uHor.value.setRGB(K.hor[0], K.hor[1], K.hor[2]); skyD.uGlow.value.setRGB(K.glow[0], K.glow[1], K.glow[2]); skyD.uSunC.value.copy(sunCol).multiplyScalar(25 * vis); skyD.uMix.value = K.mix;
     machU.value = K.mach;
     for (const [l, i] of floods) l.intensity = i * K.flood;
     if (moon) moon[0].intensity = moon[1] * K.moon;
-    if (hemi) { hemi.intensity = K.hemiI; hemi.color.setRGB(...K.hemiS); hemi.groundColor.setRGB(...K.hemiG); }
+    if (hemi) { hemi.intensity = K.hemiI; hemi.color.setRGB(K.hemiS[0], K.hemiS[1], K.hemiS[2]); hemi.groundColor.setRGB(K.hemiG[0], K.hemiG[1], K.hemiG[2]); }
     if (city) city.opacity = K.city;
-    if (fog) fog.color.setRGB(...K.hazeC).multiplyScalar(0.2 + 0.6 * K.mix);
+    if (fog) fog.color.setRGB(K.hazeC[0], K.hazeC[1], K.hazeC[2]).multiplyScalar(0.2 + 0.6 * K.mix);
     for (const [m, i] of envMats) m.envMapIntensity = i * K.envK;
     if (Math.abs(p - bakedP) >= ENV_STEP || (p !== bakedP && (p === 0 || p === 1))) { bakedP = p; bake(); }
     return K;
@@ -457,6 +457,17 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
     room.glass.material.toneMapped = true; old?.dispose?.();
   }
   const reflHide = [outside.group, room.glass, cones, dust].filter(Boolean);
+  // the mirror pass must keep the light set of the main pass: hiding a root with lights in it changed three's light state
+  // between the two passes, so every lit material re-resolved its program twice a frame (~250 KB of garbage per frame).
+  // So hide only the light-free parts of those roots and run their lights at intensity 0 (they add exactly nothing).
+  let reflN = -1, reflParts = reflHide, reflZero = [];
+  const reflZI = [];
+  function reflSplit() {
+    const n = reflHide.reduce((a, o) => a + o.children.length, 0); if (n === reflN) return; reflN = n;
+    const hide = [], zero = [];
+    const walk = o => { let lit = false; o.traverse(x => { if (x.isLight) lit = true; }); if (!lit) { hide.push(o); return; } if (o.isLight) zero.push(o); for (const c of o.children) walk(c); };
+    reflHide.forEach(walk); reflParts = hide; reflZero = zero;
+  }
 
   // ---------------------------------------------------------------- post (internal ratio pr; the canvas stays at DPR)
   const post = createPost({ THREE, renderer, scene, cam });
@@ -542,13 +553,13 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
   const nP = noise1(3), nY = noise1(5), nR = noise1(8), nX = noise1(13), nZ = noise1(21);
   const bez = (a, b, c, d, t, out) => { const u = 1 - t; return out.set(0, 0, 0).addScaledVector(a, u * u * u).addScaledVector(b, 3 * u * u * t).addScaledVector(c, 3 * u * t * t).addScaledVector(d, t * t * t); };
   let focusDist = SITE_FOCUS, rackT = 0;
-  const uA = new V3(), uB = new V3(), uLook = new V3(), uQ = new Q(), uE = new THREE.Euler(0, 0, 0, 'YXZ');
+  const uA = new V3(), uB = new V3(), uLook = new V3(), uQ = new Q(), uE = new THREE.Euler(0, 0, 0, 'YXZ'), UP = new V3(0, 1, 0);
   function poseUnder(p, t) {
     // a scroll, not a fly-through: the room framing holds while the camera pedestals down and tilts down with p, so the
     // desk and monitors drift up the frame like parallax as the page carries the hero section away
     const h = sstep(0, 1, p);
     cam.position.set(POS0[0], POS0[1] - 0.3 * h, POS0[2] - 0.08 * h);
-    m4.lookAt(uA.set(POS0[0], POS0[1], POS0[2]), uLook.set(LOOK0[0], LOOK0[1], LOOK0[2]), new V3(0, 1, 0)); uQ.setFromRotationMatrix(m4);
+    m4.lookAt(uA.set(POS0[0], POS0[1], POS0[2]), uLook.set(LOOK0[0], LOOK0[1], LOOK0[2]), UP); uQ.setFromRotationMatrix(m4);
     uE.set(-0.07 * h, 0, 0);
     cam.quaternion.copy(uQ).multiply(dq.setFromEuler(uE));
     sx += (ptrX - sx) * 0.06; sy += (ptrY - sy) * 0.06;
@@ -595,7 +606,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
   }
   const sr = { x: 0, y: 0, w: 0, h: 0 };
   const coverage = r => Math.max(0, Math.min(W, r.x + r.w) - Math.max(0, r.x)) * Math.max(0, Math.min(H, r.y + r.h) - Math.max(0, r.y)) / (W * H);
-  const lampCol = new THREE.Color(1.0, 0.68, 0.38), tmpC = new THREE.Color();
+  const lampCol = new THREE.Color(1.0, 0.68, 0.38), tmpC = new THREE.Color(), CONE_RAKE = [0.75, 0.82, 1.0], CONE_WARM = [1.0, 0.7, 0.4];
   const siteGlow = ['glow', 'window', 'amber'].map(k => outside.site?.M?.[k]).filter(Boolean).map(m => [m, m.color.clone()]);   // trailer / pickup lights by the H1
   const pu = { dt: 0, t: 0, focus: 0, aperture: 0, maxblur: 0, ca: 0 };
   let lastT = 0, cabAcc = 0, frames = 0, ftAcc = 0, ftN = 0, reflW = 0, reflH = 0, cov = 0;
@@ -632,7 +643,7 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
     if (mons.left?.light) { mons.left.light.color.copy(spill.left); mons.left.light.intensity = 2.3 * glow; }
     if (mons.right?.light) { mons.right.light.color.copy(spill.right); mons.right.light.intensity = 2.3 * glow; }
     if (mons.centre?.light) { mons.centre.light.color.copy(spill.cab).lerp(spill.still, mix); mons.centre.light.intensity = 2.8 * glow * (0.2 + 0.8 * lit); }
-    moonFill.intensity = (HIGH ? 0.55 : 0.4) * D.winI * (1 - 0.4 * near); moonFill.color.setRGB(...D.winC);   // window fill: moonlight -> dawn -> daylight
+    moonFill.intensity = (HIGH ? 0.55 : 0.4) * D.winI * (1 - 0.4 * near); moonFill.color.setRGB(D.winC[0], D.winC[1], D.winC[2]);   // window fill: moonlight -> dawn -> daylight
 
     // atmosphere + beams + dust
     const ca = copyA ?? Math.max(0, 1 - p / COPY_OUT), lampDn = 1 - LAMP_COPY * sstep(0, 0.3, ca);   // full hold-down until the copy is nearly gone
@@ -641,13 +652,13 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
     for (const [m, c] of siteGlow) m.color.copy(c).multiplyScalar(lampDn * Math.max(D.flood, 0.08));
     if (atmo) {
       const au = atmo.uniforms; au.time.value = clock;
-      au.hazeC.value.setRGB(...D.hazeC); au.hazeLow.value.setRGB(...D.hazeLow); au.hazeD.value = D.hazeD;   // night blue -> warm dusty morning
+      au.hazeC.value.setRGB(D.hazeC[0], D.hazeC[1], D.hazeC[2]); au.hazeLow.value.setRGB(D.hazeLow[0], D.hazeLow[1], D.hazeLow[2]); au.hazeD.value = D.hazeD;   // night blue -> warm dusty morning
       if (au.sunDir) { au.sunDir.value.copy(day.sunDir); au.sunC.value.copy(day.sunCol).multiplyScalar(D.scat * 0.3); }
       for (let i = 0; i < spots.length && i < 4; i++) { spots[i].getWorldPosition(cv); au.lampP.value[i].set(cv.x, cv.y, cv.z, i === 0 ? 0 : 0.1 * lampK); au.lampC.value[i].copy(lampCol); }   // tower 0: no visible source, so no glow (its light stays)
       tmpC.copy(mons.centre?.light?.color ?? spill.cab).lerp(spill.left, 0.4); au.roomC.value.copy(tmpC).multiplyScalar(0.0022 * (1 - sstep(0.4, 0.62, p)) * glare * lit); // screen-light haze: follows what the screen shows, gone before it is the picture
       mons.centre.screen.getWorldPosition(au.roomP.value); au.roomP.value.z += 0.35;
     }
-    cones.children.forEach((c, i) => { const rk = i === cones.children.length - 1; c.material.uniforms.uCol.value.setRGB(...(rk ? [0.75, 0.82, 1.0] : [1.0, 0.7, 0.4])).multiplyScalar((i === 0 ? 0.45 : rk ? 0.35 : 1) * 0.05 * lampK); });   // tower 0 faint (dark heads), rake beam cool   // tower 0's beam faint: its heads are dark
+    for (let i = 0, cc = cones.children, n = cc.length; i < n; i++) { const rk = i === n - 1, k = rk ? CONE_RAKE : CONE_WARM; cc[i].material.uniforms.uCol.value.setRGB(k[0], k[1], k[2]).multiplyScalar((i === 0 ? 0.45 : rk ? 0.35 : 1) * 0.05 * lampK); }   // tower 0 faint (dark heads), rake beam cool   // tower 0's beam faint: its heads are dark
 
     // lens: rack focus with shaped bokeh, fully sharp for the hand-off
     const dofK = HIGH ? 1 - sstep(0.88, 0.98, pz) : 0;
@@ -673,7 +684,10 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
     if (reflK > 0.001) {
       const rw = Math.max(1, Math.round(W * pr / 2)), rh = Math.max(1, Math.round(H * pr / 2));
       if (rw !== reflW || rh !== reflH) { reflW = rw; reflH = rh; mirror.setSize(rw, rh); }
-      ok = mirror.render(renderer, scene, cam, reflHide);
+      reflSplit();
+      for (let i = 0; i < reflZero.length; i++) { reflZI[i] = reflZero[i].intensity; reflZero[i].intensity = 0; }
+      ok = mirror.render(renderer, scene, cam, reflParts);
+      for (let i = 0; i < reflZero.length; i++) reflZero[i].intensity = reflZI[i];
     }
     glassU.uReflK.value = ok ? reflK : 0;
     glassU.uSunC.value.copy(day.sunCol).multiplyScalar(0.025 * D.scat * Math.min(1, Math.max(0, (D.el + 0.12) / 0.15)));   // sun on the window grime
@@ -742,9 +756,9 @@ function build({ THREE, host, quality, still, canvas, cvIn, fadeOutside, enhance
     if (streak) jobs.push(compileFS(streak.materials, tmpRT));
     if (mirror) {
       reflW = Math.max(1, Math.round(W * pr / 2)); reflH = Math.max(1, Math.round(H * pr / 2)); mirror.setSize(reflW, reflH);
-      // the mirror pass sees the room only (outside, glass, beams, dust hidden): its own light state, so its own programs;
-      // the shadow pass that follows it in a frame inherits that light state too
-      detached([outside.group, cones, dust, room.glass], () => jobs.push(compileTo(mirror.raw, scene, mirror.vcam), compileDepth(scene, cam)));
+      // the mirror pass sees the room only (outside, glass, beams, dust hidden) but keeps the main pass's lights (at 0, see
+      // reflSplit), so it shares its light state: compile what the virtual camera sees (incl. the reflection-only back room)
+      reflSplit(); detached(reflParts, () => jobs.push(compileTo(mirror.raw, scene, mirror.vcam), compileDepth(scene, cam)));
       jobs.push(compileFS(mirror.materials, mirror.rt));
     }
     return Promise.all(jobs);

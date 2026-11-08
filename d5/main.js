@@ -439,9 +439,9 @@ const cLook = new THREE.CatmullRomCurve3([[0, 0, 0], [0, 0, 0], [-20, 8, -8], [-
 // between the parked ships and the build pad (so they never leave the frame), then the tilt up after the ship. [p, pos, look, lens]
 const C_PIV = [15, 0, -135], cAt = (R, a, h) => [C_PIV[0] + R * Math.sin(a * Math.PI / 180), h, C_PIV[2] + R * Math.cos(a * Math.PI / 180)];
 const CSH = CINE ? [
-  [CA, [1100, 2600, 2300], [-3000, 0, -1500], 50],  // just under the swap, in the haze; heading west, ~25 deg down: rim + delta ahead
-  [0.52, [760, 1500, 1500], [-1200, 0, -800], 48],  // haze clearing: Jezero and the delta from altitude, the site low in frame
-  [0.57, [480, 700, 900], [-200, 0, -300], 46],     // terrain resolving, the ships' plumes below
+  [CA, [2200, 2600, 900], [-3200, 0, -200], 50],   // just under the swap, in the haze; heading west along the axis, ~25 deg down: rim + delta ahead
+  [0.52, [1400, 1500, 700], [-1400, 0, -300], 48],  // haze clearing: Jezero and the delta from altitude, the site low in frame
+  [0.57, [750, 700, 550], [-250, 0, -250], 46],     // terrain resolving, the ships' plumes below
   [0.62, cAt(600, 28, 260), [15, 30, -135], 42],    // settle: ships down, the city starts
   [0.72, cAt(500, 32, 190), [15, 34, -135], 40],
   [0.80, cAt(420, 24, 130), [10, 38, -130], 40],
