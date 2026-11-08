@@ -125,12 +125,14 @@ export function createPerf() {
     if (S.dts.length < WIN || t < S.cool) return;
     const st = stats(S.dts), miss = S.dts.filter(x => x > MISS).length;
     const recent = S.dts.slice(-10).filter(x => x > 33).length;
-    if (recent >= 6 && S.level > 0) { step(L, S, -1, 'emergency p90 ' + st.p90.toFixed(1)); settle(L, true); return; }
+    if (recent >= 6 && S.level > 0) { S.lastEmerg = t; step(L, S, -1, 'emergency p90 ' + st.p90.toFixed(1)); settle(L, true); return; }
     if (miss > WIN * 0.12 || st.p90 > MISS) { step(L, S, -1, 'p90 ' + st.p90.toFixed(1) + ' miss ' + miss); return; }
     // headroom is only visible above 60 Hz: holding 120 fps means at least 2x spare
     const fast = vsync < 12 && st.p90 < vsync * 1.25;
     if (fast && S.level < S.ceil && t > S.probe) { if (!S.upT) S.upT = t; else if (t - S.upT > UP_HOLD) step(L, S, +1, 'headroom p90 ' + st.p90.toFixed(1)); }
     else S.upT = 0;
+    // 60 Hz screens can't show headroom: undo one emergency drop after 10 s of clean vsync-locked frames
+    if (vsync >= 12 && S.lastEmerg && t - S.lastEmerg > 10000 && S.level < S.ceil && miss === 0 && st.p90 < vsync * 1.1) { S.lastEmerg = 0; step(L, S, +1, 'recovered after emergency'); }
   }
 
   function raf(t) {
