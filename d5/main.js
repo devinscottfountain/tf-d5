@@ -1036,7 +1036,7 @@ renderer.setAnimationLoop(() => {
   lastPos.copy(pos); hasLast = true;
   const shutter = shutterV.copy(camVel).multiplyScalar(DCFG.shutter).clampLength(0, BOX * DCFG.maxStreak);
   dustU.cp.value.copy(pos); dustU.vel.value.copy(shutter); dustU.t.value = t; dustU.spd.value = Math.min(1, shutter.length() / 6);
-  dust.visible = mode === 'space'; dustU.amt.value = 1 - hIn;
+  dust.visible = mode === 'space' && (!CINE || sm > E0); dustU.amt.value = 1 - hIn; // cine: no space dust on the beats, only from the entry on (planet ask)
 
   // Earth holds Austin under the opening frame until the pull out lands, then spins on from there
   if (introOn) spinOff = SPIN_LAND - t * EARTH_SPIN;
