@@ -1125,11 +1125,12 @@ function inWorld(w, fn) {
 function throwaway(w) {
   const touched = [];
   inWorld(w, () => {
+    if (CINE && w === 'colony') colonyAPI.build(0, 0); // cine: first, so the forced visibility below is what draws (build(0) hides unbuilt domes, ships, life)
     for (const r of w === 'site' ? [site.group] : w === 'colony' ? [colony, ...entryRoots()] : spaceRoots())
       r.traverse(o => { touched.push([o, o.visible, o.frustumCulled]); o.visible = true; o.frustumCulled = false; });
     try {
       rig(w === 'site');
-      if (w === 'colony') colonyAPI.build(0, 0);
+      if (w === 'colony' && !CINE) colonyAPI.build(0, 0);
       // render() draws the shadow map before it sets up this frame's lights, and depth program keys include the light
       // counts, so set the lights up first (a compile of nothing does exactly that) or the depth programs get stale keys
       renderer.compile(NOOP, cam, scene);
@@ -1152,7 +1153,12 @@ async function precompile() {
 }
 // the colony is populated after boot (see populateColony): same warm-up for it once it exists, unless it is already on screen
 async function warmColony() {
-  let job; inWorld('colony', () => (job = Promise.all([compileIn(colony), ...entryRoots().map(compileIn)])));
+  let job; inWorld('colony', () => {
+    if (!CINE) { job = Promise.all([compileIn(colony), ...entryRoots().map(compileIn)]); return; }
+    // cine: build(0) hides most of the city, the ships and the life; queue every program with everything shown
+    colonyAPI.build(0, 0); const vis = []; for (const r of [colony, ...entryRoots()]) r.traverse(o => { vis.push([o, o.visible]); o.visible = true; });
+    try { job = Promise.all([compileIn(colony), ...entryRoots().map(compileIn)]); } finally { for (const [o, v] of vis) o.visible = v; }
+  });
   await Promise.race([job, wait(1500)]);
   if (lastMode !== 'colony') throwaway('colony');
   window.__d5.colonyPrograms = renderer.info.programs.length;
